@@ -7,6 +7,16 @@
 //  Sheets. No subject names, class levels, chapter names, or Module IDs are
 //  ever hardcoded here.
 //
+//  WHAT CHANGED IN v3
+//  ──────────────────
+//  7. NEW "Class Levels" tab — Class | Label | Age | Aliases | Display Order
+//     | Active. Class levels (previously hardcoded as Class 1–5 in this file
+//     and in portal.js) are now fully sheet-driven. Default ships with 12
+//     levels: Class 0–10 + Adult. Add, rename, reorder, or hide a class by
+//     editing this one tab — no code changes needed.
+//  8. API response now also returns `classLevels` so the client can render
+//     class pills/dropdowns dynamically instead of hardcoding them.
+//
 //  WHAT CHANGED IN v2
 //  ──────────────────
 //  1. Master tab renamed: "Subject Sheet Map" → "Class Subject Map"
@@ -107,34 +117,102 @@ async function fetchTab(sheetId, tabName) {
   }
 }
 
-// ── normalizeClass ────────────────────────────────────────────────────────────
-// Accepts any reasonable class string and returns a canonical "Class N" form.
-// Examples: "class3", "3", "Class 3", "CLASS3" → "Class 3"
-// Returns null if the input cannot be resolved to a known class.
-const KNOWN_CLASSES = ['Class 1','Class 2','Class 3','Class 4','Class 5'];
+// ── Class Levels (SHEET-DRIVEN — v3) ────────────────────────────────────────
+// Previously KNOWN_CLASSES + the alias map were hardcoded here and in
+// portal.js (CLASS_TO_AGE map). They now live in the "Class Levels" tab of
+// the master config sheet, so an admin can add/rename/hide a class level
+// without touching code or redeploying.
+//
+// Tab name: "Class Levels"  (in MASTER_SHEET_ID)
+// Columns:
+//   Class          — canonical identifier. MUST exactly match the "Class"
+//                     column used in "Class Subject Map", "Learning Modules",
+//                     and "Learning Steps" (e.g. "Class 0", "Class 1", … ,
+//                     "Class 10", "Adult"). This is the value stored on a
+//                     student's profile (profile.classLevel).
+//   Label          — friendly display name shown in the UI. Defaults to
+//                     Class if left blank (e.g. Class="Class 0",
+//                     Label="Nursery / KG").
+//   Age            — short age-group text shown next to the class badge
+//                     (e.g. "8-9 yrs", "18+ yrs"). Optional.
+//   Aliases        — comma-separated alternative strings that should resolve
+//                     to this Class when passed via ?classLevel=, e.g.
+//                     "kg, nursery, 0" all resolve to "Class 0".
+//   Display Order  — numeric sort order for pills / dropdowns.
+//   Active         — TRUE/FALSE. Uncheck to hide a class without deleting it.
+//
+// DEFAULT_CLASS_LEVELS below is ONLY a safety net used if the "Class Levels"
+// tab is empty or missing (e.g. brand-new deployment before the admin has
+// created the tab) — exactly the same graceful-degradation pattern already
+// used for "Class Subject Map" above. Once the tab exists and has rows, the
+// sheet always wins.
+const DEFAULT_CLASS_LEVELS = [
+  { Class: 'Class 0',  Label: 'Class 0 (Nursery/KG)', Age: '4-5 yrs',  Aliases: 'kg,nursery,0',  'Display Order': 1,  Active: true },
+  { Class: 'Class 1',  Label: 'Class 1',  Age: '5-6 yrs',   Aliases: '1',  'Display Order': 2,  Active: true },
+  { Class: 'Class 2',  Label: 'Class 2',  Age: '6-7 yrs',   Aliases: '2',  'Display Order': 3,  Active: true },
+  { Class: 'Class 3',  Label: 'Class 3',  Age: '7-8 yrs',   Aliases: '3',  'Display Order': 4,  Active: true },
+  { Class: 'Class 4',  Label: 'Class 4',  Age: '8-9 yrs',   Aliases: '4',  'Display Order': 5,  Active: true },
+  { Class: 'Class 5',  Label: 'Class 5',  Age: '9-10 yrs',  Aliases: '5',  'Display Order': 6,  Active: true },
+  { Class: 'Class 6',  Label: 'Class 6',  Age: '10-11 yrs', Aliases: '6',  'Display Order': 7,  Active: true },
+  { Class: 'Class 7',  Label: 'Class 7',  Age: '11-12 yrs', Aliases: '7',  'Display Order': 8,  Active: true },
+  { Class: 'Class 8',  Label: 'Class 8',  Age: '12-13 yrs', Aliases: '8',  'Display Order': 9,  Active: true },
+  { Class: 'Class 9',  Label: 'Class 9',  Age: '13-14 yrs', Aliases: '9',  'Display Order': 10, Active: true },
+  { Class: 'Class 10', Label: 'Class 10', Age: '14-15 yrs', Aliases: '10', 'Display Order': 11, Active: true },
+  { Class: 'Adult',    Label: 'Adult',    Age: '18+ yrs',   Aliases: 'adults,adult', 'Display Order': 12, Active: true },
+];
 
-function normalizeClass(raw) {
+// ── buildClassLevels ─────────────────────────────────────────────────────────
+// Fetches the "Class Levels" tab and normalises it. Falls back to
+// DEFAULT_CLASS_LEVELS if the tab is missing/empty so the portal still works
+// on day one, before the admin has created the tab.
+async function buildClassLevels() {
+  const rows = await fetchTab(MASTER_SHEET_ID, 'Class Levels');
+  const active = rows
+    .filter(r => r['Active'] !== false && (r['Class'] || '').trim())
+    .map(r => ({
+      Class:            r['Class'].trim(),
+      Label:            (r['Label'] || '').trim() || r['Class'].trim(),
+      Age:              (r['Age'] || '').trim(),
+      Aliases:          (r['Aliases'] || '').trim(),
+      'Display Order':  r['Display Order'] === '' || r['Display Order'] === undefined ? 999 : Number(r['Display Order']),
+      Active:           true,
+    }))
+    .sort((a, b) => (a['Display Order'] || 999) - (b['Display Order'] || 999));
+
+  if (active.length === 0) {
+    console.warn('[portal-config] ⚠ "Class Levels" tab not found or empty — using built-in default of 12 classes (Class 0–10 + Adult).');
+    console.warn('[portal-config]   To manage classes from the Sheet, add a "Class Levels" tab with columns: Class | Label | Age | Aliases | Display Order | Active');
+    return DEFAULT_CLASS_LEVELS;
+  }
+  return active;
+}
+
+// ── normalizeClass ────────────────────────────────────────────────────────────
+// Accepts any reasonable class string and returns the canonical Class value
+// from classLevels. Examples: "class3", "3", "Class 3", "CLASS3" → "Class 3".
+// "adult", "Adults" → "Adult". Returns null if unresolved (caller then treats
+// the request as "show everything").
+function normalizeClass(raw, classLevels) {
   if (!raw) return null;
   const s = String(raw).trim();
+  const sLower = s.toLowerCase();
 
-  // Already canonical: "Class 1" … "Class 5"
-  if (KNOWN_CLASSES.includes(s)) return s;
+  // Already canonical, e.g. "Class 3" or "Adult"
+  const exact = classLevels.find(c => c.Class.toLowerCase() === sLower);
+  if (exact) return exact.Class;
 
-  // Extract trailing digit(s): "class3", "Class3", "3", "KG" → null
+  // Alias match, e.g. "kg", "adults", "10"
+  const aliasMatch = classLevels.find(c =>
+    (c.Aliases || '').split(',').map(a => a.trim().toLowerCase()).filter(Boolean).includes(sLower)
+  );
+  if (aliasMatch) return aliasMatch.Class;
+
+  // Trailing-digit match, e.g. "class10", "Class10" → "Class 10"
   const m = s.match(/(\d+)$/);
   if (m) {
-    const candidate = `Class ${m[1]}`;
-    if (KNOWN_CLASSES.includes(candidate)) return candidate;
+    const candidate = classLevels.find(c => c.Class.toLowerCase() === `class ${m[1]}`);
+    if (candidate) return candidate.Class;
   }
-
-  // Edge-cases seen in the wild (CLASS_TO_AGE map in portal.js)
-  const aliases = {
-    'class1':'Class 1','class2':'Class 2','class3':'Class 3',
-    'class4':'Class 4','class5':'Class 5',
-    'kg':'Class 1', // KG treated as Class 1 — adjust if your school differs
-  };
-  const candidate = aliases[s.toLowerCase()];
-  if (candidate) return candidate;
 
   return null; // unrecognised → caller treats as "show everything"
 }
@@ -154,9 +232,14 @@ function classMatches(rowClass, requestedClass) {
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store'); // browser must not cache (we cache server-side)
 
+  // Resolve the Class Levels list first (cheap, tiny tab) — needed both to
+  // normalise the incoming ?classLevel= param AND to send back to the client
+  // so the UI can render class pills/dropdowns without hardcoding them.
+  const classLevels = await buildClassLevels();
+
   // Resolve and normalise the requested class level
   const rawClass      = req.query.classLevel || '';
-  const requestedClass = normalizeClass(rawClass); // null = no filter / unrecognised
+  const requestedClass = normalizeClass(rawClass, classLevels); // null = no filter / unrecognised
   const cacheKey      = requestedClass || '__all__';
 
   // ── Serve from cache if still fresh ────────────────────────────────────────
@@ -298,7 +381,7 @@ export default async function handler(req, res) {
 
     console.log(`[portal-config] ✓ After class filter: ${learningModules.length} modules, ${learningSteps.length} steps (class: "${requestedClass || 'all'}")`);
 
-    const payload = { assignmentSubjects, learningModules, learningSteps };
+    const payload = { assignmentSubjects, learningModules, learningSteps, classLevels };
 
     // ── Store in cache ────────────────────────────────────────────────────────
     RESPONSE_CACHE.set(cacheKey, { data: payload, expiresAt: Date.now() + CACHE_TTL_MS });
@@ -307,6 +390,6 @@ export default async function handler(req, res) {
 
   } catch (err) {
     console.error('[portal-config] ✗ Unexpected error:', err);
-    res.status(200).json({ assignmentSubjects: [], learningModules: [], learningSteps: [] });
+    res.status(200).json({ assignmentSubjects: [], learningModules: [], learningSteps: [], classLevels });
   }
 }
