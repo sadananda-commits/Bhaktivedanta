@@ -897,6 +897,16 @@ function PortalInner() {
   const [realSubjects,    setRealSubjects]    = useState(null);
   const [realAssignments, setRealAssignments] = useState(null);
   const [realAttendance,  setRealAttendance]  = useState(null);
+  // ── Cross-class preview data ────────────────────────────────────────────
+  // The Assignments tab's "select another class" pills need access to
+  // OTHER classes' subjects/topics, but `cfg` only ever holds the student's
+  // OWN class (portal-config.js pre-filters server-side by profile.classLevel
+  // for performance). When a pill is selected we lazily fetch the full,
+  // unfiltered dataset (classLevel omitted = every class) ONCE and cache it
+  // here — the server itself caches that same unfiltered response for 60s,
+  // so this is cheap even across many students previewing other classes.
+  const [crossClassCfg,     setCrossClassCfg]     = useState(null);
+  const [crossClassLoading, setCrossClassLoading] = useState(false);
 
   const subjectRef = useRef(null);
   const attendRef  = useRef(null);
@@ -990,6 +1000,35 @@ function PortalInner() {
     return () => { cancelled = true; };
   }, [lang, profile.classLevel]);
 
+  // ── Fetch the cross-class dataset on demand ─────────────────────────────
+  // Runs only once classFilter becomes truthy ('all' or a Set of classes),
+  // i.e. the moment the student picks another class pill. Cached in
+  // crossClassCfg so toggling pills back and forth doesn't refetch.
+  // Sheet quiz content is English-only (see the Danish-fallback note in the
+  // main fetch above), so this preview is skipped entirely in Danish — the
+  // class pills aren't meaningful there since LMOD is always the static
+  // hand-translated set regardless of class.
+  useEffect(() => {
+    if (!classFilter) return;
+    if (lang === 'da') return;
+    if (crossClassCfg) return; // already loaded
+    let cancelled = false;
+    setCrossClassLoading(true);
+    fetchAllSheetData('') // no classLevel param = full, unfiltered dataset
+      .then(data => {
+        if (cancelled) return;
+        if (data && typeof data === 'object') setCrossClassCfg(data);
+      })
+      .catch(err => console.warn('[portal] Cross-class fetch failed:', err.message))
+      .finally(() => { if (!cancelled) setCrossClassLoading(false); });
+    return () => { cancelled = true; };
+  }, [classFilter, lang, crossClassCfg]);
+
+  // Reset the cross-class cache when language changes, since it's only ever
+  // populated in English and would otherwise leak stale English data into
+  // a Danish session if the user previewed a class, then switched language.
+  useEffect(() => { setCrossClassCfg(null); }, [lang]);
+
   // ── Helpers ───────────────────────────────────────────────────────────────────
   const S          = cfg.settings;
   const NAV        = cfg.navigation.filter(t => isRowActive(t.Active));
@@ -1026,8 +1065,6 @@ function PortalInner() {
   const SCHED      = cfg.schedule.filter(s => isRowActive(s.Active));
   const PFIELDS    = cfg.profileFields;
   const LMOD    = (cfg.learningModules||[]).filter(m=>isRowActive(m.Active)).sort((a,b)=>(Number(a['Display Order'])||0)-(Number(b['Display Order'])||0));
-  const ALLLSTEPS = (cfg.learningSteps||[]).filter(s=>isRowActive(s.Active));
-  const stepsFor = moduleId => ALLLSTEPS.filter(s=>s['Module ID']===moduleId).sort((a,b)=>(Number(a['Step Number'])||0)-(Number(b['Step Number'])||0));
 
   // ── SHEET-DRIVEN CURRICULUM SYSTEM ──────────────────────────────────────────
   //
@@ -1049,23 +1086,17 @@ function PortalInner() {
 
   const studentAgeGroup = CLASS_TO_AGE_LABEL[profile.classLevel] || null;
 
-  // Full CBSE curriculum by age group.
-  // Each subject has:
-  //   key          — canonical name used in subject cards and for filtering
-  //   aliases      — old Subject values that map to this subject (for progress lookup)
-  // ── SHEET-DRIVEN SUBJECT + TOPIC SYSTEM ─────────────────────────────────────
+  // classFilter state controls an *additional* client-side cross-class preview
+  // (Assignments tab only — Dashboard/SUBJ/resumeTarget below always use the
+  // student's OWN class via LMOD/ASGN_SUBJ, regardless of this filter):
+  //   null      → default: show only current-class subjects (LMOD/ASGN_SUBJ)
+  //   'all'     → show every class's subjects/topics merged together
+  //   Set<str>  → show subjects/topics for exactly these classes (own class
+  //               is always included in the Set by the pill click-handler)
   //
-  // assignmentSubjects and learningModules come from cfg, which was fetched
-  // from the Sheet already filtered to the student's classLevel (server-side).
-  // No AGE_CURRICULUM object needed — subjects/taglines/icons are all in the
-  // sheet's "Class Subject Map" tab.
-  //
-  // classFilter state controls an *additional* client-side cross-class preview:
-  //   null      → default: show only current-class subjects (already in LMOD)
-  //   'all'     → show everything in LMOD (all classes pre-fetched if filter is 'all')
-  //   Set<str>  → not used in v2 (pills now re-fetch per class via URL param)
-  //
-  // ASGN_SUBJ: subject cards from the sheet (already class-filtered by API).
+  // ASGN_SUBJ: subject cards from the sheet, own class only (already
+  // class-filtered server-side). Used by the Dashboard tab and anywhere else
+  // that must stay locked to the student's own class.
   const ASGN_SUBJ = (cfg.assignmentSubjects||[])
     .filter(s => isRowActive(s.Active))
     .sort((a,b) => (Number(a['Display Order'])||0) - (Number(b['Display Order'])||0));
@@ -1073,11 +1104,67 @@ function PortalInner() {
   // ALL_CLASSES: display order for the class filter pills (sheet-driven).
   const ALL_CLASSES = CLASS_LEVELS.map(c => c.Class);
 
-  // ── topicsForSubject: match modules by Subject name (exact, no fuzzy match) ──
-  // The old fuzzy title.includes(topic.name.split(' ')[0]) match is gone.
-  // Modules are now filtered by exact Subject string. The Class filter was
-  // already applied server-side, so every module in LMOD belongs to this class.
-  const topicsForSubjectKey = subjectName => LMOD.filter(m => m.Subject === subjectName);
+  // ── Cross-class preview resolution (Assignments tab "select another class") ──
+  // previewClasses: the exact Set of classes to show, or null for "no
+  // restriction" (the 'all' pill). crossClassActive is true whenever the
+  // pills want something other than just the student's own class.
+  const crossClassActive = classFilter === 'all' || classFilter instanceof Set;
+  const previewClasses   = classFilter instanceof Set ? classFilter : null;
+
+  // While crossClassCfg hasn't finished loading yet, fall back to the
+  // own-class data so the screen doesn't flash empty — it'll update the
+  // moment the fetch resolves.
+  const crossSourceModules  = crossClassCfg?.learningModules    || cfg.learningModules;
+  const crossSourceSubjects = crossClassCfg?.assignmentSubjects || cfg.assignmentSubjects;
+
+  // classRowVisible: true if a Sheet row's Class column should be shown
+  // under the CURRENT pill selection. Blank Class = visible to all classes
+  // (same convention as the server-side classMatches() in portal-config.js).
+  const classRowVisible = rowClass => {
+    if (!crossClassActive) return true; // default view already own-class only
+    if (!previewClasses) return true;   // 'all' pill — no restriction
+    const rc = (rowClass || '').trim();
+    if (!rc) return true;
+    return previewClasses.has(rc);
+  };
+
+  // ASSIGN_LMOD: the module list actually used by the Assignments tab (topic
+  // grids, module player, progress summary). Equals LMOD by default; once a
+  // class-preview pill is active, it's built from the unfiltered cross-class
+  // dataset and narrowed to the selected classes.
+  const ASSIGN_LMOD = crossClassActive
+    ? (crossSourceModules||[]).filter(m => isRowActive(m.Active) && classRowVisible(m.Class))
+        .sort((a,b)=>(Number(a['Display Order'])||0)-(Number(b['Display Order'])||0))
+    : LMOD;
+
+  // stepsFor: quiz steps for a module. Falls back to the cross-class step
+  // list when previewing another class, so a topic borrowed from "Class 9"
+  // still has its quiz steps available even though cfg.learningSteps only
+  // ever holds the student's own class.
+  const stepsForSource = crossClassActive ? (crossClassCfg?.learningSteps || cfg.learningSteps) : cfg.learningSteps;
+  const stepsFor = moduleId => (stepsForSource||[])
+    .filter(s => isRowActive(s.Active) && s['Module ID']===moduleId)
+    .sort((a,b)=>(Number(a['Step Number'])||0)-(Number(b['Step Number'])||0));
+
+  // ASSIGN_SUBJ: subject cards for the Assignments tab. By default this is
+  // just ASGN_SUBJ. In preview mode, rebuild it from the unfiltered subject
+  // list, keeping only subjects that actually have at least one visible
+  // topic under the current selection — so a subject only offered to Class 9
+  // doesn't show an empty card while previewing Class 3, and vice versa.
+  const ASSIGN_SUBJ = crossClassActive
+    ? (() => {
+        const visibleNames = new Set(ASSIGN_LMOD.map(m => m.Subject));
+        const seen = new Map();
+        (crossSourceSubjects||[]).filter(s => isRowActive(s.Active) && visibleNames.has(s.Subject))
+          .forEach(s => { if (!seen.has(s.Subject)) seen.set(s.Subject, s); });
+        return [...seen.values()].sort((a,b) => (Number(a['Display Order'])||0) - (Number(b['Display Order'])||0));
+      })()
+    : ASGN_SUBJ;
+
+  // ── topicsForSubjectKey: match modules by Subject name (exact, no fuzzy
+  // match), scoped to ASSIGN_LMOD so it automatically respects the current
+  // class-preview selection. ──────────────────────────────────────────────
+  const topicsForSubjectKey = subjectName => ASSIGN_LMOD.filter(m => m.Subject === subjectName);
 
   // ── Subtopics from sheet (optional Subtopics column, comma-separated) ────────
   // Renders the pill row inside the subject card. Falls back to an empty array
@@ -1098,13 +1185,13 @@ function PortalInner() {
   };
 
   // ── classFilter-aware subject list ──────────────────────────────────────────
-  // When classFilter is null (default) we show the current-class subjects from
-  // ASGN_SUBJ (already class-filtered by the API).
-  // When 'all' is selected, LMOD already contains everything (the API returns
-  // all rows when classLevel is omitted) — the pill triggers a new fetch without
-  // classLevel so the full dataset is loaded. Until that re-fetch completes,
-  // we still show ASGN_SUBJ as a safe default.
-  const FILTERED_SUBJECTS = ASGN_SUBJ; // always use the API-filtered set
+  // FILTERED_SUBJECTS is what the Assignments tab actually renders — it now
+  // correctly tracks ASSIGN_SUBJ, which already accounts for the pill
+  // selection (own class / a chosen Set of classes / 'all'). This is the
+  // fix for "selecting another class didn't load that class's subjects":
+  // previously this line was hardcoded to ASGN_SUBJ (own class only) no
+  // matter what classFilter was set to.
+  const FILTERED_SUBJECTS = ASSIGN_SUBJ;
 
   // filterLabel: subtitle shown in the page header
   const filterLabel = (() => {
@@ -2573,10 +2660,10 @@ function PortalInner() {
                     <i className="fa-solid fa-chevron-right asgn-crumb-sep" />
                     <span className="asgn-crumb" onClick={()=>setActiveModuleId(null)}>{activeAssignmentSubject}</span>
                     <i className="fa-solid fa-chevron-right asgn-crumb-sep" />
-                    <span className="asgn-crumb-current">{LMOD.find(m=>m['Module ID']===activeModuleId)?.Title}</span>
+                    <span className="asgn-crumb-current">{ASSIGN_LMOD.find(m=>m['Module ID']===activeModuleId)?.Title}</span>
                   </div>
                   <LearningModulePlayer
-                    module={LMOD.find(m=>m['Module ID']===activeModuleId)}
+                    module={ASSIGN_LMOD.find(m=>m['Module ID']===activeModuleId)}
                     steps={stepsFor(activeModuleId)}
                     progress={learnProgress[activeModuleId]}
                     onSave={patch=>saveLearnProgress(activeModuleId, patch)}
