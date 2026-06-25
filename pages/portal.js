@@ -112,6 +112,26 @@ const FALLBACK = {
     {'Field Key':'email',        Label:'Email',   Value:'parent@email.com','Read-Only':'No', Visible:true},
     {'Field Key':'phone',        Label:'Phone',   Value:'+91 98765 43210', 'Read-Only':'No', Visible:true},
   ],
+  // ── CLASS LEVELS ──────────────────────────────────────────────────────────
+  // Sheet-driven (see "Class Levels" tab in pages/api/portal-config.js docs).
+  // This array is ONLY the offline/unreachable-API fallback — kept in sync
+  // with DEFAULT_CLASS_LEVELS in portal-config.js. The live Sheet always
+  // wins once it's reachable; edit the Sheet, not this array, to manage
+  // classes day-to-day.
+  classLevels:[
+    {Class:'Class 0', Label:'Class 0 (Nursery/KG)', Age:'4-5 yrs',   'Display Order':1,  Active:true},
+    {Class:'Class 1', Label:'Class 1', Age:'5-6 yrs',   'Display Order':2,  Active:true},
+    {Class:'Class 2', Label:'Class 2', Age:'6-7 yrs',   'Display Order':3,  Active:true},
+    {Class:'Class 3', Label:'Class 3', Age:'7-8 yrs',   'Display Order':4,  Active:true},
+    {Class:'Class 4', Label:'Class 4', Age:'8-9 yrs',   'Display Order':5,  Active:true},
+    {Class:'Class 5', Label:'Class 5', Age:'9-10 yrs',  'Display Order':6,  Active:true},
+    {Class:'Class 6', Label:'Class 6', Age:'10-11 yrs', 'Display Order':7,  Active:true},
+    {Class:'Class 7', Label:'Class 7', Age:'11-12 yrs', 'Display Order':8,  Active:true},
+    {Class:'Class 8', Label:'Class 8', Age:'12-13 yrs', 'Display Order':9,  Active:true},
+    {Class:'Class 9', Label:'Class 9', Age:'13-14 yrs', 'Display Order':10, Active:true},
+    {Class:'Class 10',Label:'Class 10',Age:'14-15 yrs', 'Display Order':11, Active:true},
+    {Class:'Adult',   Label:'Adult',   Age:'18+ yrs',   'Display Order':12, Active:true},
+  ],
   // ── ASSIGNMENT SUBJECTS (Step 1 of the drill-down) ───────────────────────────
   // One row per subject shown on the Assignment section's subject-picker screen.
   // The topic *list* under each subject is never hardcoded — it's always derived
@@ -935,6 +955,7 @@ function PortalInner() {
           schedule:      data.schedule?.length        ? data.schedule        : base.schedule,
           notifications: data.notifications?.length   ? data.notifications   : base.notifications,
           profileFields: data.profileFields?.length   ? data.profileFields   : base.profileFields,
+          classLevels:   data.classLevels?.length     ? data.classLevels     : base.classLevels,
           assignmentSubjects: requestLang === 'da'
             ? danishFallback.assignmentSubjects
             : (data.assignmentSubjects?.length ? data.assignmentSubjects : base.assignmentSubjects),
@@ -1016,16 +1037,16 @@ function PortalInner() {
   // no more code deploys needed to add subjects or update taglines.
   //
   // classLevelIsSet: true once the student has a recognised class set.
-  // Uses the same set of canonical class strings the API normalises to.
-  const KNOWN_CLASSES   = ['Class 1','Class 2','Class 3','Class 4','Class 5'];
+  // CLASS_LEVELS is the sheet-driven list of all class levels (Class 0-10 +
+  // Adult, by default) returned from portal-config.js as cfg.classLevels.
+  const CLASS_LEVELS = (cfg.classLevels || []).filter(c => isRowActive(c.Active))
+    .sort((a,b) => (Number(a['Display Order'])||999) - (Number(b['Display Order'])||999));
+  const KNOWN_CLASSES = CLASS_LEVELS.map(c => c.Class);
   const classLevelIsSet = KNOWN_CLASSES.includes(profile.classLevel);
 
   // Age group label (display only — used in the filter pill header)
-  const CLASS_TO_AGE_LABEL = {
-    'Class 1': 'Age 5–6',  'Class 2': 'Age 6–7',
-    'Class 3': 'Age 7–8',  'Class 4': 'Age 8–9',
-    'Class 5': 'Age 9–10',
-  };
+  const CLASS_TO_AGE_LABEL = Object.fromEntries(CLASS_LEVELS.map(c => [c.Class, c.Age]));
+
   const studentAgeGroup = CLASS_TO_AGE_LABEL[profile.classLevel] || null;
 
   // Full CBSE curriculum by age group.
@@ -1049,8 +1070,8 @@ function PortalInner() {
     .filter(s => isRowActive(s.Active))
     .sort((a,b) => (Number(a['Display Order'])||0) - (Number(b['Display Order'])||0));
 
-  // ALL_CLASSES: display order for the class filter pills.
-  const ALL_CLASSES = ['Class 1','Class 2','Class 3','Class 4','Class 5'];
+  // ALL_CLASSES: display order for the class filter pills (sheet-driven).
+  const ALL_CLASSES = CLASS_LEVELS.map(c => c.Class);
 
   // ── topicsForSubject: match modules by Subject name (exact, no fuzzy match) ──
   // The old fuzzy title.includes(topic.name.split(' ')[0]) match is gone.
@@ -2089,33 +2110,26 @@ function PortalInner() {
                     <div style={{marginTop:'28px',padding:'16px',background:'rgba(255,255,255,.04)',borderRadius:'12px',textAlign:'left'}}>
                       <div style={{fontSize:'12px',fontWeight:700,color:'var(--muted)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:'10px'}}>Quick Set</div>
                       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:'8px'}}>
-                        {[
-                          ['Class 1','Age 5–6'],['Class 2','Age 6–7'],['Class 3','Age 7–8'],
-                          ['Class 4','Age 8–9'],['Class 5','Age 9–10'],
-                        ].map(([cls, age]) => (
+                        {CLASS_LEVELS.map(c => (
                           <button
-                            key={cls}
+                            key={c.Class}
                             onClick={async () => {
                               // Save immediately to the sheet AND update local state
                               const r = await fetch('/api/student/profile', {
                                 method: 'POST',
                                 headers: {'Content-Type':'application/json'},
-                                body: JSON.stringify({ studentId: profile.id, classLevel: cls }),
+                                body: JSON.stringify({ studentId: profile.id, classLevel: c.Class }),
                               });
-                              const data = await r.json();
-                              if (data.success) {
-                                setProfile(p => {
-                                  const updated = { ...p, classLevel: cls };
-                                  try { localStorage.setItem('vedanta_profile', JSON.stringify(updated)); } catch {}
-                                  return updated;
-                                });
-                              } else {
-                                // Even if the API fails, update local state so the UI works
-                                setProfile(p => {
-                                  const updated = { ...p, classLevel: cls };
-                                  try { localStorage.setItem('vedanta_profile', JSON.stringify(updated)); } catch {}
-                                  return updated;
-                                });
+                              const data = await r.json().catch(() => ({}));
+                              // Even if the API call fails, update local state so the UI
+                              // still works — the server-side save can be retried later.
+                              setProfile(p => {
+                                const updated = { ...p, classLevel: c.Class };
+                                try { localStorage.setItem('vedanta_profile', JSON.stringify(updated)); } catch {}
+                                return updated;
+                              });
+                              if (!data.success) {
+                                console.warn('[portal] Class level save failed, kept locally:', data.message);
                               }
                             }}
                             style={{padding:'10px 14px',borderRadius:'10px',border:'1px solid rgba(255,255,255,.12)',
@@ -2124,8 +2138,8 @@ function PortalInner() {
                             onMouseOver={e=>e.currentTarget.style.background='rgba(0,198,167,.12)'}
                             onMouseOut={e=>e.currentTarget.style.background='rgba(255,255,255,.04)'}
                           >
-                            <div>{cls}</div>
-                            <div style={{fontSize:'11px',color:'var(--muted)',fontWeight:400}}>{age}</div>
+                            <div>{c.Label || c.Class}</div>
+                            <div style={{fontSize:'11px',color:'var(--muted)',fontWeight:400}}>{c.Age}</div>
                           </button>
                         ))}
                       </div>
@@ -2657,17 +2671,17 @@ function PortalInner() {
                         {/* Class Level dropdown */}
                         <div className="prof-field">
                           <span className="prof-label">Class Level</span>
-                          <select
-                            id="pf-ClassLevel"
-                            defaultValue={profile.classLevel}
-                            className="prof-inp"
-                          >
-                            <option value="Class 1">Class 1 (Age 5–6)</option>
-                            <option value="Class 2">Class 2 (Age 6–7)</option>
-                            <option value="Class 3">Class 3 (Age 7–8)</option>
-                            <option value="Class 4">Class 4 (Age 8–9)</option>
-                            <option value="Class 5">Class 5 (Age 9–10)</option>
-                          </select>
+                         <select
+  id="pf-ClassLevel"
+  defaultValue={profile.classLevel}
+  className="prof-inp"
+>
+  {CLASS_LEVELS.map(c => (
+    <option key={c.Class} value={c.Class}>
+      {c.Label || c.Class}{c.Age ? ` (${c.Age})` : ''}
+    </option>
+  ))}
+</select>
                         </div>
                         {/* Email */}
                         <div className="prof-field">
