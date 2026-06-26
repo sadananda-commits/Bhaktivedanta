@@ -574,14 +574,215 @@ function LearningModulesGrid({ modules, stepsFor, progressMap, onOpen, t }) {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SOUND ENGINE — Web Audio API, zero external deps.
+// All sounds are synthesised in-browser so they work offline and load instantly.
+// useSoundEngine() returns { playCorrect, playWrong, playStreak } which the
+// lesson view calls on every answer. Sounds are opt-in: the first user gesture
+// (answering a question) creates the AudioContext, so there are no autoplay
+// policy violations. If the browser has no Web Audio support the functions
+// are no-ops — nothing breaks.
+// ─────────────────────────────────────────────────────────────────────────────
+function useSoundEngine() {
+  const acRef = useRef(null);
+  const getAC = () => {
+    if (typeof window === 'undefined') return null;
+    if (!acRef.current) {
+      try { acRef.current = new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; }
+    }
+    // Chrome suspends AudioContext until a user gesture — resume silently.
+    if (acRef.current.state === 'suspended') acRef.current.resume().catch(() => {});
+    return acRef.current;
+  };
+
+  // Tiny tone helper: freq(Hz), duration(s), type, gainPeak
+  const tone = (ac, freq, start, dur, type='sine', peak=0.35) => {
+    const osc  = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.connect(gain); gain.connect(ac.destination);
+    osc.type = type; osc.frequency.setValueAtTime(freq, start);
+    gain.gain.setValueAtTime(0, start);
+    gain.gain.linearRampToValueAtTime(peak, start + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
+    osc.start(start); osc.stop(start + dur + 0.01);
+  };
+
+  const playCorrect = useCallback(() => {
+    const ac = getAC(); if (!ac) return;
+    const t0 = ac.currentTime;
+    // Rising two-note chime: C5 → E5
+    tone(ac, 523, t0,       0.18, 'sine', 0.30);
+    tone(ac, 659, t0 + 0.14, 0.22, 'sine', 0.28);
+  }, []);
+
+  const playWrong = useCallback(() => {
+    const ac = getAC(); if (!ac) return;
+    const t0 = ac.currentTime;
+    // Descending buzz: A3 → F3, sawtooth for a "bzzzt" texture
+    tone(ac, 220, t0,       0.14, 'sawtooth', 0.20);
+    tone(ac, 175, t0 + 0.12, 0.18, 'sawtooth', 0.15);
+  }, []);
+
+  // streak: 5 | 8 | 12 | 10(fireworks) — 10 uses a fanfare
+  const playStreak = useCallback((streak) => {
+    const ac = getAC(); if (!ac) return;
+    const t0 = ac.currentTime;
+    if (streak >= 10) {
+      // 10-in-a-row fanfare: C5 E5 G5 C6 ascending triplet
+      [[523,0],[659,.12],[784,.24],[1047,.38]].forEach(([f,dt]) => tone(ac, f, t0+dt, 0.22, 'sine', 0.32));
+    } else if (streak >= 8) {
+      // 3-note rising arpeggio
+      [[523,0],[659,.12],[784,.24]].forEach(([f,dt]) => tone(ac, f, t0+dt, 0.20, 'sine', 0.30));
+    } else {
+      // 5-in-a-row: two-tone chime, slightly brighter than a normal correct
+      tone(ac, 659, t0,       0.18, 'sine', 0.32);
+      tone(ac, 880, t0 + 0.14, 0.20, 'sine', 0.28);
+    }
+  }, []);
+
+  return { playCorrect, playWrong, playStreak };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIREWORKS CANVAS — rendered as a fixed overlay, auto-dismisses after 2.6 s.
+// Triggered when streak hits 10 (and multiples thereof).
+// Pure canvas, no libs. Particle physics: initial velocity + gravity + fade.
+// ─────────────────────────────────────────────────────────────────────────────
+function FireworksOverlay({ active, onDone }) {
+  const canvasRef = useRef(null);
+  const rafRef    = useRef(null);
+
+  useEffect(() => {
+    if (!active) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    canvas.width  = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    // 6 burst origins spread across top-third of the screen
+    const COLORS = ['#f5a623','#00c6a7','#f87171','#c084fc','#60a5fa','#4ade80','#fbbf24','#e879f9'];
+    const particles = [];
+    const makeBurst = (x, y) => {
+      for (let i = 0; i < 55; i++) {
+        const angle = (Math.PI * 2 * i) / 55;
+        const speed = 3 + Math.random() * 5;
+        particles.push({
+          x, y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          alpha: 1,
+          radius: 3 + Math.random() * 3,
+          color: COLORS[Math.floor(Math.random() * COLORS.length)],
+          decay: 0.012 + Math.random() * 0.01,
+          gravity: 0.12,
+        });
+      }
+    };
+
+    // Stagger 6 bursts over 600 ms for a multi-burst feel
+    const burstPositions = [
+      [canvas.width*0.2, canvas.height*0.3],
+      [canvas.width*0.5, canvas.height*0.15],
+      [canvas.width*0.8, canvas.height*0.28],
+      [canvas.width*0.35,canvas.height*0.22],
+      [canvas.width*0.65,canvas.height*0.35],
+      [canvas.width*0.5, canvas.height*0.42],
+    ];
+    burstPositions.forEach(([x,y],i) => setTimeout(() => makeBurst(x,y), i*110));
+
+    let start = null;
+    const DURATION = 2600;
+    const loop = (ts) => {
+      if (!start) start = ts;
+      const elapsed = ts - start;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      particles.forEach(p => {
+        p.vy += p.gravity;
+        p.x  += p.vx;
+        p.y  += p.vy;
+        p.alpha -= p.decay;
+        if (p.alpha <= 0) return;
+        ctx.save();
+        ctx.globalAlpha = p.alpha;
+        ctx.fillStyle   = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      });
+      if (elapsed < DURATION) {
+        rafRef.current = requestAnimationFrame(loop);
+      } else {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        onDone?.();
+      }
+    };
+    rafRef.current = requestAnimationFrame(loop);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [active]);
+
+  if (!active) return null;
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{
+        position:'fixed', inset:0, zIndex:9999,
+        pointerEvents:'none', // clicks pass through
+      }}
+    />
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STREAK TOAST — shown as a non-blocking banner when streak milestones are hit.
+// ─────────────────────────────────────────────────────────────────────────────
+const STREAK_MILESTONES = [
+  { at:5,  emoji:'🔥',  label:'5 in a Row!',   sub:'You\'re on fire! Keep it up!',        color:'#f97316' },
+  { at:8,  emoji:'⚡',  label:'8 Correct!',    sub:'Incredible focus — amazing streak!',   color:'#a855f7' },
+  { at:10, emoji:'🎆',  label:'10 in a Row!',  sub:'FIREWORKS! You\'re unstoppable!',      color:'#f5a623' },
+  { at:12, emoji:'👑',  label:'12 Correct!',   sub:'CROWN LEVEL! You\'re a genius!',       color:'#00c6a7' },
+];
+
+function StreakToast({ streak, onDone }) {
+  const ms = STREAK_MILESTONES.slice().reverse().find(m => streak >= m.at && streak % m.at === 0 ) ||
+             STREAK_MILESTONES.slice().reverse().find(m => streak === m.at);
+  const [visible, setVisible] = useState(true);
+  useEffect(() => { const t = setTimeout(() => { setVisible(false); onDone?.(); }, 2400); return () => clearTimeout(t); }, [streak]);
+  if (!ms || !visible) return null;
+  return (
+    <div style={{
+      position:'fixed', top:'18px', left:'50%', transform:'translateX(-50%)',
+      zIndex:10000, pointerEvents:'none',
+      background:`linear-gradient(135deg,${ms.color}22,${ms.color}44)`,
+      border:`1.5px solid ${ms.color}66`,
+      borderRadius:'18px', padding:'14px 28px', textAlign:'center',
+      backdropFilter:'blur(12px)',
+      animation:'streakPop .35s cubic-bezier(.34,1.56,.64,1) both',
+      boxShadow:`0 8px 32px ${ms.color}44`,
+    }}>
+      <div style={{fontSize:'36px',lineHeight:1,marginBottom:'4px'}}>{ms.emoji}</div>
+      <div style={{fontFamily:'var(--fd)',fontSize:'20px',fontWeight:900,color:'#fff'}}>{ms.label}</div>
+      <div style={{fontSize:'12px',color:'rgba(255,255,255,.7)',marginTop:'3px'}}>{ms.sub}</div>
+    </div>
+  );
+}
+
 function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExit, backLabel, t }) {
   const total = steps.length;
   const attemptedCount = progress?.answers ? Object.keys(progress.answers).length : 0;
   const isComplete = !!progress?.completedAt;
 
-  const [view,     setView]     = useState('intro'); // intro | lesson | complete
-  const [idx,      setIdx]      = useState(0);
-  const [answers,  setAnswers]  = useState(progress?.answers || {});
+  const [view,          setView]          = useState('intro'); // intro | lesson | complete
+  const [idx,           setIdx]           = useState(0);
+  const [answers,       setAnswers]       = useState(progress?.answers || {});
+  // streak: consecutive correct answers in this session (reset on wrong answer or retake)
+  const [streak,        setStreak]        = useState(0);
+  // toastStreak: the streak value that triggered the current toast (so re-renders don't re-show it)
+  const [toastStreak,   setToastStreak]   = useState(0);
+  const [showFireworks, setShowFireworks] = useState(false);
+
+  const { playCorrect, playWrong, playStreak } = useSoundEngine();
 
   // selected/locked are derived from answers+idx rather than tracked as their
   // own state — this is what makes Previous/Next safe: jumping to any step
@@ -593,6 +794,10 @@ function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExi
   const locked   = !!currentAnswer;
 
   const resolvedBackLabel = backLabel || t('p_back_to_topics');
+
+  // Whether the last answered question was a new answer (not a revisit)
+  // — used to decide whether to update the streak on this render.
+  const lastAnsweredStep = useRef(null);
 
   if (!module || !total) {
     return (
@@ -613,6 +818,7 @@ function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExi
 
   const retake = () => {
     setAnswers({});
+    setStreak(0); setToastStreak(0); setShowFireworks(false);
     onSave({ startedAt:new Date().toISOString(), completedAt:null, attempted:0, correct:0, incorrect:0, completionPct:0, answers:{} });
     begin(0);
   };
@@ -633,18 +839,28 @@ function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExi
       questionNumber: step['Step Number'], answerGiven: step[`Option ${letter}`] || letter,
       correctAnswer: step[`Option ${step['Correct Option']}`] || step['Correct Option'], isCorrect,
     });
+
+    // ── Sound + streak ──
+    if (isCorrect) {
+      playCorrect();
+      const nextStreak = streak + 1;
+      setStreak(nextStreak);
+      // Check milestone: 5, 8, 10, 12, 15, 20 …
+      const isMilestone = [5,8,10,12,15,20].includes(nextStreak) ||
+        (nextStreak > 12 && nextStreak % 5 === 0);
+      if (isMilestone) {
+        playStreak(nextStreak);
+        setToastStreak(nextStreak);
+        if (nextStreak % 10 === 0) setShowFireworks(true);
+      }
+    } else {
+      playWrong();
+      setStreak(0); // break the streak
+    }
   };
 
-  // Forward to the next question, or finish if this was the last one.
-  // Jumping forward never skips an unanswered question — Next is disabled
-  // until the current one is locked (see the button below), so by the time
-  // this runs idx+1 is always either already-answered (revisited) or fresh.
   const goNext = () => { if (idx + 1 < total) setIdx(idx+1); else finish(); };
-
-  // Step back to review or re-see a previous question. Always allowed —
-  // reviewing past answers doesn't affect completion.
   const goPrev = () => { if (idx > 0) setIdx(idx-1); };
-
   const finish = () => { onSave({ completedAt:new Date().toISOString(), completionPct:100 }); setView('complete'); };
 
   // ── INTRO ──
@@ -685,8 +901,6 @@ function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExi
       : pct>=70 ? t('p_great_job')
       : pct>=50 ? t('p_nice_effort')
       : t('p_good_try');
-    // Group the concept recap by Learning Section (falls back to one flat group if a
-    // module doesn't define sections, e.g. older/simpler modules).
     const conceptGroups = [];
     steps.forEach(s => {
       const label = s['Learning Section'] || null;
@@ -700,6 +914,15 @@ function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExi
         <div className="card">
           <div className="lp-score-ring"><span className="n">{correctCount}/{total}</span><span className="l">{pct}% {t('p_pct_correct')}</span></div>
           <p className="lp-encourage">{encourage}</p>
+          {/* Session streak summary */}
+          {streak >= 5 && (
+            <div style={{
+              textAlign:'center',padding:'10px 0 4px',
+              fontSize:'13px',color:'var(--teal)',fontWeight:700,
+            }}>
+              🔥 Best streak this session: {streak} correct in a row!
+            </div>
+          )}
           <div className="sec-divider">{t('p_concepts_learned')}</div>
           {conceptGroups.map((g,gi) => (
             <div key={gi} style={g.label?{marginBottom:'14px'}:undefined}>
@@ -739,90 +962,140 @@ function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExi
   const opts = ['A','B','C','D'];
   const answeredCount = Object.keys(answers).length;
   const progressPct = total ? Math.round((answeredCount/total)*100) : 0;
-  // Dots work well as a visual progress map for shorter modules, but at 30-50
-  // questions (e.g. the Nouns module) they become too small to tap reliably
-  // on mobile and don't convey much at a glance. Past that threshold, swap
-  // to a compact "Jump to question" dropdown — same ability to revisit any
-  // previously-answered question, just a usable control at any length.
   const useDotNav = total <= 20;
+
+  // Streak indicator pill shown inside the lesson card header
+  const streakPill = streak >= 3 ? (
+    <div style={{
+      display:'inline-flex',alignItems:'center',gap:'5px',
+      padding:'3px 11px',borderRadius:'100px',
+      background: streak>=10?'rgba(245,166,35,.18)': streak>=8?'rgba(168,85,247,.18)':'rgba(249,115,22,.18)',
+      border: `1px solid ${streak>=10?'rgba(245,166,35,.4)':streak>=8?'rgba(168,85,247,.4)':'rgba(249,115,22,.35)'}`,
+      color: streak>=10?'#f5a623':streak>=8?'#c084fc':'#f97316',
+      fontSize:'12px',fontWeight:800,
+    }}>
+      🔥 {streak} in a row
+    </div>
+  ) : null;
+
   return (
-    <div className="content">
-      <button className="lp-back" onClick={onExit}><i className="fa-solid fa-arrow-left" /> {resolvedBackLabel}</button>
-      <div className="card">
-        <div className="lp-step-lbl">{step['Learning Section'] || module.Title}</div>
-        <div className="lp-qcounter-row">
-          <span className="lp-qcounter">{t('p_question_of', {n: idx+1, total})}</span>
-          <span className="lp-qpct">{t('p_progress_pct', {pct: progressPct})}</span>
+    <>
+      {/* Fireworks overlay — fixed, pointer-events:none so it never blocks interaction */}
+      <FireworksOverlay active={showFireworks} onDone={()=>setShowFireworks(false)} />
+
+      {/* Streak toast — non-blocking, auto-dismisses */}
+      {toastStreak > 0 && (
+        <StreakToast streak={toastStreak} onDone={()=>setToastStreak(0)} />
+      )}
+
+      {/* ── Full-screen mobile-first question card ── */}
+      <div className="lp-fullscreen">
+        {/* ── Header bar: back + module title + streak pill ── */}
+        <div className="lp-fs-header">
+          <button className="lp-fs-back" onClick={onExit} aria-label={resolvedBackLabel}>
+            <i className="fa-solid fa-arrow-left" />
+          </button>
+          <div className="lp-fs-title">{step['Learning Section'] || module.Title}</div>
+          {streakPill}
         </div>
-        {/* Progress reflects questions actually answered, not just how far idx has
-            moved — important now that Previous/Next can move idx around freely
-            without that meaning more questions were answered. */}
-        <div className="lp-bar-outer"><div className="lp-bar-fill" style={{width:`${progressPct}%`}} /></div>
-        {useDotNav ? (
-          <div className="lp-dots">
-            {steps.map((s,i) => {
-              const a = answers[s['Step Number']];
-              let cls = 'lp-dot';
-              if (i === idx) cls += ' current';
-              else if (a) cls += a.isCorrect ? ' correct' : ' incorrect';
-              return <button key={s['Step Number']} className={cls} onClick={()=>setIdx(i)} aria-label={`${t('p_aria_question', {n: i+1})}${a?(a.isCorrect?t('p_aria_answered_correctly'):t('p_aria_answered_incorrectly')):t('p_aria_not_yet_answered')}`} />;
-            })}
+
+        {/* ── Progress bar + counter ── */}
+        <div className="lp-fs-progress-wrap">
+          <div className="lp-bar-outer lp-fs-bar">
+            <div className="lp-bar-fill" style={{width:`${progressPct}%`}} />
           </div>
-        ) : (
-          <select
-            className="lp-jump-select"
-            aria-label={t('p_jump_to_question')}
-            value={idx}
-            onChange={e => setIdx(Number(e.target.value))}
-          >
-            {steps.map((s,i) => {
-              const a = answers[s['Step Number']];
-              const status = a ? (a.isCorrect ? '✓' : '✗') : '○';
-              return <option key={s['Step Number']} value={i}>{status} {t('p_question_of', {n: i+1, total})}</option>;
-            })}
-          </select>
-        )}
-        <div className="lp-teach"><i className="fa-solid fa-lightbulb" /><p>{step.Teaching}</p></div>
-        <div className="lp-q">{step.Question}</div>
-        <div className="lp-opts">
+          <div className="lp-fs-counter">
+            <span className="lp-qcounter">{t('p_question_of', {n: idx+1, total})}</span>
+            <span className="lp-qpct">{progressPct}% done</span>
+          </div>
+        </div>
+
+        {/* ── Dot / dropdown nav ── */}
+        <div className="lp-fs-nav-wrap">
+          {useDotNav ? (
+            <div className="lp-dots">
+              {steps.map((s,i) => {
+                const a = answers[s['Step Number']];
+                let cls = 'lp-dot';
+                if (i === idx) cls += ' current';
+                else if (a) cls += a.isCorrect ? ' correct' : ' incorrect';
+                return <button key={s['Step Number']} className={cls} onClick={()=>setIdx(i)} aria-label={`Q${i+1}`} />;
+              })}
+            </div>
+          ) : (
+            <select className="lp-jump-select" value={idx} onChange={e=>setIdx(Number(e.target.value))}>
+              {steps.map((s,i) => {
+                const a = answers[s['Step Number']];
+                const status = a ? (a.isCorrect ? '✓' : '✗') : '○';
+                return <option key={s['Step Number']} value={i}>{status} {t('p_question_of', {n: i+1, total})}</option>;
+              })}
+            </select>
+          )}
+        </div>
+
+        {/* ── Teaching fact ── */}
+        <div className="lp-fs-teach">
+          <i className="fa-solid fa-lightbulb lp-fs-teach-icon" />
+          <p>{step.Teaching}</p>
+        </div>
+
+        {/* ── Question ── */}
+        <div className="lp-fs-question">{step.Question}</div>
+
+        {/* ── Options — 2-column grid, full-width on mobile ── */}
+        <div className="lp-fs-opts">
           {opts.map(letter => {
             const text = step[`Option ${letter}`];
             if (!text) return null;
-            let cls = 'lp-opt';
+            let cls = 'lp-fs-opt';
             if (locked && letter === step['Correct Option']) cls += ' correct';
-            else if (locked && letter === selected) cls += ' incorrect';
+            else if (locked && letter === selected)         cls += ' incorrect';
             return (
-              <button key={letter} className={cls} disabled={locked} onClick={() => choose(letter)}>
-                <span className="lp-letter">{letter}</span>{text}
+              <button key={letter} className={cls} disabled={locked} onClick={()=>choose(letter)}>
+                <span className="lp-fs-letter">{letter}</span>
+                <span className="lp-fs-opt-text">{text}</span>
               </button>
             );
           })}
         </div>
+
+        {/* ── Feedback panel (shown after answering) ── */}
         {locked && (
-          <div className={`lp-feedback ${selected===step['Correct Option']?'good':'bad'}`}>
-            <i className={`fa-solid ${selected===step['Correct Option']?'fa-circle-check':'fa-circle-info'}`} />
-            <p><strong>{selected===step['Correct Option']?t('p_correct_excl'):t('p_not_quite')}</strong>{step.Explanation}</p>
-            {step['Learn More URL'] && (
-              <a className="lp-learnmore" href={step['Learn More URL']} target="_blank" rel="noopener noreferrer">
-                <i className="fa-solid fa-book-open" /> {step['Learn More Label'] || t('p_learn_more')} <i className="fa-solid fa-arrow-up-right-from-square" />
-              </a>
-            )}
+          <div className={`lp-fs-feedback ${selected===step['Correct Option']?'good':'bad'}`}>
+            <i className={`fa-solid ${selected===step['Correct Option']?'fa-circle-check':'fa-circle-xmark'} lp-fs-fb-icon`} />
+            <div>
+              <strong>{selected===step['Correct Option']?t('p_correct_excl'):t('p_not_quite')}</strong>
+              <span> {step.Explanation}</span>
+              {step['Learn More URL'] && (
+                <div style={{marginTop:'8px'}}>
+                  <a className="lp-learnmore" href={step['Learn More URL']} target="_blank" rel="noopener noreferrer">
+                    <i className="fa-solid fa-book-open" /> {step['Learn More Label'] || t('p_learn_more')} <i className="fa-solid fa-arrow-up-right-from-square" />
+                  </a>
+                </div>
+              )}
+            </div>
           </div>
         )}
-        <div className="lp-nav-row">
-          <button className="btn-outline" onClick={goPrev} disabled={idx===0} style={idx===0?{opacity:.4,cursor:'not-allowed'}:{}}>
+
+        {/* ── Nav row: Previous | Next / Finish ── */}
+        <div className="lp-nav-row lp-fs-nav-row">
+          <button className="btn-outline" onClick={goPrev} disabled={idx===0} style={idx===0?{opacity:.35,cursor:'not-allowed'}:{}}>
             <i className="fa-solid fa-arrow-left" /> {t('p_previous')}
           </button>
           {answeredCount >= total ? (
-            <button className="btn-t" onClick={finish}>{t('p_finish_topic')} <i className="fa-solid fa-flag-checkered" /></button>
+            <button className="btn-t" onClick={finish}>
+              {t('p_finish_topic')} <i className="fa-solid fa-flag-checkered" />
+            </button>
           ) : (
-            <button className="btn-t" onClick={goNext} disabled={!locked} style={!locked?{opacity:.4,cursor:'not-allowed'}:{}}>
-              {idx+1 < total ? <>{t('p_next_question')} <i className="fa-solid fa-arrow-right" /></> : <>{t('p_answer_to_continue')} <i className="fa-solid fa-arrow-right" /></>}
+            <button className="btn-t" onClick={goNext} disabled={!locked} style={!locked?{opacity:.35,cursor:'not-allowed'}:{}}>
+              {idx+1<total
+                ? <>{t('p_next_question')} <i className="fa-solid fa-arrow-right" /></>
+                : <>{t('p_answer_to_continue')} <i className="fa-solid fa-arrow-right" /></>}
             </button>
           )}
         </div>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -892,6 +1165,14 @@ function PortalInner() {
   const [learnProgress,  setLearnProgress]  = useState({});
   const [leaderboard,    setLeaderboard]    = useState({ overall:[], bySubject:{} });
   const [leaderboardLoading, setLeaderboardLoading] = useState(false);
+  // Time-window filter for the leaderboard: 0 = all time, 7 = last 7 days, etc.
+  const [lbDays, setLbDays] = useState(30); // default: last 30 days
+  // Daily questions-attempted board — derived locally from learnProgress
+  // (no extra API call needed: every module's attempted count + startedAt is
+  // already in localStorage and synced from the Sheet on login).
+  // Populated once per session from /api/student/leaderboard which already
+  // returns per-student data; we also build a local "today" count from
+  // learnProgress for the current student so it's always up-to-date.
   // Real per-student data fetched post-login. null = loading/not-yet-fetched.
   // Falls back to cfg FALLBACK gracefully if the API is unreachable.
   const [realSubjects,    setRealSubjects]    = useState(null);
@@ -1848,6 +2129,60 @@ function PortalInner() {
     .lp-mistake-row{font-size:12.5px;color:rgba(255,255,255,.6);margin-bottom:3px;}
     .lp-actions{display:flex;gap:12px;justify-content:center;margin-top:24px;flex-wrap:wrap;}
     @media(max-width:640px){.lm-grid{grid-template-columns:1fr;}.asgn-subj-grid{grid-template-columns:1fr;}.lp-opts{grid-template-columns:1fr;}.lp-hero{padding:28px 18px;}.lp-nav-row{flex-wrap:wrap;}.lp-nav-row button{flex:1;justify-content:center;min-width:130px;}}
+    /* ── Streak toast pop animation ── */
+    @keyframes streakPop{from{opacity:0;transform:translateX(-50%) scale(.7) translateY(-12px)}to{opacity:1;transform:translateX(-50%) scale(1) translateY(0)}}
+    /* ── Full-screen mobile-first question layout ── */
+    .lp-fullscreen{display:flex;flex-direction:column;min-height:100vh;padding:0;background:var(--navy);}
+    .lp-fs-header{display:flex;align-items:center;gap:12px;padding:14px 16px 10px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--navy);z-index:10;flex-shrink:0;}
+    .lp-fs-back{width:38px;height:38px;border-radius:10px;border:1px solid var(--border);background:rgba(255,255,255,.04);color:rgba(255,255,255,.7);font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s;}
+    .lp-fs-back:hover{background:rgba(255,255,255,.1);color:#fff;}
+    .lp-fs-title{flex:1;font-family:var(--fd);font-size:15px;font-weight:800;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .lp-fs-progress-wrap{padding:10px 16px 0;}
+    .lp-fs-bar{margin-bottom:4px;}
+    .lp-fs-counter{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:4px;}
+    .lp-fs-nav-wrap{padding:4px 16px 8px;}
+    .lp-fs-teach{background:rgba(0,198,167,.07);border:1px solid rgba(0,198,167,.18);border-radius:14px;padding:16px 18px;margin:0 16px 14px;display:flex;gap:12px;align-items:flex-start;}
+    .lp-fs-teach-icon{color:var(--teal);font-size:16px;margin-top:2px;flex-shrink:0;}
+    .lp-fs-teach p{font-size:14px;color:#fff;line-height:1.7;}
+    .lp-fs-question{font-family:var(--fd);font-size:18px;font-weight:900;color:#fff;line-height:1.5;padding:0 16px 16px;}
+    /* Options: 2-col on tablet+, 1-col on narrow mobile */
+    .lp-fs-opts{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:0 16px 14px;}
+    .lp-fs-opt{background:var(--surf2);border:1.5px solid var(--border);border-radius:14px;padding:14px 14px;text-align:left;font-family:var(--fb);font-size:14px;font-weight:600;color:rgba(255,255,255,.85);cursor:pointer;transition:all .15s;display:flex;align-items:flex-start;gap:11px;min-height:64px;}
+    .lp-fs-opt:hover:not(:disabled){border-color:rgba(0,198,167,.45);background:rgba(0,198,167,.05);}
+    .lp-fs-opt:disabled{cursor:default;}
+    .lp-fs-letter{width:26px;height:26px;border-radius:8px;background:rgba(255,255,255,.09);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex-shrink:0;margin-top:1px;}
+    .lp-fs-opt-text{flex:1;line-height:1.5;}
+    .lp-fs-opt.correct{border-color:rgba(34,197,94,.55);background:rgba(34,197,94,.1);color:#4ade80;}
+    .lp-fs-opt.correct .lp-fs-letter{background:#22c55e;color:#fff;}
+    .lp-fs-opt.incorrect{border-color:rgba(239,68,68,.55);background:rgba(239,68,68,.1);color:#f87171;}
+    .lp-fs-opt.incorrect .lp-fs-letter{background:#ef4444;color:#fff;}
+    .lp-fs-feedback{border-radius:14px;padding:14px 18px;margin:0 16px 16px;display:flex;gap:12px;align-items:flex-start;font-size:13.5px;line-height:1.6;color:rgba(255,255,255,.85);}
+    .lp-fs-feedback.good{background:rgba(34,197,94,.09);border:1px solid rgba(34,197,94,.28);}
+    .lp-fs-feedback.bad{background:rgba(239,68,68,.09);border:1px solid rgba(239,68,68,.28);}
+    .lp-fs-fb-icon{font-size:20px;margin-top:2px;flex-shrink:0;}
+    .lp-fs-feedback.good .lp-fs-fb-icon{color:#4ade80;}
+    .lp-fs-feedback.bad  .lp-fs-fb-icon{color:#f87171;}
+    .lp-fs-nav-row{padding:4px 16px 24px;gap:10px;}
+    .lp-fs-nav-row button{flex:1;}
+    @media(max-width:480px){
+      .lp-fs-opts{grid-template-columns:1fr;}
+      .lp-fs-question{font-size:16px;}
+      .lp-fs-teach p{font-size:13px;}
+    }
+    /* ── Daily board ── */
+    .daily-row{display:flex;align-items:center;gap:14px;padding:10px 14px;border-radius:11px;background:var(--surf2);border:1px solid transparent;transition:all .15s;margin-bottom:8px;}
+    .daily-row.me{border-color:rgba(245,166,35,.4);background:rgba(245,166,35,.07);}
+    .daily-rank{width:28px;height:28px;border-radius:50%;background:rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:rgba(255,255,255,.55);flex-shrink:0;}
+    .daily-rank.top1{background:rgba(245,166,35,.18);color:#f5a623;}
+    .daily-rank.top2{background:rgba(203,213,225,.18);color:#cbd5e1;}
+    .daily-rank.top3{background:rgba(217,119,6,.18);color:#d97706;}
+    .daily-name{flex:1;font-size:13px;font-weight:700;color:#fff;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .daily-stats{display:flex;gap:12px;font-size:11.5px;color:var(--muted);flex-shrink:0;}
+    /* ── Leaderboard time-filter pills ── */
+    .lb-filter-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;}
+    .lb-pill{padding:5px 14px;border-radius:100px;font-family:var(--fb);font-size:12px;font-weight:700;cursor:pointer;transition:all .15s;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);color:rgba(255,255,255,.55);}
+    .lb-pill.active{background:var(--teal);color:#0a0f2c;border-color:var(--teal);}
+    .lb-pill:hover:not(.active){background:rgba(255,255,255,.1);color:rgba(255,255,255,.85);}
   `;
 
   const mergedProfile = [
@@ -2056,69 +2391,196 @@ function PortalInner() {
             {tab==='leaderboard' && (<>
               <div className="main-top"><div><div className="pg-h">{t('p_leaderboard_title')}</div><div className="pg-s">{t('p_leaderboard_subtitle')}</div></div></div>
               <div className="content">
-                <div className="card" style={{marginBottom:'22px'}}>
-                  <div className="card-t"><i className="fa-solid fa-trophy" /> {t('p_overall_ranking')}</div>
-                  {leaderboardLoading ? (
-                    <>{[1,2,3].map(i=><div key={i} style={{marginBottom:'10px'}}><SK h="44px" /></div>)}</>
-                  ) : !leaderboard.overall.length ? (
-                    <div style={{textAlign:'center',color:'var(--muted)',fontSize:'13px',padding:'20px 0'}}>{t('p_no_leaderboard')}</div>
-                  ) : (
-                    <div className="lb-list">
-                      {leaderboard.overall.slice(0,20).map((row,i)=>{
-                        const rank = i+1;
-                        const isMe = row.studentId === profile.id;
-                        return (
-                          <div key={row.studentId} className={`lb-row${isMe?' me':''}`}>
-                            <div className={`lb-rank${rank<=3?` top${rank}`:''}`}>{rank<=3 ? <i className="fa-solid fa-trophy" /> : rank}</div>
-                            <div className="lb-name">{row.studentName}{isMe && <span className="lb-you">{t('p_you_suffix')}</span>}</div>
-                            <div className="lb-stats"><span className="lb-correct">{row.correct} {t('p_correct')}</span><span className="lb-acc">{row.accuracy}% {t('p_accuracy')}</span></div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
 
-                <div className="sec-divider" style={{marginTop:0}}>{t('p_subject_champions')}</div>
-                {leaderboardLoading ? (
-                  <div className="card"><SK h="80px" /></div>
-                ) : !Object.keys(leaderboard.bySubject).length ? (
-                  <div className="card" style={{textAlign:'center',color:'var(--muted)',fontSize:'13px'}}>{t('p_no_subject_rankings')}</div>
-                ) : (
-                  <div className="lb-subj-grid">
-                    {Object.entries(leaderboard.bySubject).map(([subject, rows]) => {
-                      const champ = rows[0];
-                      // `subject` here is whatever the backend recorded — always the canonical
-                      // English name now (see LearningModulePlayer's onAnswer call), regardless
-                      // of which language the student answered in. Match against SubjectEN so
-                      // the icon/color resolve correctly, but fall back to matching Subject
-                      // directly for any older records that might predate this fix.
-                      const subjMeta = ASGN_SUBJ.find(s=>s.SubjectEN===subject) || ASGN_SUBJ.find(s=>s.Subject===subject);
-                      const subjectDisplay = subjMeta?.Subject || subject;
-                      return (
-                        <div key={subject} className="card lb-subj-card">
-                          <div className="card-t"><i className={`fa-solid ${subjMeta?.['Icon (FontAwesome solid)']||'fa-medal'}`} style={{color:subjMeta?.['Color (Hex)']}} /> {subjectDisplay} {t('p_champion')}</div>
-                          {champ ? (
-                            <>
-                              <div className="lb-champ-name">{champ.studentName}</div>
-                              <div className="lb-champ-stats">{champ.correct} {t('p_correct')} · {champ.accuracy}% {t('p_accuracy')}</div>
-                              {rows.length>1 && (
-                                <div className="lb-runner-ups">
-                                  {rows.slice(1,4).map((r,i)=>(
-                                    <div key={r.studentId} className="lb-runner-row">
-                                      <span>{i+2}. {r.studentName}{r.studentId===profile.id?t('p_you_suffix'):''}</span>
-                                      <span>{r.correct} {t('p_correct')}</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                            </>
-                          ) : <div style={{color:'var(--muted)',fontSize:'13px'}}>{t('p_no_attempts_yet')}</div>}
+                {/* ── TIME FILTER PILLS ───────────────────────────────────── */}
+                {(() => {
+                  const opts = [
+                    { days:1,   label:'Today'    },
+                    { days:7,   label:'7 Days'   },
+                    { days:30,  label:'30 Days'  },
+                    { days:90,  label:'3 Months' },
+                    { days:0,   label:'All Time' },
+                  ];
+                  // Filter a leaderboard row array to only those whose
+                  // lastActivity falls within [now - days*86400000, now].
+                  // If days===0, no filter is applied.
+                  const cutoff = lbDays > 0 ? Date.now() - lbDays * 86400000 : 0;
+                  const filterRows = rows => lbDays === 0 ? rows
+                    : rows.filter(r => {
+                        if (!r.lastActivity) return false;
+                        return new Date(r.lastActivity).getTime() >= cutoff;
+                      });
+
+                  const filteredOverall  = filterRows(leaderboard.overall);
+                  const filteredBySubject = Object.fromEntries(
+                    Object.entries(leaderboard.bySubject).map(([s,rows]) => [s, filterRows(rows)])
+                  );
+
+                  // ── DAILY QUESTIONS-ATTEMPTED BOARD ───────────────────────
+                  // Build from leaderboard.overall where lastActivity is today,
+                  // keyed by questions attempted that day. Falls back gracefully
+                  // if the API doesn't return lastActivity (older script versions).
+                  const todayStr = new Date().toISOString().slice(0,10);
+                  const todayCutoff = new Date(todayStr).getTime();
+                  const dailyRows = leaderboard.overall
+                    .filter(r => r.lastActivity && new Date(r.lastActivity).getTime() >= todayCutoff)
+                    .map(r => ({ ...r, todayAttempted: r.todayAttempted ?? r.attempted ?? 0 }))
+                    .sort((a,b) => b.todayAttempted - a.todayAttempted)
+                    .slice(0, 20);
+
+                  return (
+                    <>
+                      {/* Time filter pills */}
+                      <div className="lb-filter-row" style={{marginBottom:'20px'}}>
+                        <span style={{fontSize:'11px',fontWeight:700,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--muted)',alignSelf:'center',marginRight:'4px'}}>Period:</span>
+                        {opts.map(o => (
+                          <button key={o.days} className={`lb-pill${lbDays===o.days?' active':''}`} onClick={()=>setLbDays(o.days)}>
+                            {o.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      {/* ── DAILY QUESTIONS-ATTEMPTED BOARD ── */}
+                      <div className="card" style={{marginBottom:'22px'}}>
+                        <div className="card-t">
+                          <i className="fa-solid fa-bolt" style={{color:'#f5a623'}} /> Today's Activity — Questions Attempted
+                          <span style={{marginLeft:'auto',fontSize:'11px',fontWeight:400,color:'var(--muted)'}}>{todayStr}</span>
                         </div>
-                      );
-                    })}
-                  </div>
-                )}
+                        {leaderboardLoading ? (
+                          <>{[1,2,3].map(i=><div key={i} style={{marginBottom:'8px'}}><SK h="40px" /></div>)}</>
+                        ) : !dailyRows.length ? (
+                          <div style={{textAlign:'center',color:'var(--muted)',fontSize:'13px',padding:'18px 0'}}>
+                            No activity recorded today yet — be the first! 🚀
+                          </div>
+                        ) : (
+                          <>
+                            {dailyRows.slice(0,10).map((row,i) => {
+                              const rank = i+1;
+                              const isMe = row.studentId === profile.id;
+                              return (
+                                <div key={row.studentId} className={`daily-row${isMe?' me':''}`}>
+                                  <div className={`daily-rank${rank<=3?` top${rank}`:''}`}>
+                                    {rank<=3 ? <i className="fa-solid fa-bolt" /> : rank}
+                                  </div>
+                                  <div className="daily-name">
+                                    {row.studentName}
+                                    {isMe && <span style={{color:'var(--accent)',fontWeight:800,marginLeft:'6px'}}>(You)</span>}
+                                  </div>
+                                  <div className="daily-stats">
+                                    <span style={{fontWeight:700,color:isMe?'var(--accent)':'rgba(255,255,255,.75)'}}>
+                                      {row.todayAttempted} attempted
+                                    </span>
+                                    <span style={{color:'var(--teal)',fontWeight:700}}>
+                                      {row.accuracy}% acc
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            {/* Current student's own today count from live learnProgress */}
+                            {(() => {
+                              const myToday = Object.values(learnProgress).reduce((s,p) => {
+                                if (!p?.startedAt) return s;
+                                return new Date(p.startedAt).getTime() >= todayCutoff ? s + (p.attempted||0) : s;
+                              }, 0);
+                              if (!myToday || dailyRows.find(r=>r.studentId===profile.id)) return null;
+                              return (
+                                <div className="daily-row me" style={{marginTop:'8px',borderTop:'1px solid var(--border)',paddingTop:'10px'}}>
+                                  <div className="daily-rank">—</div>
+                                  <div className="daily-name">{profile.name} <span style={{color:'var(--accent)',fontWeight:800}}>(You)</span></div>
+                                  <div className="daily-stats">
+                                    <span style={{fontWeight:700,color:'var(--accent)'}}>{myToday} attempted</span>
+                                    <span style={{color:'var(--muted)',fontSize:'11px'}}>local</span>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </>
+                        )}
+                      </div>
+
+                      {/* ── OVERALL RANKING (time-filtered) ── */}
+                      <div className="card" style={{marginBottom:'22px'}}>
+                        <div className="card-t">
+                          <i className="fa-solid fa-trophy" /> {t('p_overall_ranking')}
+                          <span style={{marginLeft:'auto',fontSize:'11px',fontWeight:400,color:'var(--muted)'}}>
+                            {lbDays===0?'All time':lbDays===1?'Today':`Last ${lbDays} days`}
+                          </span>
+                        </div>
+                        {leaderboardLoading ? (
+                          <>{[1,2,3].map(i=><div key={i} style={{marginBottom:'10px'}}><SK h="44px" /></div>)}</>
+                        ) : !filteredOverall.length ? (
+                          <div style={{textAlign:'center',color:'var(--muted)',fontSize:'13px',padding:'20px 0'}}>
+                            No activity in this period. Try "All Time" to see all rankings.
+                          </div>
+                        ) : (
+                          <div className="lb-list">
+                            {filteredOverall.slice(0,20).map((row,i)=>{
+                              const rank = i+1;
+                              const isMe = row.studentId === profile.id;
+                              return (
+                                <div key={row.studentId} className={`lb-row${isMe?' me':''}`}>
+                                  <div className={`lb-rank${rank<=3?` top${rank}`:''}`}>{rank<=3 ? <i className="fa-solid fa-trophy" /> : rank}</div>
+                                  <div className="lb-name">{row.studentName}{isMe && <span className="lb-you">{t('p_you_suffix')}</span>}</div>
+                                  <div className="lb-stats">
+                                    <span className="lb-correct">{row.correct} {t('p_correct')}</span>
+                                    <span className="lb-acc">{row.accuracy}% {t('p_accuracy')}</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* ── SUBJECT CHAMPIONS (time-filtered) ── */}
+                      <div className="sec-divider" style={{marginTop:0}}>
+                        {t('p_subject_champions')}
+                        <span style={{marginLeft:'8px',fontWeight:400,fontSize:'10px',color:'var(--muted)'}}>
+                          {lbDays===0?'All time':lbDays===1?'Today':`Last ${lbDays} days`}
+                        </span>
+                      </div>
+                      {leaderboardLoading ? (
+                        <div className="card"><SK h="80px" /></div>
+                      ) : !Object.keys(filteredBySubject).length ? (
+                        <div className="card" style={{textAlign:'center',color:'var(--muted)',fontSize:'13px'}}>{t('p_no_subject_rankings')}</div>
+                      ) : (
+                        <div className="lb-subj-grid">
+                          {Object.entries(filteredBySubject).map(([subject, rows]) => {
+                            const champ = rows[0];
+                            const subjMeta = ASGN_SUBJ.find(s=>s.SubjectEN===subject) || ASGN_SUBJ.find(s=>s.Subject===subject);
+                            const subjectDisplay = subjMeta?.Subject || subject;
+                            return (
+                              <div key={subject} className="card lb-subj-card">
+                                <div className="card-t"><i className={`fa-solid ${subjMeta?.['Icon (FontAwesome solid)']||'fa-medal'}`} style={{color:subjMeta?.['Color (Hex)']}} /> {subjectDisplay} {t('p_champion')}</div>
+                                {champ ? (
+                                  <>
+                                    <div className="lb-champ-name">{champ.studentName}</div>
+                                    <div className="lb-champ-stats">{champ.correct} {t('p_correct')} · {champ.accuracy}% {t('p_accuracy')}</div>
+                                    {rows.length>1 && (
+                                      <div className="lb-runner-ups">
+                                        {rows.slice(1,4).map((r,ri)=>(
+                                          <div key={r.studentId} className="lb-runner-row">
+                                            <span>{ri+2}. {r.studentName}{r.studentId===profile.id?t('p_you_suffix'):''}</span>
+                                            <span>{r.correct} {t('p_correct')}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </>
+                                ) : (
+                                  <div style={{color:'var(--muted)',fontSize:'13px'}}>
+                                    {lbDays > 0 ? `No activity in the last ${lbDays} day${lbDays===1?'':'s'}` : t('p_no_attempts_yet')}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             </>)}
 
