@@ -1155,6 +1155,10 @@ function PortalInner() {
   const [profileEdit, setProfileEdit] = useState(false);
   const [saving,      setSaving]      = useState(null); // 'profile' | 'password' | null
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  // ── Announcement strip: fetched from a Google Doc URL stored in the
+  // master sheet under key "AnnouncementDocUrl" (Settings tab).
+  // Non-critical — if unavailable the strip simply stays hidden.
+  const [announcementText, setAnnouncementText] = useState('');
   const [notifs,      setNotifs]      = useState(FALLBACK.notifications.filter(n=>isRowActive(n.Active)));
   const [activeModuleId, setActiveModuleId] = useState(null);
   const [activeAssignmentSubject, setActiveAssignmentSubject] = useState(null);
@@ -1256,6 +1260,9 @@ function PortalInner() {
           learningSteps: requestLang === 'da'
             ? danishFallback.learningSteps
             : (data.learningSteps?.length   ? data.learningSteps   : base.learningSteps),
+          // Config tab key-value object — passed straight through; no fallback
+          // needed (missing keys just return undefined, callers guard with ||'')
+          config: data.config || {},
         };
         setCfg(merged);
         setNotifs(merged.notifications.filter(n=>isRowActive(n.Active)));
@@ -1271,6 +1278,21 @@ function PortalInner() {
           const cl = merged.profileFields.find(f => f['Field Key'] === 'class_level');
           return { ...p, classLevel: cl?.Value || '' };
         });
+        // ── Announcement strip: read Google Doc URL from the Config tab.
+        // data.config is the parsed { Key: Value } object from the master
+        // sheet's "Config" tab — completely separate from subject/class rows.
+        const docUrl = (data.config || {})['AnnouncementDocUrl'] || '';
+        if (docUrl && !cancelled) {
+          const exportUrl = docUrl.replace(/\/edit.*$/, '/export?format=txt');
+          fetch(`/api/proxy-doc?url=${encodeURIComponent(exportUrl)}`)
+            .then(r => r.text())
+            .then(txt => {
+              if (cancelled) return;
+              const text = txt.split('\n').map(l => l.trim()).filter(Boolean).join('  ·  ');
+              setAnnouncementText(text);
+            })
+            .catch(() => {/* non-critical */});
+        }
         setCfgReady(true);
       })
       .catch(err => {
@@ -2005,6 +2027,14 @@ function PortalInner() {
     @media(max-width:640px){.card-t-row{flex-direction:column;align-items:stretch;}.card-t-row .btn-t-sm{width:100%;justify-content:center;}}
     .btn-outline{background:transparent;border:1px solid rgba(255,255,255,.15);border-radius:10px;padding:11px 22px;color:rgba(255,255,255,.7);font-family:var(--fb);font-size:13px;font-weight:600;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;gap:7px;}
     .btn-outline:hover{border-color:var(--teal);color:var(--teal);}
+    /* ANNOUNCEMENT STRIP */
+    .ann-strip{background:linear-gradient(90deg,var(--teal) 0%,#0099cc 100%);color:#fff;font-size:12px;font-weight:600;overflow:hidden;white-space:nowrap;height:34px;display:flex;align-items:center;border-bottom:1px solid rgba(255,255,255,.1);}
+    .ann-strip-inner{display:inline-flex;align-items:center;animation:ann-scroll 35s linear infinite;}
+    .ann-strip-inner:hover{animation-play-state:paused;}
+    .ann-strip-seg{padding:0 48px;display:inline-flex;align-items:center;gap:9px;white-space:nowrap;}
+    .ann-strip-seg i{font-size:10px;opacity:.8;}
+    @keyframes ann-scroll{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+
     .wbanner{background:linear-gradient(135deg,rgba(0,198,167,.15),rgba(0,153,204,.1));border:1px solid rgba(0,198,167,.2);border-radius:var(--r);padding:22px 26px;margin-bottom:22px;display:flex;align-items:center;justify-content:space-between;gap:16px;}
     .wbanner h2{font-family:var(--fd);font-size:20px;font-weight:900;color:#fff;margin-bottom:4px;}
     .wbanner p{font-size:13px;color:rgba(255,255,255,.6);}
@@ -2270,6 +2300,20 @@ function PortalInner() {
 
           {/* MAIN */}
           <main className="main">
+
+            {/* ── ANNOUNCEMENT STRIP ── shown at the top of every tab when text is available */}
+            {announcementText && (
+              <div className="ann-strip" role="marquee" aria-label="Announcement">
+                <div className="ann-strip-inner">
+                  {[0, 1].map(k => (
+                    <span key={k} className="ann-strip-seg">
+                      <i className="fa-solid fa-bullhorn"></i>
+                      {announcementText}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Mobile-only top bar: hamburger to open the drawer. Hidden on
                 desktop via CSS (.mnav-toggle has display:none until 640px). */}

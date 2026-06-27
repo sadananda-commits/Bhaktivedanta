@@ -116,6 +116,12 @@ function HomeInner() {
   // below 900px with no way to reach Classes/Subjects/Schedule/etc. on a
   // phone. Same off-canvas-drawer fix as the Student Portal's sidebar.
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  // ── Announcement strip: text fetched from a Google Doc whose URL is stored
+  // in the master config sheet under the key "AnnouncementDocUrl".
+  // The /api/content route already reads that sheet; we piggy-back on the same
+  // cms fetch and just look for cms.announcement (a plain string).
+  // The strip is hidden when the value is empty / whitespace.
+  const [announcementText, setAnnouncementText] = useState('');
 
   // Whenever the language changes, immediately reset cms to that language's
   // fallback so the UI never shows a mix of English Sheet data and Danish
@@ -153,6 +159,21 @@ function HomeInner() {
           faqs:         data.faqs?.length                      ? data.faqs         : FALLBACK.faqs,
           contact:      Object.keys(data.contact || {}).length ? data.contact      : FALLBACK.contact,
         });
+        // ── Announcement strip: the sheet may return an AnnouncementDocUrl
+        // (a publicly-readable Google Doc). Fetch its plain-text export and
+        // use the first non-empty paragraph as the scrolling strip text.
+        const docUrl = data.announcement?.AnnouncementDocUrl || data.announcement?.announcementDocUrl || '';
+        if (docUrl && !cancelled) {
+          const exportUrl = docUrl.replace(/\/edit.*$/, '/export?format=txt');
+          fetch(`/api/proxy-doc?url=${encodeURIComponent(exportUrl)}`)
+            .then(r => r.text())
+            .then(txt => {
+              if (cancelled) return;
+              const text = txt.split('\n').map(l => l.trim()).filter(Boolean).join('  ·  ');
+              setAnnouncementText(text);
+            })
+            .catch(() => {/* non-critical — strip stays hidden */});
+        }
       })
       .catch(err => { if (!cancelled) console.warn('[cms] Fetch error, using fallback:', err.message); });
     return () => { cancelled = true; };
@@ -322,6 +343,14 @@ function HomeInner() {
           }
           html{scroll-behavior:smooth;}
           body{font-family:var(--font-b);color:var(--text);background:var(--surface-alt);-webkit-font-smoothing:antialiased;}
+
+          /* ANNOUNCEMENT STRIP */
+          .ann-strip{background:linear-gradient(90deg,var(--teal) 0%,#0099cc 100%);color:#fff;font-size:13px;font-weight:600;overflow:hidden;white-space:nowrap;height:36px;display:flex;align-items:center;position:relative;z-index:201;}
+          .ann-strip-inner{display:inline-flex;align-items:center;gap:0;animation:ann-scroll 35s linear infinite;}
+          .ann-strip-inner:hover{animation-play-state:paused;}
+          .ann-strip-seg{padding:0 60px;display:inline-flex;align-items:center;gap:10px;white-space:nowrap;}
+          .ann-strip-seg i{font-size:11px;opacity:.8;}
+          @keyframes ann-scroll{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
 
           /* NAV */
           .nav{position:sticky;top:0;z-index:200;background:rgba(10,15,44,.97);backdrop-filter:blur(14px);border-bottom:1px solid rgba(255,255,255,.07);}
@@ -619,6 +648,21 @@ function HomeInner() {
           @media(max-width:560px){.footer-in{grid-template-columns:1fr;}}
         `}</style>
       </Head>
+
+      {/* ── ANNOUNCEMENT STRIP ── */}
+      {announcementText && (
+        <div className="ann-strip" role="marquee" aria-label="Announcement">
+          {/* Duplicate the content so the scroll loop is seamless */}
+          <div className="ann-strip-inner">
+            {[0, 1].map(k => (
+              <span key={k} className="ann-strip-seg">
+                <i className="fa-solid fa-bullhorn"></i>
+                {announcementText}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── NAV ── */}
       <nav className="nav">
