@@ -257,15 +257,31 @@ export default async function handler(req, res) {
       console.log('[portal-config] No class filter — returning full dataset');
     }
 
-    // ── Fetch the two master config tabs in parallel ─────────────────────────
+    // ── Fetch the master config tabs (+ Config tab) in parallel ──────────────
     // v2: "Class Subject Map" is the primary tab (replaces both old tabs).
     // Fallback to legacy "Subject Sheet Map" + "Assignment Subjects" if the
     // new tab doesn't exist yet, so the migration is non-breaking.
-    const [classSubjectMap, legacySubjectSheetMap, legacyAssignmentSubjects] = await Promise.all([
+    const [classSubjectMap, legacySubjectSheetMap, legacyAssignmentSubjects, configRows] = await Promise.all([
       fetchTab(MASTER_SHEET_ID, 'Class Subject Map'),
       fetchTab(MASTER_SHEET_ID, 'Subject Sheet Map'),
       fetchTab(MASTER_SHEET_ID, 'Assignment Subjects'),
+      fetchTab(MASTER_SHEET_ID, 'Config'),
     ]);
+
+    // ── Parse Config tab (Key / Value rows) into a plain object ──────────────
+    // Each row: { Key: 'AnnouncementDocUrl', Value: 'https://...' }
+    // Keys are trimmed; empty-key rows are skipped.
+    const config = {};
+    for (const row of configRows) {
+      const key = (row['Key'] || row['key'] || '').trim();
+      const val = (row['Value'] || row['value'] || '').trim();
+      if (key) config[key] = val;
+    }
+    if (Object.keys(config).length) {
+      console.log(`[portal-config] ✓ Config tab loaded — keys: ${Object.keys(config).join(', ')}`);
+    } else {
+      console.log('[portal-config] ℹ Config tab is empty or not yet present — skipping.');
+    }
 
     const usingV2 = classSubjectMap.length > 0;
 
@@ -381,7 +397,7 @@ export default async function handler(req, res) {
 
     console.log(`[portal-config] ✓ After class filter: ${learningModules.length} modules, ${learningSteps.length} steps (class: "${requestedClass || 'all'}")`);
 
-    const payload = { assignmentSubjects, learningModules, learningSteps, classLevels };
+    const payload = { assignmentSubjects, learningModules, learningSteps, classLevels, config };
 
     // ── Store in cache ────────────────────────────────────────────────────────
     RESPONSE_CACHE.set(cacheKey, { data: payload, expiresAt: Date.now() + CACHE_TTL_MS });
@@ -390,6 +406,6 @@ export default async function handler(req, res) {
 
   } catch (err) {
     console.error('[portal-config] ✗ Unexpected error:', err);
-    res.status(200).json({ assignmentSubjects: [], learningModules: [], learningSteps: [], classLevels });
+    res.status(200).json({ assignmentSubjects: [], learningModules: [], learningSteps: [], classLevels, config: {} });
   }
 }
