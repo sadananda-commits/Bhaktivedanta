@@ -768,7 +768,21 @@ function StreakToast({ streak, onDone }) {
   );
 }
 
-function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExit, backLabel, t }) {
+function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExit, backLabel, soundConfig, t }) {
+  // ── Sound control from Config sheet ──────────────────────────────────────
+  // Keys in the Config tab (case-sensitive):
+  //   SoundOnCorrect        TRUE / FALSE   (default: TRUE)
+  //   SoundOnWrong          TRUE / FALSE   (default: TRUE)
+  //   SoundOnStreak         TRUE / FALSE   (default: TRUE)
+  //   StreakThreshold       number         (default: 5 — first milestone)
+  //   ShowQuestionDropdown  TRUE / FALSE   (default: FALSE — dropdown hidden)
+  // An absent key or any value other than the string 'FALSE' keeps sound ON.
+  const sc = soundConfig || {};
+  const soundOnCorrect       = (sc['SoundOnCorrect']       || 'TRUE').toString().toUpperCase() !== 'FALSE';
+  const soundOnWrong         = (sc['SoundOnWrong']         || 'TRUE').toString().toUpperCase() !== 'FALSE';
+  const soundOnStreak        = (sc['SoundOnStreak']        || 'TRUE').toString().toUpperCase() !== 'FALSE';
+  const streakThreshold      = Math.max(2, parseInt(sc['StreakThreshold'] || '5', 10) || 5);
+  const showQuestionDropdown = (sc['ShowQuestionDropdown'] || 'FALSE').toString().toUpperCase() === 'TRUE';
   const total = steps.length;
   const attemptedCount = progress?.answers ? Object.keys(progress.answers).length : 0;
   const isComplete = !!progress?.completedAt;
@@ -842,19 +856,19 @@ function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExi
 
     // ── Sound + streak ──
     if (isCorrect) {
-      playCorrect();
+      if (soundOnCorrect) playCorrect();
       const nextStreak = streak + 1;
       setStreak(nextStreak);
-      // Check milestone: 5, 8, 10, 12, 15, 20 …
-      const isMilestone = [5,8,10,12,15,20].includes(nextStreak) ||
-        (nextStreak > 12 && nextStreak % 5 === 0);
+      // Milestone fires at every multiple of streakThreshold (configurable via
+      // Config sheet key "StreakThreshold", default 5). e.g. threshold=3 → 3,6,9,12…
+      const isMilestone = nextStreak >= streakThreshold && nextStreak % streakThreshold === 0;
       if (isMilestone) {
-        playStreak(nextStreak);
+        if (soundOnStreak) playStreak(nextStreak);
         setToastStreak(nextStreak);
-        if (nextStreak % 10 === 0) setShowFireworks(true);
+        if (nextStreak % (streakThreshold * 2) === 0) setShowFireworks(true);
       }
     } else {
-      playWrong();
+      if (soundOnWrong) playWrong();
       setStreak(0); // break the streak
     }
   };
@@ -990,29 +1004,38 @@ function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExi
 
       {/* ── Full-screen mobile-first question card ── */}
       <div className="lp-fullscreen">
-        {/* ── Header bar: back + module title + streak pill ── */}
+        {/* ── Header bar: back + module title + compact counter + streak pill ── */}
         <div className="lp-fs-header">
           <button className="lp-fs-back" onClick={onExit} aria-label={resolvedBackLabel}>
             <i className="fa-solid fa-arrow-left" />
           </button>
           <div className="lp-fs-title">{step['Learning Section'] || module.Title}</div>
+          {/* Issue 1: "2 of 50" counter badge in header, small and unobtrusive */}
+          <span className="lp-fs-qcount">{idx+1} / {total}</span>
           {streakPill}
         </div>
 
-        {/* ── Progress bar + counter ── */}
+        {/* ── Slim progress bar flush under header ── */}
         <div className="lp-fs-progress-wrap">
           <div className="lp-bar-outer lp-fs-bar">
             <div className="lp-bar-fill" style={{width:`${progressPct}%`}} />
           </div>
-          <div className="lp-fs-counter">
-            <span className="lp-qcounter">{t('p_question_of', {n: idx+1, total})}</span>
-            <span className="lp-qpct">{progressPct}% done</span>
-          </div>
         </div>
 
-        {/* ── Dot / dropdown nav ── */}
+        {/* ── Scrollable body: everything between bar and bottom nav ── */}
+        <div className="lp-fs-body">
+
+        {/* ── Dot nav (always shown; dropdown only when ShowQuestionDropdown=TRUE) ── */}
         <div className="lp-fs-nav-wrap">
-          {useDotNav ? (
+          {showQuestionDropdown ? (
+            <select className="lp-jump-select" value={idx} onChange={e=>setIdx(Number(e.target.value))}>
+              {steps.map((s,i) => {
+                const a = answers[s['Step Number']];
+                const status = a ? (a.isCorrect ? '✓' : '✗') : '○';
+                return <option key={s['Step Number']} value={i}>{status} {t('p_question_of', {n: i+1, total})}</option>;
+              })}
+            </select>
+          ) : useDotNav ? (
             <div className="lp-dots">
               {steps.map((s,i) => {
                 const a = answers[s['Step Number']];
@@ -1022,25 +1045,10 @@ function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExi
                 return <button key={s['Step Number']} className={cls} onClick={()=>setIdx(i)} aria-label={`Q${i+1}`} />;
               })}
             </div>
-          ) : (
-            <select className="lp-jump-select" value={idx} onChange={e=>setIdx(Number(e.target.value))}>
-              {steps.map((s,i) => {
-                const a = answers[s['Step Number']];
-                const status = a ? (a.isCorrect ? '✓' : '✗') : '○';
-                return <option key={s['Step Number']} value={i}>{status} {t('p_question_of', {n: i+1, total})}</option>;
-              })}
-            </select>
-          )}
+          ) : null}
         </div>
 
-        {/* ── Learning Section content box ──────────────────────────────────
-            Shown when the step's 'Learning Section' field contains more than
-            just a short heading (i.e. the teacher has added explanatory text).
-            The header title already shows the section name so this box only
-            renders when there is a dedicated 'Learning Section Body' field,
-            OR when the Learning Section value is long enough to be body text
-            (> 60 chars — heuristic to distinguish "What is a seed?" from a
-            paragraph). Scrollable up to ~400 words (~420 px max-height). */}
+        {/* ── Learning Section content box ── */}
         {step['Learning Section Body'] && (
           <div className="lp-fs-learn-sec">
             <div className="lp-fs-learn-sec-hd">
@@ -1056,6 +1064,17 @@ function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExi
           <i className="fa-solid fa-lightbulb lp-fs-teach-icon" />
           <p>{step.Teaching}</p>
         </div>
+
+        {/* ── Step image — optional, shown between Teaching and the question ── */}
+        {step['Step Image URL'] && (
+          <div className="lp-fs-step-img">
+            <img
+              src={step['Step Image URL']}
+              alt="Question illustration"
+              onError={e => { e.currentTarget.parentElement.style.display='none'; }}
+            />
+          </div>
+        )}
 
         {/* ── Question ── */}
         <div className="lp-fs-question">{step.Question}</div>
@@ -1095,8 +1114,11 @@ function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExi
           </div>
         )}
 
-        {/* ── Nav row: Previous | Next / Finish ── */}
-        <div className="lp-nav-row lp-fs-nav-row">
+        {/* ── end lp-fs-body ── */}
+        </div>
+
+        {/* ── Nav row: Previous | Next / Finish — sticky at bottom, outside scroll ── */}
+        <div className="lp-nav-row lp-fs-nav-row" style={{flexShrink:0,borderTop:'1px solid var(--border)',background:'var(--navy)'}}>
           <button className="btn-outline" onClick={goPrev} disabled={idx===0} style={idx===0?{opacity:.35,cursor:'not-allowed'}:{}}>
             <i className="fa-solid fa-arrow-left" /> {t('p_previous')}
           </button>
@@ -1172,7 +1194,10 @@ function PortalInner() {
   const [uploadDone,  setUploadDone]  = useState(false);
   const [profileEdit, setProfileEdit] = useState(false);
   const [saving,      setSaving]      = useState(null); // 'profile' | 'password' | null
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [mobileNavOpen,  setMobileNavOpen]  = useState(false);
+  // ── Quiz mode sidebar: collapses when a question is active; float button
+  // re-opens it temporarily. sidebarPeeking controls the peek-open state.
+  const [sidebarPeeking, setSidebarPeeking] = useState(false);
   // ── Announcement strip: fetched from a Google Doc URL stored in the
   // master sheet under key "AnnouncementDocUrl" (Settings tab).
   // Non-critical — if unavailable the strip simply stays hidden.
@@ -1397,8 +1422,16 @@ function PortalInner() {
   // classLevelIsSet: true once the student has a recognised class set.
   // CLASS_LEVELS is the sheet-driven list of all class levels (Class 0-10 +
   // Adult, by default) returned from portal-config.js as cfg.classLevels.
-  const CLASS_LEVELS = (cfg.classLevels || []).filter(c => isRowActive(c.Active))
-    .sort((a,b) => (Number(a['Display Order'])||999) - (Number(b['Display Order'])||999));
+  // Deduplicate by Class name — the master sheet may have the same class on
+  // multiple rows (one per subject), so we keep only the first occurrence
+  // per class name after sorting by Display Order.
+  const CLASS_LEVELS = (() => {
+    const seen = new Set();
+    return (cfg.classLevels || [])
+      .filter(c => isRowActive(c.Active))
+      .sort((a,b) => (Number(a['Display Order'])||999) - (Number(b['Display Order'])||999))
+      .filter(c => { const k = (c.Class||'').trim(); if (!k || seen.has(k)) return false; seen.add(k); return true; });
+  })();
   const KNOWN_CLASSES = CLASS_LEVELS.map(c => c.Class);
   const classLevelIsSet = KNOWN_CLASSES.includes(profile.classLevel);
 
@@ -1472,11 +1505,32 @@ function PortalInner() {
   // list, keeping only subjects that actually have at least one visible
   // topic under the current selection — so a subject only offered to Class 9
   // doesn't show an empty card while previewing Class 3, and vice versa.
+  //
+  // Fix for issues 4 & 5 (duplicate subjects / forced Class 1):
+  // Previously the Map deduped by subject name but picked the first row it
+  // found regardless of class — so Mathematics from Class 1 would appear
+  // even when the student selected Class 5. Now we additionally require that
+  // the subject row's Class column matches one of the selected classes before
+  // treating it as the representative row for that subject.
   const ASSIGN_SUBJ = crossClassActive
     ? (() => {
         const visibleNames = new Set(ASSIGN_LMOD.map(m => m.Subject));
         const seen = new Map();
-        (crossSourceSubjects||[]).filter(s => isRowActive(s.Active) && visibleNames.has(s.Subject))
+        // Sort so own-class rows are preferred over other classes when the same
+        // subject exists across multiple classes (e.g. Mathematics in every class).
+        const subjectPool = [...(crossSourceSubjects||[])].sort((a,b) => {
+          const aOwn = a.Class === profile.classLevel ? 0 : 1;
+          const bOwn = b.Class === profile.classLevel ? 0 : 1;
+          return aOwn - bOwn;
+        });
+        subjectPool
+          .filter(s =>
+            isRowActive(s.Active) &&
+            visibleNames.has(s.Subject) &&
+            // Only include if this subject row's class is in the selected set,
+            // OR if the subject row has no Class column (global subject).
+            (!s.Class || !previewClasses || previewClasses.has(s.Class))
+          )
           .forEach(s => { if (!seen.has(s.Subject)) seen.set(s.Subject, s); });
         return [...seen.values()].sort((a,b) => (Number(a['Display Order'])||0) - (Number(b['Display Order'])||0));
       })()
@@ -2180,58 +2234,85 @@ function PortalInner() {
     /* ── Streak toast pop animation ── */
     @keyframes streakPop{from{opacity:0;transform:translateX(-50%) scale(.7) translateY(-12px)}to{opacity:1;transform:translateX(-50%) scale(1) translateY(0)}}
     /* ── Full-screen mobile-first question layout ── */
-    .lp-fullscreen{display:flex;flex-direction:column;min-height:100vh;padding:0;background:var(--navy);}
-    .lp-fs-header{display:flex;align-items:center;gap:12px;padding:14px 16px 10px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--navy);z-index:10;flex-shrink:0;}
-    .lp-fs-back{width:38px;height:38px;border-radius:10px;border:1px solid var(--border);background:rgba(255,255,255,.04);color:rgba(255,255,255,.7);font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s;}
+    .lp-fullscreen{display:flex;flex-direction:column;height:100vh;padding:0;background:var(--navy);overflow:hidden;}
+    /* Header: back + title + counter (issue 1 — counter moves here) + streak */
+    .lp-fs-header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--navy);z-index:10;flex-shrink:0;}
+    .lp-fs-back{width:34px;height:34px;border-radius:9px;border:1px solid var(--border);background:rgba(255,255,255,.04);color:rgba(255,255,255,.7);font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s;}
     .lp-fs-back:hover{background:rgba(255,255,255,.1);color:#fff;}
-    .lp-fs-title{flex:1;font-family:var(--fd);font-size:15px;font-weight:800;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .lp-fs-progress-wrap{padding:10px 16px 0;}
-    .lp-fs-bar{margin-bottom:4px;}
-    .lp-fs-counter{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:4px;}
-    .lp-fs-nav-wrap{padding:4px 16px 8px;}
-    .lp-fs-teach{background:rgba(0,198,167,.07);border:1px solid rgba(0,198,167,.18);border-radius:14px;padding:16px 18px;margin:0 16px 14px;display:flex;gap:12px;align-items:flex-start;max-height:420px;overflow-y:auto;}
-    .lp-fs-teach::-webkit-scrollbar{width:5px;}
+    .lp-fs-title{flex:1;font-family:var(--fd);font-size:13px;font-weight:700;color:rgba(255,255,255,.8);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    /* Compact "2 of 50" counter badge in the header (issue 1) */
+    .lp-fs-qcount{flex-shrink:0;font-family:var(--fm);font-size:11px;font-weight:700;color:var(--muted);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:100px;padding:3px 10px;white-space:nowrap;}
+    /* Slim progress bar directly under header — no separate wrapper section */
+    .lp-fs-progress-wrap{padding:0;flex-shrink:0;}
+    .lp-fs-bar{margin:0;height:3px;border-radius:0;}
+    .lp-fs-bar .lp-bar-outer{border-radius:0;height:3px;}
+    .lp-fs-counter{display:none;} /* hidden — counter is now in header */
+    /* Scrollable body — everything between bar and bottom nav */
+    .lp-fs-body{flex:1;overflow-y:auto;padding-bottom:8px;}
+    .lp-fs-body::-webkit-scrollbar{width:4px;}
+    .lp-fs-body::-webkit-scrollbar-track{background:transparent;}
+    .lp-fs-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:99px;}
+    /* Nav wrap (dots) — compact, no padding-heavy section */
+    .lp-fs-nav-wrap{padding:8px 16px 4px;}
+    /* Teaching box (issue 4) — larger, smaller font, taller cap */
+    .lp-fs-teach{background:rgba(0,198,167,.07);border:1px solid rgba(0,198,167,.18);border-radius:12px;padding:12px 14px;margin:10px 16px 10px;display:flex;gap:10px;align-items:flex-start;max-height:260px;overflow-y:auto;}
+    .lp-fs-teach::-webkit-scrollbar{width:4px;}
     .lp-fs-teach::-webkit-scrollbar-track{background:transparent;}
-    .lp-fs-teach::-webkit-scrollbar-thumb{background:rgba(0,198,167,.35);border-radius:99px;}
-    .lp-fs-teach-icon{color:var(--teal);font-size:16px;margin-top:2px;flex-shrink:0;}
-    .lp-fs-teach p{font-size:14px;color:#fff;line-height:1.7;}
-    /* Learning Section content box — shown when the section has body text */
-    .lp-fs-learn-sec{background:rgba(99,179,237,.07);border:1px solid rgba(99,179,237,.2);border-radius:14px;padding:16px 18px;margin:0 16px 14px;max-height:420px;overflow-y:auto;}
-    .lp-fs-learn-sec::-webkit-scrollbar{width:5px;}
+    .lp-fs-teach::-webkit-scrollbar-thumb{background:rgba(0,198,167,.3);border-radius:99px;}
+    .lp-fs-teach-icon{color:var(--teal);font-size:13px;margin-top:2px;flex-shrink:0;}
+    .lp-fs-teach p{font-size:11.5px;color:rgba(255,255,255,.9);line-height:1.7;margin:0;}
+    /* Learning Section content box */
+    .lp-fs-learn-sec{background:rgba(99,179,237,.07);border:1px solid rgba(99,179,237,.2);border-radius:12px;padding:12px 14px;margin:10px 16px 10px;max-height:240px;overflow-y:auto;}
+    .lp-fs-learn-sec::-webkit-scrollbar{width:4px;}
     .lp-fs-learn-sec::-webkit-scrollbar-track{background:transparent;}
-    .lp-fs-learn-sec::-webkit-scrollbar-thumb{background:rgba(99,179,237,.35);border-radius:99px;}
-    .lp-fs-learn-sec-hd{display:flex;align-items:center;gap:9px;margin-bottom:10px;}
-    .lp-fs-learn-sec-hd i{color:#63b3ed;font-size:14px;flex-shrink:0;}
-    .lp-fs-learn-sec-hd span{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:#63b3ed;}
-    .lp-fs-learn-sec p{font-size:14px;color:rgba(255,255,255,.9);line-height:1.75;margin:0;}
-    .lp-fs-question{font-family:var(--fd);font-size:18px;font-weight:900;color:#fff;line-height:1.5;padding:0 16px 16px;}
-    /* Options: 2-col on tablet+, 1-col on narrow mobile */
-    .lp-fs-opts{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:0 16px 14px;}
-    .lp-fs-opt{background:var(--surf2);border:1.5px solid var(--border);border-radius:14px;padding:14px 14px;text-align:left;font-family:var(--fb);font-size:14px;font-weight:600;color:rgba(255,255,255,.85);cursor:pointer;transition:all .15s;display:flex;align-items:flex-start;gap:11px;min-height:64px;}
+    .lp-fs-learn-sec::-webkit-scrollbar-thumb{background:rgba(99,179,237,.3);border-radius:99px;}
+    .lp-fs-learn-sec-hd{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+    .lp-fs-learn-sec-hd i{color:#63b3ed;font-size:12px;flex-shrink:0;}
+    .lp-fs-learn-sec-hd span{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:#63b3ed;}
+    .lp-fs-learn-sec p{font-size:11.5px;color:rgba(255,255,255,.9);line-height:1.7;margin:0;}
+    /* Step image */
+    .lp-fs-step-img{margin:8px 16px 10px;border-radius:10px;overflow:hidden;border:1px solid rgba(255,255,255,.08);max-height:220px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.03);}
+    .lp-fs-step-img img{width:100%;max-height:220px;object-fit:contain;display:block;}
+    /* Question text (issue 5 — fix left margin overflow) */
+    .lp-fs-question{font-family:var(--fd);font-size:16px;font-weight:900;color:#fff;line-height:1.5;padding:8px 16px 12px;margin:0;box-sizing:border-box;width:100%;}
+    /* Options: 2-col on tablet+, 1-col on narrow mobile (issue 5 — consistent padding) */
+    .lp-fs-opts{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:0 16px 12px;box-sizing:border-box;}
+    .lp-fs-opt{background:var(--surf2);border:1.5px solid var(--border);border-radius:12px;padding:11px 12px;text-align:left;font-family:var(--fb);font-size:13px;font-weight:600;color:rgba(255,255,255,.85);cursor:pointer;transition:all .15s;display:flex;align-items:flex-start;gap:9px;min-height:52px;box-sizing:border-box;}
     .lp-fs-opt:hover:not(:disabled){border-color:rgba(0,198,167,.45);background:rgba(0,198,167,.05);}
     .lp-fs-opt:disabled{cursor:default;}
-    .lp-fs-letter{width:26px;height:26px;border-radius:8px;background:rgba(255,255,255,.09);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex-shrink:0;margin-top:1px;}
-    .lp-fs-opt-text{flex:1;line-height:1.5;}
+    .lp-fs-letter{width:24px;height:24px;border-radius:7px;background:rgba(255,255,255,.09);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;flex-shrink:0;margin-top:1px;}
+    .lp-fs-opt-text{flex:1;line-height:1.45;font-size:13px;}
     .lp-fs-opt.correct{border-color:rgba(34,197,94,.55);background:rgba(34,197,94,.1);color:#4ade80;}
     .lp-fs-opt.correct .lp-fs-letter{background:#22c55e;color:#fff;}
     .lp-fs-opt.incorrect{border-color:rgba(239,68,68,.55);background:rgba(239,68,68,.1);color:#f87171;}
     .lp-fs-opt.incorrect .lp-fs-letter{background:#ef4444;color:#fff;}
-    .lp-fs-feedback{border-radius:14px;padding:14px 18px;margin:0 16px 16px;display:flex;gap:12px;align-items:flex-start;font-size:13.5px;line-height:1.6;color:rgba(255,255,255,.85);}
+    /* Feedback */
+    .lp-fs-feedback{border-radius:12px;padding:12px 14px;margin:0 16px 12px;display:flex;gap:10px;align-items:flex-start;font-size:12.5px;line-height:1.6;color:rgba(255,255,255,.85);}
     .lp-fs-feedback.good{background:rgba(34,197,94,.09);border:1px solid rgba(34,197,94,.28);}
     .lp-fs-feedback.bad{background:rgba(239,68,68,.09);border:1px solid rgba(239,68,68,.28);}
-    .lp-fs-fb-icon{font-size:20px;margin-top:2px;flex-shrink:0;}
+    .lp-fs-fb-icon{font-size:17px;margin-top:2px;flex-shrink:0;}
     .lp-fs-feedback.good .lp-fs-fb-icon{color:#4ade80;}
     .lp-fs-feedback.bad  .lp-fs-fb-icon{color:#f87171;}
-    .lp-fs-nav-row{padding:4px 16px 24px;gap:10px;}
+    /* Bottom nav row */
+    .lp-fs-nav-row{padding:6px 16px 16px;gap:8px;}
     .lp-fs-nav-row button{flex:1;}
     @media(max-width:480px){
       .lp-fs-opts{grid-template-columns:1fr;}
-      .lp-fs-question{font-size:16px;}
-      .lp-fs-teach p{font-size:13px;}
-      .lp-fs-learn-sec p{font-size:13px;}
-      .lp-fs-teach{max-height:340px;}
-      .lp-fs-learn-sec{max-height:340px;}
+      .lp-fs-question{font-size:15px;}
+      .lp-fs-teach p{font-size:11px;}
+      .lp-fs-learn-sec p{font-size:11px;}
+      .lp-fs-teach{max-height:200px;}
+      .lp-fs-learn-sec{max-height:180px;}
     }
+    /* ── Sidebar auto-collapse when question is open (issue 6) ── */
+    .dash.quiz-mode .sb{width:0;min-width:0;overflow:hidden;border-right:none;transition:width .25s ease;}
+    .dash.quiz-mode .main{flex:1;}
+    /* Floating sidebar reveal button — only visible in quiz mode */
+    .sb-float-btn{display:none;position:fixed;top:12px;left:12px;z-index:300;width:36px;height:36px;border-radius:9px;border:1px solid rgba(255,255,255,.15);background:rgba(15,20,40,.9);backdrop-filter:blur(8px);color:rgba(255,255,255,.7);font-size:14px;cursor:pointer;align-items:center;justify-content:center;transition:all .18s;}
+    .sb-float-btn:hover{background:rgba(0,198,167,.2);color:var(--teal);border-color:rgba(0,198,167,.4);}
+    .dash.quiz-mode .sb-float-btn{display:flex;}
+    /* When sidebar is temporarily re-opened in quiz mode */
+    .dash.quiz-mode .sb.quiz-peek{width:240px;box-shadow:4px 0 24px rgba(0,0,0,.5);position:fixed;left:0;top:0;height:100vh;z-index:295;}
     /* ── Daily board ── */
     .daily-row{display:flex;align-items:center;gap:14px;padding:10px 14px;border-radius:11px;background:var(--surf2);border:1px solid transparent;transition:all .15s;margin-bottom:8px;}
     .daily-row.me{border-color:rgba(245,166,35,.4);background:rgba(245,166,35,.07);}
@@ -2304,13 +2385,31 @@ function PortalInner() {
           </div>
         </div>
       ) : (
-        <div className="dash">
+        <div className={`dash${activeModuleId ? ' quiz-mode' : ''}`}>
+
+          {/* Floating sidebar button — only visible in quiz mode (issue 6) */}
+          <button
+            className="sb-float-btn"
+            onClick={()=>setSidebarPeeking(p=>!p)}
+            aria-label="Open navigation"
+            title="Open menu"
+          >
+            <i className={`fa-solid ${sidebarPeeking ? 'fa-xmark' : 'fa-bars'}`} />
+          </button>
+
+          {/* Tap-outside backdrop — closes peeking sidebar in quiz mode */}
+          {sidebarPeeking && activeModuleId && (
+            <div
+              style={{position:'fixed',inset:0,zIndex:294,background:'rgba(0,0,0,.45)'}}
+              onClick={()=>setSidebarPeeking(false)}
+            />
+          )}
 
           {/* Tap-outside backdrop — mobile only (hidden via CSS on desktop) */}
           <div className={`mnav-backdrop${mobileNavOpen?' open':''}`} onClick={()=>setMobileNavOpen(false)} />
 
           {/* SIDEBAR */}
-          <aside className={`sb${mobileNavOpen?' open':''}`}>
+          <aside className={`sb${mobileNavOpen?' open':''}${sidebarPeeking&&activeModuleId?' quiz-peek':''}`}>
             <div className="sb-head">
               <div className="sb-av"><i className="fa-solid fa-user-graduate" /></div>
               <div style={{flex:1,minWidth:0}}><div className="sb-name">{profile.name}</div><div className="sb-id">{profile.id}</div></div>
@@ -2319,7 +2418,7 @@ function PortalInner() {
             <p className="sb-sec">{S.SidebarSectionLabel}</p>
             <nav className="sb-nav">
               {NAV.map(navItem => (
-                <button key={navItem.ID} className={`nb${tab===navItem.ID?' active':''}`} onClick={() => setTab(navItem.ID)}>
+                <button key={navItem.ID} className={`nb${tab===navItem.ID?' active':''}`} onClick={() => { setTab(navItem.ID); setSidebarPeeking(false); }}>
                   <i className={`fa-solid ${navItem['Icon (FontAwesome solid)']}`} /> {navItem.Label}
                   {navItem.ID==='notifications' && unreadCount>0 && <span className="nb-badge">{unreadCount}</span>}
                 </button>
@@ -2834,15 +2933,18 @@ function PortalInner() {
                           <button
                             key={cls}
                             onClick={()=>{
-                              if (!classFilter || classFilter==='all') {
-                                // Start a new Set with this class + own class
+                              if (classFilter === 'all') {
+                                // Coming from "All" — start a fresh Set with just this class
+                                setClassFilter(new Set([cls]));
+                              } else if (!classFilter) {
+                                // Coming from "My Class" default — add this class alongside own
                                 setClassFilter(new Set([profile.classLevel, cls]));
                               } else {
                                 const next = new Set(classFilter);
                                 if (isSet) {
                                   next.delete(cls);
-                                  // If only own class left, go back to default (null)
-                                  if (next.size<=1 && next.has(profile.classLevel)) setClassFilter(null);
+                                  // If set is now empty or only own class remains, go back to default
+                                  if (next.size === 0 || (next.size === 1 && next.has(profile.classLevel))) setClassFilter(null);
                                   else setClassFilter(next);
                                 } else {
                                   next.add(cls);
@@ -3209,6 +3311,7 @@ function PortalInner() {
                     onAnswer={recordAnswer}
                     onExit={()=>setActiveModuleId(null)}
                     backLabel={`${t('p_back_to')} ${activeAssignmentSubject} ${t('p_topics_suffix')}`}
+                    soundConfig={cfg.config || {}}
                     t={t}
                   />
                 </>
