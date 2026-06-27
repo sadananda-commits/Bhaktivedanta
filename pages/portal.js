@@ -1033,6 +1033,24 @@ function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExi
           )}
         </div>
 
+        {/* ── Learning Section content box ──────────────────────────────────
+            Shown when the step's 'Learning Section' field contains more than
+            just a short heading (i.e. the teacher has added explanatory text).
+            The header title already shows the section name so this box only
+            renders when there is a dedicated 'Learning Section Body' field,
+            OR when the Learning Section value is long enough to be body text
+            (> 60 chars — heuristic to distinguish "What is a seed?" from a
+            paragraph). Scrollable up to ~400 words (~420 px max-height). */}
+        {step['Learning Section Body'] && (
+          <div className="lp-fs-learn-sec">
+            <div className="lp-fs-learn-sec-hd">
+              <i className="fa-solid fa-book-open" />
+              <span>Learning Section</span>
+            </div>
+            <p>{step['Learning Section Body']}</p>
+          </div>
+        )}
+
         {/* ── Teaching fact ── */}
         <div className="lp-fs-teach">
           <i className="fa-solid fa-lightbulb lp-fs-teach-icon" />
@@ -2171,9 +2189,21 @@ function PortalInner() {
     .lp-fs-bar{margin-bottom:4px;}
     .lp-fs-counter{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:4px;}
     .lp-fs-nav-wrap{padding:4px 16px 8px;}
-    .lp-fs-teach{background:rgba(0,198,167,.07);border:1px solid rgba(0,198,167,.18);border-radius:14px;padding:16px 18px;margin:0 16px 14px;display:flex;gap:12px;align-items:flex-start;}
+    .lp-fs-teach{background:rgba(0,198,167,.07);border:1px solid rgba(0,198,167,.18);border-radius:14px;padding:16px 18px;margin:0 16px 14px;display:flex;gap:12px;align-items:flex-start;max-height:420px;overflow-y:auto;}
+    .lp-fs-teach::-webkit-scrollbar{width:5px;}
+    .lp-fs-teach::-webkit-scrollbar-track{background:transparent;}
+    .lp-fs-teach::-webkit-scrollbar-thumb{background:rgba(0,198,167,.35);border-radius:99px;}
     .lp-fs-teach-icon{color:var(--teal);font-size:16px;margin-top:2px;flex-shrink:0;}
     .lp-fs-teach p{font-size:14px;color:#fff;line-height:1.7;}
+    /* Learning Section content box — shown when the section has body text */
+    .lp-fs-learn-sec{background:rgba(99,179,237,.07);border:1px solid rgba(99,179,237,.2);border-radius:14px;padding:16px 18px;margin:0 16px 14px;max-height:420px;overflow-y:auto;}
+    .lp-fs-learn-sec::-webkit-scrollbar{width:5px;}
+    .lp-fs-learn-sec::-webkit-scrollbar-track{background:transparent;}
+    .lp-fs-learn-sec::-webkit-scrollbar-thumb{background:rgba(99,179,237,.35);border-radius:99px;}
+    .lp-fs-learn-sec-hd{display:flex;align-items:center;gap:9px;margin-bottom:10px;}
+    .lp-fs-learn-sec-hd i{color:#63b3ed;font-size:14px;flex-shrink:0;}
+    .lp-fs-learn-sec-hd span{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:#63b3ed;}
+    .lp-fs-learn-sec p{font-size:14px;color:rgba(255,255,255,.9);line-height:1.75;margin:0;}
     .lp-fs-question{font-family:var(--fd);font-size:18px;font-weight:900;color:#fff;line-height:1.5;padding:0 16px 16px;}
     /* Options: 2-col on tablet+, 1-col on narrow mobile */
     .lp-fs-opts{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:0 16px 14px;}
@@ -2198,6 +2228,9 @@ function PortalInner() {
       .lp-fs-opts{grid-template-columns:1fr;}
       .lp-fs-question{font-size:16px;}
       .lp-fs-teach p{font-size:13px;}
+      .lp-fs-learn-sec p{font-size:13px;}
+      .lp-fs-teach{max-height:340px;}
+      .lp-fs-learn-sec{max-height:340px;}
     }
     /* ── Daily board ── */
     .daily-row{display:flex;align-items:center;gap:14px;padding:10px 14px;border-radius:11px;background:var(--surf2);border:1px solid transparent;transition:all .15s;margin-bottom:8px;}
