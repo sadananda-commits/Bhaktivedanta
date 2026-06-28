@@ -46,15 +46,24 @@ const FALLBACK = {
     DefaultClassLevel:'Class 3', AuthAPIEndpoint:'/api/student/auth',
     ConnectionErrorMsg:'Connection failed. Is the server running?',
   },
+  // ── NAV REWORK (per academy request) ────────────────────────────────────
+  // 'progress' (Academic Progress), 'attendance', and 'schedule' (Upcoming
+  // Classes) are retired — removed from the menu entirely. Their render
+  // blocks further down are now unreachable dead code (tab can never equal
+  // those IDs again) and safe to delete in a future cleanup pass; left in
+  // place here only to avoid touching unrelated code in this change.
+  // 'assignments' keeps its original ID (so none of the existing quiz-bank
+  // logic below has to change) but is now labelled "Question Bank" in the
+  // sidebar. The new 'myassignments' tab ("Assignments for you") is the
+  // chapter-specific homework a parent/teacher assigns from the Parent
+  // Portal — see the ASSIGNMENTS-FOR-YOU section further down.
   navigation:[
-    {ID:'dashboard',     Label:'Dashboard',        'Icon (FontAwesome solid)':'fa-chart-pie',      Active:true,Order:1},
-    {ID:'progress',      Label:'Academic Progress', 'Icon (FontAwesome solid)':'fa-chart-line',     Active:true,Order:2},
-    {ID:'leaderboard',   Label:'Leaderboard',       'Icon (FontAwesome solid)':'fa-trophy',         Active:true,Order:3},
-    {ID:'attendance',    Label:'Attendance',        'Icon (FontAwesome solid)':'fa-calendar-check', Active:true,Order:4},
-    {ID:'assignments',   Label:'Assignments',       'Icon (FontAwesome solid)':'fa-book-open',      Active:true,Order:5},
-    {ID:'schedule',      Label:'Upcoming Classes',  'Icon (FontAwesome solid)':'fa-clock',          Active:true,Order:6},
-    {ID:'notifications', Label:'Notifications',     'Icon (FontAwesome solid)':'fa-bell',           Active:true,Order:7},
-    {ID:'profile',       Label:'My Profile',        'Icon (FontAwesome solid)':'fa-user-circle',    Active:true,Order:8},
+    {ID:'dashboard',     Label:'Dashboard',          'Icon (FontAwesome solid)':'fa-chart-pie',      Active:true,Order:1},
+    {ID:'leaderboard',   Label:'Leaderboard',        'Icon (FontAwesome solid)':'fa-trophy',         Active:true,Order:2},
+    {ID:'assignments',   Label:'Question Bank',      'Icon (FontAwesome solid)':'fa-book-open',      Active:true,Order:3},
+    {ID:'myassignments', Label:'Assignments for you','Icon (FontAwesome solid)':'fa-clipboard-list',Active:true,Order:4},
+    {ID:'notifications', Label:'Notifications',      'Icon (FontAwesome solid)':'fa-bell',           Active:true,Order:5},
+    {ID:'profile',       Label:'My Profile',         'Icon (FontAwesome solid)':'fa-user-circle',    Active:true,Order:6},
   ],
   dashStats:[
     {'Metric Key':'attendance_pct',   Label:'Attendance',               Value:'85%','Sub-label':'This term',      'Display Order':1,Active:true},
@@ -768,7 +777,16 @@ function StreakToast({ streak, onDone }) {
   );
 }
 
-function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExit, backLabel, soundConfig, t }) {
+function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAnswer, onExit, backLabel, soundConfig, t, rangeFrom, rangeTo, onRangeComplete }) {
+  // ── Parent/teacher-assigned question range (Assignments for you) ────────
+  // When a student opens a chapter from the "Assignments for you" tab
+  // instead of the open Question Bank, rangeFrom/rangeTo restrict play to
+  // just the assigned question numbers (1-indexed, inclusive — matches the
+  // "From Question" / "To Question" columns the parent set in the Parent
+  // Portal builder table). Original 'Step Number' values are preserved so
+  // explanations/keys/review screens still reference the real chapter
+  // question numbers, not 1..N of the restricted slice.
+  const steps = (rangeFrom && rangeTo) ? allSteps.slice(rangeFrom - 1, rangeTo) : allSteps;
   // ── Sound control from Config sheet ──────────────────────────────────────
   // Keys in the Config tab (case-sensitive):
   //   SoundOnCorrect        TRUE / FALSE   (default: TRUE)
@@ -875,7 +893,7 @@ function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExi
 
   const goNext = () => { if (idx + 1 < total) setIdx(idx+1); else finish(); };
   const goPrev = () => { if (idx > 0) setIdx(idx-1); };
-  const finish = () => { onSave({ completedAt:new Date().toISOString(), completionPct:100 }); setView('complete'); };
+  const finish = () => { onSave({ completedAt:new Date().toISOString(), completionPct:100 }); if (rangeFrom && rangeTo) onRangeComplete?.(); setView('complete'); };
 
   // ── INTRO ──
   if (view === 'intro') {
@@ -1205,6 +1223,13 @@ function PortalInner() {
   const [notifs,      setNotifs]      = useState(FALLBACK.notifications.filter(n=>isRowActive(n.Active)));
   const [activeModuleId, setActiveModuleId] = useState(null);
   const [activeAssignmentSubject, setActiveAssignmentSubject] = useState(null);
+  // ── ASSIGNMENTS FOR YOU — chapter-specific homework a parent/teacher
+  // assigned from the Parent Portal builder table. Kept entirely separate
+  // from activeModuleId/activeAssignmentSubject (the open Question Bank
+  // flow above) so switching tabs never clobbers either flow's state.
+  const [myAssignments,        setMyAssignments]        = useState([]);
+  const [myAssignmentsLoading, setMyAssignmentsLoading]  = useState(false);
+  const [activeMyAssignmentId, setActiveMyAssignmentId]  = useState(null); // AssignmentID being attempted
   const [expandedSubject, setExpandedSubject] = useState(null); // age-group expandable card
   // classFilter: null = "my class only"; 'all' = every class; Set of class strings = selected classes
   // Initialised to null so the dashboard always opens showing only the student's own class.
@@ -1853,20 +1878,26 @@ function PortalInner() {
       })
       .catch(() => {}); // offline or sheet unreachable — localStorage already rendered above
 
-    // ── Fetch real per-student data (subjects progress, assignments, attendance)
-    // in parallel. Each is independent — if one fails the others still render.
+    // ── Fetch real per-student data (subjects progress, assignments, attendance,
+    // chapter assignments) in parallel. Each is independent — if one fails the
+    // others still render.
     const sid = encodeURIComponent(profile.id);
+    setMyAssignmentsLoading(true);
     Promise.allSettled([
       fetch(`/api/student/subjects?studentId=${sid}`).then(r=>r.json()),
       fetch(`/api/student/assignments?studentId=${sid}`).then(r=>r.json()),
       fetch(`/api/student/attendance?studentId=${sid}`).then(r=>r.json()),
-    ]).then(([subjRes, asgnRes, attRes]) => {
+      fetch(`/api/student/chapter-assignments?studentId=${sid}`).then(r=>r.json()),
+    ]).then(([subjRes, asgnRes, attRes, chAsgnRes]) => {
       if (subjRes.status === 'fulfilled' && subjRes.value.subjects?.length)
         setRealSubjects(subjRes.value.subjects);
       if (asgnRes.status === 'fulfilled' && asgnRes.value.assignments?.length)
         setRealAssignments(asgnRes.value.assignments);
       if (attRes.status === 'fulfilled' && attRes.value.records !== undefined)
         setRealAttendance(attRes.value);
+      if (chAsgnRes.status === 'fulfilled')
+        setMyAssignments(chAsgnRes.value.assignments || []);
+      setMyAssignmentsLoading(false);
     });
   }, [profile.id, cfgReady]);
 
@@ -1900,6 +1931,32 @@ function PortalInner() {
 
   // Leaving the Assignments tab always returns to Subject selection (Step 1) next time it's opened.
   useEffect(() => { if (tab !== 'assignments') { setActiveModuleId(null); setActiveAssignmentSubject(null); } }, [tab]);
+  useEffect(() => { if (tab !== 'myassignments') { setActiveMyAssignmentId(null); } }, [tab]);
+
+  // Re-fetch this student's "Assignments for you" list — used right after
+  // the tab is opened and again after completing one, so Status flips to
+  // "Completed" without needing a full page reload.
+  const refetchMyAssignments = useCallback(() => {
+    if (!profile.id) return;
+    fetch(`/api/student/chapter-assignments?studentId=${encodeURIComponent(profile.id)}`)
+      .then(r => r.json())
+      .then(data => setMyAssignments(data.assignments || []))
+      .catch(() => {});
+  }, [profile.id]);
+
+  // Called by LearningModulePlayer's onRangeComplete when a student finishes
+  // every question in their assigned range. Optimistically flips the row to
+  // "Completed" locally, then syncs the sheet — and exits back to the table.
+  const completeMyAssignment = useCallback((assignmentId) => {
+    setMyAssignments(prev => prev.map(a =>
+      a.AssignmentID === assignmentId ? { ...a, Status: 'Completed' } : a
+    ));
+    fetch('/api/student/complete-assignment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assignmentId }),
+    }).catch(() => {});
+  }, []);
   // Selecting any nav item closes the mobile drawer (desktop sidebar is unaffected — see CSS).
   useEffect(() => { setMobileNavOpen(false); }, [tab]);
 
@@ -2234,7 +2291,15 @@ function PortalInner() {
     /* ── Streak toast pop animation ── */
     @keyframes streakPop{from{opacity:0;transform:translateX(-50%) scale(.7) translateY(-12px)}to{opacity:1;transform:translateX(-50%) scale(1) translateY(0)}}
     /* ── Full-screen mobile-first question layout ── */
-    .lp-fullscreen{display:flex;flex-direction:column;height:100vh;padding:0;background:var(--navy);overflow:hidden;}
+    /* FIX: this used to be a normal in-flow box (height:100vh) inside .main,
+       which is itself scrollable. On mobile, .mnav-bar renders ABOVE it in
+       that same scroll container, so mnav-bar-height + 100vh > the actual
+       viewport height — pushing the bottom Previous/Next row below the
+       fold and forcing a scroll to reach it. Making this a fixed, full-
+       viewport overlay removes it from that flow entirely so it always
+       fills the real screen and the nav row is always visible without
+       scrolling, on any device. */
+    .lp-fullscreen{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;height:100vh;height:100dvh;padding:0;background:var(--navy);overflow:hidden;}
     /* Header: back + title + counter (issue 1 — counter moves here) + streak */
     .lp-fs-header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--navy);z-index:10;flex-shrink:0;}
     .lp-fs-back{width:34px;height:34px;border-radius:9px;border:1px solid var(--border);background:rgba(255,255,255,.04);color:rgba(255,255,255,.7);font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s;}
@@ -2303,6 +2368,19 @@ function PortalInner() {
       .lp-fs-learn-sec p{font-size:11px;}
       .lp-fs-teach{max-height:200px;}
       .lp-fs-learn-sec{max-height:180px;}
+    }
+    /* ── Mobile-friendly pass for the full-screen quiz (notch/safe-area aware,
+       bigger tap targets, fluid type) ── */
+    @media(max-width:640px){
+      .lp-fs-header{padding:calc(8px + env(safe-area-inset-top,0px)) 12px 8px;}
+      .lp-fs-back{width:38px;height:38px;}
+      .lp-fs-title{font-size:clamp(11px,3vw,13px);}
+      .lp-fs-question{font-size:clamp(14px,4vw,16px);padding:10px 14px 12px;}
+      .lp-fs-opt{min-height:48px;padding:12px 12px;font-size:clamp(12.5px,3.4vw,13.5px);}
+      .lp-fs-letter{width:26px;height:26px;}
+      .lp-fs-nav-row{padding:10px 14px calc(12px + env(safe-area-inset-bottom,0px));}
+      .lp-fs-nav-row button{min-height:46px;font-size:13px;}
+      .lp-fs-feedback{margin:0 14px 12px;font-size:12px;}
     }
     /* ── Sidebar auto-collapse when question is open (issue 6) ── */
     .dash.quiz-mode .sb{width:0;min-width:0;overflow:hidden;border-right:none;transition:width .25s ease;}
@@ -3317,6 +3395,129 @@ function PortalInner() {
                 </>
               ))}
             </>)}
+
+
+
+            {/* ── ASSIGNMENTS FOR YOU ─────────────────────────────────────
+                Chapter-specific homework a parent/teacher assigned from the
+                Parent Portal builder table (My Students → Assignments tab).
+                One row per chapter; "Start Quiz" opens the exact assigned
+                question range and marks the row Completed automatically on
+                finishing the last assigned question. */}
+            {tab==='myassignments' && (
+              activeMyAssignmentId ? (() => {
+                const row = myAssignments.find(a => a.AssignmentID === activeMyAssignmentId);
+                if (!row) { setActiveMyAssignmentId(null); return null; }
+                const module = LMOD.find(m => m['Module ID'] === row.ModuleID);
+                const steps  = stepsFor(row.ModuleID);
+
+                // Self-diagnosing guard: rather than diving into the quiz player
+                // and hitting its generic "no steps yet" message, explain exactly
+                // what's missing so the student/teacher knows what to fix.
+                if (!module || steps.length === 0) {
+                  return (
+                    <>
+                      <div className="asgn-breadcrumb">
+                        <span className="asgn-crumb" onClick={()=>setActiveMyAssignmentId(null)}>Assignments for you</span>
+                        <i className="fa-solid fa-chevron-right asgn-crumb-sep" />
+                        <span className="asgn-crumb-current">{row.ChapterTitle || row.ModuleID}</span>
+                      </div>
+                      <div className="content">
+                        <div className="card" style={{textAlign:'center',borderColor:'rgba(239,68,68,.25)'}}>
+                          <i className="fa-solid fa-triangle-exclamation" style={{fontSize:'24px',color:'#f87171',marginBottom:'10px',display:'block'}} />
+                          {!module ? (
+                            <>This chapter ("{row.ChapterTitle || row.ModuleID}") couldn't be found for your class. Ask your teacher to double-check it was assigned to the right class.</>
+                          ) : (
+                            <>"{module.Title}" doesn't have any questions added yet on your class's sheet, so it can't be opened right now. Let your teacher know — once questions are added to its Learning Steps tab, this will open normally.</>
+                          )}
+                          <div style={{marginTop:'16px'}}>
+                            <button className="lp-back" onClick={()=>setActiveMyAssignmentId(null)}><i className="fa-solid fa-arrow-left" /> Back to Assignments for you</button>
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  );
+                }
+
+                return (
+                  <>
+                    <div className="asgn-breadcrumb">
+                      <span className="asgn-crumb" onClick={()=>setActiveMyAssignmentId(null)}>Assignments for you</span>
+                      <i className="fa-solid fa-chevron-right asgn-crumb-sep" />
+                      <span className="asgn-crumb-current">{row.ChapterTitle || module?.Title}</span>
+                    </div>
+                    <LearningModulePlayer
+                      module={module}
+                      steps={steps}
+                      rangeFrom={Number(row.FromQuestion) || 1}
+                      rangeTo={Number(row.ToQuestion) || steps.length}
+                      progress={learnProgress[row.ModuleID]}
+                      onSave={patch=>saveLearnProgress(row.ModuleID, patch)}
+                      onAnswer={recordAnswer}
+                      onExit={()=>setActiveMyAssignmentId(null)}
+                      onRangeComplete={()=>completeMyAssignment(row.AssignmentID)}
+                      backLabel="Back to Assignments for you"
+                      soundConfig={cfg.config || {}}
+                      t={t}
+                    />
+                  </>
+                );
+              })() : (
+                <>
+                  <div className="main-top"><div><div className="pg-h">Assignments for you</div><div className="pg-s">Chapters your teacher or parent has assigned, with the exact questions to answer</div></div></div>
+                  <div className="content">
+                    {myAssignmentsLoading && myAssignments.length === 0 ? (
+                      <div className="card" style={{textAlign:'center',color:'var(--muted)'}}><i className="fa-solid fa-circle-notch fa-spin" /> Loading your assignments…</div>
+                    ) : myAssignments.length === 0 ? (
+                      <div className="card" style={{textAlign:'center',color:'var(--muted)'}}>
+                        <i className="fa-solid fa-clipboard-list" style={{fontSize:'26px',marginBottom:'10px',display:'block',opacity:.5}} />
+                        No assignments yet — your teacher or parent hasn't assigned any chapters.
+                      </div>
+                    ) : (
+                      <div className="card">
+                        <div className="card-t"><i className="fa-solid fa-clipboard-list" /> Your Assigned Chapters ({myAssignments.length})</div>
+                        {myAssignments
+                          .slice()
+                          .sort((a,b)=> (a.Status==='Completed'?1:0) - (b.Status==='Completed'?1:0))
+                          .map(a => {
+                            const isDone = a.Status === 'Completed';
+                            const total  = Number(a.TotalQuestions) || (Number(a.ToQuestion)-Number(a.FromQuestion)+1) || 0;
+                            return (
+                              <div key={a.AssignmentID} className="asgn-item asgn-item-v2">
+                                <div className="asgn-dot" style={{background:isDone?'#22c55e':'var(--accent)'}} />
+                                <div className="asgn-body" style={{flex:1}}>
+                                  <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:'10px',flexWrap:'wrap'}}>
+                                    <div>
+                                      <div className="asgn-title">{a.ChapterTitle || a.ModuleID}</div>
+                                      <div className="asgn-meta">
+                                        {a.Subject}{a.ClassLevel ? ` · ${a.ClassLevel}` : ''} · Q{a.FromQuestion}–{a.ToQuestion} of {total}
+                                        {a.AssignedDate && <> · Assigned {String(a.AssignedDate).slice(0,10)}</>}
+                                      </div>
+                                      {a.Comments && (
+                                        <div style={{fontSize:'11px',color:'rgba(0,198,167,.75)',marginTop:'4px',fontStyle:'italic'}}>
+                                          <i className="fa-solid fa-comment-dots" style={{marginRight:'4px'}} />{a.Comments}
+                                        </div>
+                                      )}
+                                    </div>
+                                    <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:'8px'}}>
+                                      <span className={`asgn-badge ${isDone?'graded':'pending'}`}>{isDone?'✓ Completed':a.Status||'Task assigned'}</span>
+                                      {!isDone && (
+                                        <button className="btn-t btn-t-sm" onClick={()=>setActiveMyAssignmentId(a.AssignmentID)}>
+                                          <i className="fa-solid fa-play" /> Start Quiz
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )
+            )}
 
 
 
