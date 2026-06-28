@@ -130,6 +130,26 @@ function HomeInner() {
     setCms(lang === 'da' ? LANDING_FALLBACK_DA : FALLBACK);
   }, [lang]);
 
+  // ── Announcement strip: fetch directly on mount using the known doc URL.
+  // This runs independently of /api/content so the ticker is always visible
+  // even when the CMS fetch is slow or the sheet doesn't forward the URL yet.
+  // The /api/content fetch below may also update announcementText if it returns
+  // a different URL — last write wins, which is fine.
+  useEffect(() => {
+    let cancelled = false;
+    const ANNOUNCEMENT_DOC_URL = 'https://docs.google.com/document/d/1HI17xm-7X43RoLC0rigDhUZKu1zwzhQF98wolnxcclU/edit?tab=t.0';
+    const exportUrl = ANNOUNCEMENT_DOC_URL.replace(/\/edit.*$/, '/export?format=txt');
+    fetch(`/api/proxy-doc?url=${encodeURIComponent(exportUrl)}`)
+      .then(r => r.text())
+      .then(txt => {
+        if (cancelled) return;
+        const text = txt.split('\n').map(l => l.trim()).filter(Boolean).join('  ·  ');
+        if (text) setAnnouncementText(text);
+      })
+      .catch(() => {/* non-critical */});
+    return () => { cancelled = true; };
+  }, []); // only on mount — the URL is fixed in the master config
+
   // ── Fetch live data from Google Sheet via /api/content ──────────────────
   // Only fetched/applied in English — see note above.
   useEffect(() => {
@@ -159,10 +179,17 @@ function HomeInner() {
           faqs:         data.faqs?.length                      ? data.faqs         : FALLBACK.faqs,
           contact:      Object.keys(data.contact || {}).length ? data.contact      : FALLBACK.contact,
         });
-        // ── Announcement strip: the sheet may return an AnnouncementDocUrl
-        // (a publicly-readable Google Doc). Fetch its plain-text export and
-        // use the first non-empty paragraph as the scrolling strip text.
-        const docUrl = data.announcement?.AnnouncementDocUrl || data.announcement?.announcementDocUrl || '';
+        // ── Announcement strip: check if the sheet returned an AnnouncementDocUrl
+        // either under data.announcement (legacy /api/content shape) or
+        // data.config (portal-config shape). As an additional safety net, fall
+        // back to the known doc URL that is also stored in the master config
+        // sheet under key "AnnouncementDocUrl" in the "Config" tab — so the
+        // ticker always shows even if /api/content doesn't forward it yet.
+        const docUrl =
+          data.announcement?.AnnouncementDocUrl ||
+          data.announcement?.announcementDocUrl ||
+          (data.config || {})['AnnouncementDocUrl'] ||
+          'https://docs.google.com/document/d/1HI17xm-7X43RoLC0rigDhUZKu1zwzhQF98wolnxcclU/edit?tab=t.0';
         if (docUrl && !cancelled) {
           const exportUrl = docUrl.replace(/\/edit.*$/, '/export?format=txt');
           fetch(`/api/proxy-doc?url=${encodeURIComponent(exportUrl)}`)

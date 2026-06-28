@@ -1274,6 +1274,26 @@ function PortalInner() {
     setCfg(lang === 'da' ? danishFallback : FALLBACK);
   }, [lang]);
 
+  // ── Announcement strip: fetch directly on mount from the known doc URL so
+  // the ticker is always visible, even when the portal-config fetch is slow
+  // or the Config tab isn't populated yet. The main config useEffect below
+  // may also update announcementText if it resolves a URL from the sheet —
+  // last write wins, which is intentional (sheet URL takes priority).
+  useEffect(() => {
+    let cancelled = false;
+    const ANNOUNCEMENT_DOC_URL = 'https://docs.google.com/document/d/1HI17xm-7X43RoLC0rigDhUZKu1zwzhQF98wolnxcclU/edit?tab=t.0';
+    const exportUrl = ANNOUNCEMENT_DOC_URL.replace(/\/edit.*$/, '/export?format=txt');
+    fetch(`/api/proxy-doc?url=${encodeURIComponent(exportUrl)}`)
+      .then(r => r.text())
+      .then(txt => {
+        if (cancelled) return;
+        const text = txt.split('\n').map(l => l.trim()).filter(Boolean).join('  ·  ');
+        if (text) setAnnouncementText(text);
+      })
+      .catch(() => {/* non-critical */});
+    return () => { cancelled = true; };
+  }, []); // only on mount — URL is fixed in the master config
+
   // ── Fetch from Google Sheets on mount / language change / classLevel change ──
   useEffect(() => {
     const requestLang = lang; // capture the language this fetch was started for
