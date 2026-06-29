@@ -1,7 +1,7 @@
 import Head from 'next/head';
 import Script from 'next/script';
 import Link from 'next/link';
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { LanguageProvider, useLanguage, LanguageToggle } from '../lib/i18n';
 import { QUIZ_LEARNING_MODULES_DA, QUIZ_LEARNING_STEPS_DA, QUIZ_ASSIGNMENT_SUBJECTS_DA } from '../lib/quizContentDA';
 import {
@@ -62,6 +62,7 @@ const FALLBACK = {
     {ID:'leaderboard',   Label:'Leaderboard',        'Icon (FontAwesome solid)':'fa-trophy',         Active:true,Order:2},
     {ID:'assignments',   Label:'Question Bank',      'Icon (FontAwesome solid)':'fa-book-open',      Active:true,Order:3},
     {ID:'myassignments', Label:'Assignments for you','Icon (FontAwesome solid)':'fa-clipboard-list',Active:true,Order:4},
+    {ID:'completedtopics',Label:'Completed Topics',  'Icon (FontAwesome solid)':'fa-circle-check',  Active:true,Order:5},
     {ID:'notifications', Label:'Notifications',      'Icon (FontAwesome solid)':'fa-bell',           Active:true,Order:5},
     {ID:'profile',       Label:'My Profile',         'Icon (FontAwesome solid)':'fa-user-circle',    Active:true,Order:6},
   ],
@@ -777,7 +778,165 @@ function StreakToast({ streak, onDone }) {
   );
 }
 
-function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAnswer, onExit, backLabel, soundConfig, t, rangeFrom, rangeTo, onRangeComplete }) {
+// ─────────────────────────────────────────────────────────────────────────────
+// useTestTimer — high-precision count-up timer for the quiz player.
+//
+// • Uses performance.now() so accuracy is maintained even if the tab is hidden.
+// • Pauses automatically after INACTIVITY_PAUSE_MS (5 min) of no mouse/touch/
+//   keyboard activity, and resumes the instant the student interacts again.
+// • On finish() it stops, calculates total elapsed seconds, and POSTs to
+//   /api/student/test-time (best-effort — localStorage is the primary store).
+// • Persists startTime + elapsed seconds in localStorage so a page refresh
+//   mid-test does not zero the clock.
+//
+// Config sheet keys (add to the "Config" tab in the Master Sheet):
+//   EnableTestTimer   TRUE / FALSE   — FALSE disables timer entirely (no UI, no log). Default TRUE.
+//   ShowTestTimer     TRUE / FALSE   — FALSE hides the clock but still logs. Default TRUE.
+// ─────────────────────────────────────────────────────────────────────────────
+const INACTIVITY_PAUSE_MS = 5 * 60 * 1000; // 5 minutes
+
+function useTestTimer({ moduleId, profile, subject, topic, enabled = true }) {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [isPaused,       setIsPaused]       = useState(false);
+
+  const baseElapsed  = useRef(0);   // seconds already banked before this browser session
+  const sessionStart = useRef(null);// performance.now() of when this session began
+  const stopped      = useRef(false);
+  const lastActivity = useRef(Date.now());
+  const pausedAt     = useRef(null);// performance.now() when inactivity pause began
+  const pausedMs     = useRef(0);   // total ms paused this session
+  const rafId        = useRef(null);
+  const logged       = useRef(false);
+
+  // Restore any previously banked elapsed time (survives page refresh)
+  useEffect(() => {
+    if (!enabled || !moduleId || !profile?.id) return;
+    try {
+      const raw = localStorage.getItem(`testTimer:${profile.id}:${moduleId}`);
+      if (raw) {
+        const saved = JSON.parse(raw);
+        if (saved.elapsed) baseElapsed.current = Number(saved.elapsed) || 0;
+      }
+    } catch {}
+  }, [enabled, moduleId, profile?.id]);
+
+  // Activity listeners — any interaction resets the inactivity clock
+  useEffect(() => {
+    if (!enabled) return;
+    const touch = () => { lastActivity.current = Date.now(); };
+    window.addEventListener('mousemove',  touch, { passive: true });
+    window.addEventListener('mousedown',  touch, { passive: true });
+    window.addEventListener('keydown',    touch, { passive: true });
+    window.addEventListener('touchstart', touch, { passive: true });
+    return () => {
+      window.removeEventListener('mousemove',  touch);
+      window.removeEventListener('mousedown',  touch);
+      window.removeEventListener('keydown',    touch);
+      window.removeEventListener('touchstart', touch);
+    };
+  }, [enabled]);
+
+  // RAF loop — ticks every animation frame, updates UI once per second
+  useEffect(() => {
+    if (!enabled || !moduleId) return;
+    sessionStart.current = performance.now();
+    stopped.current      = false;
+    logged.current       = false;
+    pausedAt.current     = null;
+    pausedMs.current     = 0;
+    let lastTick = -1;
+
+    const tick = () => {
+      if (stopped.current) return;
+      const now            = performance.now();
+      const sinceActivity  = Date.now() - lastActivity.current;
+
+      // Inactivity pause logic
+      if (sinceActivity >= INACTIVITY_PAUSE_MS && !pausedAt.current) {
+        pausedAt.current = now;
+        setIsPaused(true);
+      } else if (sinceActivity < INACTIVITY_PAUSE_MS && pausedAt.current) {
+        pausedMs.current += now - pausedAt.current;
+        pausedAt.current  = null;
+        setIsPaused(false);
+      }
+
+      // Net elapsed: session duration minus all paused ms
+      const activePausedMs = pausedAt.current ? (now - pausedAt.current) : 0;
+      const sessionMs      = now - sessionStart.current - pausedMs.current - activePausedMs;
+      const totalSecs      = Math.floor(baseElapsed.current + sessionMs / 1000);
+
+      if (totalSecs !== lastTick) {
+        lastTick = totalSecs;
+        setElapsedSeconds(totalSecs);
+        // Persist every tick so a refresh resumes from here
+        try {
+          localStorage.setItem(
+            `testTimer:${profile.id}:${moduleId}`,
+            JSON.stringify({ elapsed: totalSecs, ts: Date.now() })
+          );
+        } catch {}
+      }
+
+      rafId.current = requestAnimationFrame(tick);
+    };
+
+    rafId.current = requestAnimationFrame(tick);
+    return () => { if (rafId.current) cancelAnimationFrame(rafId.current); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, moduleId, profile?.id]);
+
+  // stop() — call when the student finishes the last question
+  const stop = useCallback((finalSecs) => {
+    if (!enabled || logged.current) return;
+    logged.current  = true;
+    stopped.current = true;
+    if (rafId.current) cancelAnimationFrame(rafId.current);
+
+    const totalSeconds = typeof finalSecs === 'number' ? finalSecs : elapsedSeconds;
+
+    // Clear the in-progress localStorage key
+    try { localStorage.removeItem(`testTimer:${profile.id}:${moduleId}`); } catch {}
+
+    // Stash timeTakenSeconds into learnProgress so Completed Topics tab can
+    // display it immediately without a sheet round-trip.
+    try {
+      const lpKey = `learnProgress:${profile.id}`;
+      const lp    = JSON.parse(localStorage.getItem(lpKey) || '{}');
+      if (!lp[moduleId]) lp[moduleId] = {};
+      lp[moduleId].timeTakenSeconds = totalSeconds;
+      localStorage.setItem(lpKey, JSON.stringify(lp));
+    } catch {}
+
+    // POST to the logging API — best-effort
+    fetch('/api/student/test-time', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        studentId:   profile.id,
+        studentName: profile.name       || '',
+        classLevel:  profile.classLevel || '',
+        subject:     subject  || '',
+        topic:       topic    || '',
+        moduleId,
+        totalSeconds,
+        completedAt: new Date().toISOString(),
+      }),
+    }).catch(() => {});
+  }, [enabled, elapsedSeconds, moduleId, profile, subject, topic]);
+
+  // Build display string: MM:SS when < 1 hour, HH:MM:SS otherwise
+  const h = Math.floor(elapsedSeconds / 3600);
+  const m = Math.floor((elapsedSeconds % 3600) / 60);
+  const s = elapsedSeconds % 60;
+  const displayStr = h > 0
+    ? `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+    : `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+
+  return { elapsedSeconds, displayStr, isPaused, stop };
+}
+
+function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAnswer, onExit, backLabel, soundConfig, t, rangeFrom, rangeTo, onRangeComplete, profile, timerConfig }) {
   // ── Parent/teacher-assigned question range (Assignments for you) ────────
   // When a student opens a chapter from the "Assignments for you" tab
   // instead of the open Question Bank, rangeFrom/rangeTo restrict play to
@@ -801,6 +960,22 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
   const soundOnStreak        = (sc['SoundOnStreak']        || 'TRUE').toString().toUpperCase() !== 'FALSE';
   const streakThreshold      = Math.max(2, parseInt(sc['StreakThreshold'] || '5', 10) || 5);
   const showQuestionDropdown = (sc['ShowQuestionDropdown'] || 'FALSE').toString().toUpperCase() === 'TRUE';
+
+  // ── Timer config (Config sheet keys) ─────────────────────────────────────
+  // EnableTestTimer  TRUE/FALSE  — set FALSE to disable entirely (default TRUE)
+  // ShowTestTimer    TRUE/FALSE  — set FALSE to hide clock but still log (default TRUE)
+  const tc          = timerConfig || {};
+  const enableTimer = (tc['EnableTestTimer'] || 'TRUE').toString().toUpperCase() !== 'FALSE';
+  const showTimerUI = (tc['ShowTestTimer']   || 'TRUE').toString().toUpperCase() !== 'FALSE';
+
+  const timer = useTestTimer({
+    moduleId: module?.['Module ID'],
+    profile:  profile || { id: 'anon', name: '', classLevel: '' },
+    subject:  module?.SubjectEN || module?.Subject || '',
+    topic:    module?.Title || '',
+    enabled:  enableTimer,
+  });
+
   const total = steps.length;
   const attemptedCount = progress?.answers ? Object.keys(progress.answers).length : 0;
   const isComplete = !!progress?.completedAt;
@@ -893,7 +1068,15 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
 
   const goNext = () => { if (idx + 1 < total) setIdx(idx+1); else finish(); };
   const goPrev = () => { if (idx > 0) setIdx(idx-1); };
-  const finish = () => { onSave({ completedAt:new Date().toISOString(), completionPct:100 }); if (rangeFrom && rangeTo) onRangeComplete?.(); setView('complete'); };
+  const finish = () => {
+    const completedAt    = new Date().toISOString();
+    const timeTakenSecs  = timer.elapsedSeconds;
+    // Stop the timer and send to the Google Sheet
+    timer.stop(timeTakenSecs);
+    onSave({ completedAt, completionPct: 100, timeTakenSeconds: timeTakenSecs });
+    if (rangeFrom && rangeTo) onRangeComplete?.();
+    setView('complete');
+  };
 
   // ── INTRO ──
   if (view === 'intro') {
@@ -1031,6 +1214,20 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
           {/* Issue 1: "2 of 50" counter badge in header, small and unobtrusive */}
           <span className="lp-fs-qcount">{idx+1} / {total}</span>
           {streakPill}
+          {/* ── Test timer badge — visible only when enabled + showTimerUI ── */}
+          {enableTimer && showTimerUI && (
+            <span
+              className={`lp-timer-badge${timer.isPaused ? ' paused' : ''}`}
+              title={timer.isPaused ? 'Timer paused — no activity for 5 min' : 'Time elapsed on this topic'}
+            >
+              <i className={`fa-solid ${timer.isPaused ? 'fa-pause' : 'fa-stopwatch'}`}
+                 style={{ fontSize: '9px', marginRight: '3px' }} />
+              {timer.displayStr}
+              {timer.isPaused && (
+                <span style={{ marginLeft: '3px', fontSize: '9px', opacity: .65 }}>paused</span>
+              )}
+            </span>
+          )}
         </div>
 
         {/* ── Slim progress bar flush under header ── */}
@@ -1154,6 +1351,149 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
         </div>
       </div>
     </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CompletedTopicsTab — lists every module the student has finished, showing
+// the date completed, time taken (from timeTakenSeconds in learnProgress), and
+// their correct/attempted score. Sorted most-recently-completed first.
+// ─────────────────────────────────────────────────────────────────────────────
+// CompletedTopicsTab
+//
+// Shows every module the student has fully completed. Each card shows:
+//   • Date completed  • Time taken  • Score
+//   • "New questions added" badge when the sheet has grown since completion
+//   • Retake button — resets progress, moves topic back to Question Bank,
+//     and jumps straight into it
+//
+// Topic lifecycle:
+//   finish quiz  → completedAt set  → disappears from Question Bank
+//                                   → appears here
+//   Retake click → completedAt cleared → reappears in Question Bank
+//                                      → disappears from here
+//   Teacher adds new steps → topic reappears in Question Bank automatically
+//                          → "new questions" badge shown here until retaken
+// ─────────────────────────────────────────────────────────────────────────────
+function CompletedTopicsTab({ learnProgress, learningModules, stepsFor, saveLearnProgress, onRetake }) {
+  const rows = useMemo(() => {
+    return learningModules
+      .filter(m => !!learnProgress[m['Module ID']]?.completedAt)
+      .map(m => {
+        const id        = m['Module ID'];
+        const p         = learnProgress[id];
+        const secs      = Number(p.timeTakenSeconds) || 0;
+        const correct   = p.correct   || 0;
+        const attempted = p.attempted || 0;
+        const h   = Math.floor(secs / 3600);
+        const min = Math.floor((secs % 3600) / 60);
+        const sec = secs % 60;
+        const timeStr = secs === 0
+          ? '—'
+          : h > 0
+            ? `${h}h ${String(min).padStart(2,'0')}m ${String(sec).padStart(2,'0')}s`
+            : `${String(min).padStart(2,'0')}m ${String(sec).padStart(2,'0')}s`;
+        const totalSteps    = stepsFor ? stepsFor(id).length : 0;
+        const answeredSteps = Object.keys(p.answers || {}).length;
+        const hasNewQ       = totalSteps > answeredSteps;
+        return {
+          moduleId:    id,
+          title:       m.Title || id,
+          subject:     m.SubjectEN || m.Subject || '',
+          completedAt: p.completedAt,
+          dateStr:     new Date(p.completedAt).toLocaleDateString(undefined, { day:'numeric', month:'short', year:'numeric' }),
+          timeStr,
+          scoreStr:    attempted > 0 ? `${correct}/${attempted}` : null,
+          hasNewQ,
+          newQCount:   hasNewQ ? totalSteps - answeredSteps : 0,
+        };
+      })
+      .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
+  }, [learnProgress, learningModules, stepsFor]);
+
+  const handleRetake = (row) => {
+    // Clear completedAt so the topic leaves Completed Topics and re-enters
+    // the Question Bank, then navigate straight into the quiz.
+    saveLearnProgress(row.moduleId, {
+      startedAt:        new Date().toISOString(),
+      completedAt:      null,
+      attempted:        0,
+      correct:          0,
+      incorrect:        0,
+      completionPct:    0,
+      timeTakenSeconds: 0,
+      answers:          {},
+    });
+    onRetake(row.moduleId, row.subject);
+  };
+
+  if (rows.length === 0) {
+    return (
+      <div className="content">
+        <div className="card ct-empty">
+          <i className="fa-solid fa-circle-check" />
+          <div style={{ fontFamily:'var(--fd)', fontWeight:800, fontSize:'15px', marginBottom:'6px', color:'rgba(255,255,255,.6)' }}>
+            No completed topics yet
+          </div>
+          <div style={{ fontSize:'12.5px' }}>
+            Topics you finish will appear here with the date and time taken.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="content">
+      <div className="card">
+        <div className="card-t">
+          <i className="fa-solid fa-circle-check" style={{ color:'var(--teal)' }} />{' '}
+          Completed Topics ({rows.length})
+        </div>
+        {rows.map(row => (
+          <div key={row.moduleId} className="ct-card">
+            <div className="ct-icon"><i className="fa-solid fa-book-open-reader" /></div>
+            <div className="ct-body">
+              <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:'10px', flexWrap:'wrap' }}>
+                <div style={{ minWidth:0, flex:1 }}>
+                  <div className="ct-title">{row.title}</div>
+                  <div className="ct-meta">
+                    {row.subject && <span className="ct-subj">{row.subject}</span>}
+                    <span className="ct-pill date">
+                      <i className="fa-solid fa-calendar-check" style={{ fontSize:'9px' }} />
+                      {row.dateStr}
+                    </span>
+                    <span className="ct-pill time">
+                      <i className="fa-solid fa-stopwatch" style={{ fontSize:'9px' }} />
+                      {row.timeStr}
+                    </span>
+                    {row.scoreStr && (
+                      <span className="ct-pill score">
+                        <i className="fa-solid fa-star" style={{ fontSize:'9px' }} />
+                        {row.scoreStr} correct
+                      </span>
+                    )}
+                    {row.hasNewQ && (
+                      <span className="ct-pill newq">
+                        <i className="fa-solid fa-bolt" style={{ fontSize:'9px' }} />
+                        {row.newQCount} new question{row.newQCount !== 1 ? 's' : ''} added
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <button
+                  className="btn-outline ct-retake-btn"
+                  onClick={() => handleRetake(row)}
+                  title="Reset your progress and retake this topic from the beginning"
+                >
+                  <i className="fa-solid fa-rotate-right" /> Retake
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1584,7 +1924,16 @@ function PortalInner() {
   // ── topicsForSubjectKey: match modules by Subject name (exact, no fuzzy
   // match), scoped to ASSIGN_LMOD so it automatically respects the current
   // class-preview selection. ──────────────────────────────────────────────
-  const topicsForSubjectKey = subjectName => ASSIGN_LMOD.filter(m => m.Subject === subjectName);
+  const topicsForSubjectKey = subjectName =>
+    ASSIGN_LMOD.filter(m => {
+      if (m.Subject !== subjectName) return false;
+      const id  = m['Module ID'];
+      const p   = learnProgress[id];
+      if (!p?.completedAt) return true;               // not yet completed → show
+      const totalSteps    = stepsFor(id).length;
+      const answeredSteps = Object.keys(p.answers || {}).length;
+      return totalSteps > answeredSteps;              // new questions added → reappear
+    });
 
   // ── Subtopics from sheet (optional Subtopics column, comma-separated) ────────
   // Renders the pill row inside the subject card. Falls back to an empty array
@@ -2327,6 +2676,26 @@ function PortalInner() {
     .lp-fs-title{flex:1;font-family:var(--fd);font-size:13px;font-weight:700;color:rgba(255,255,255,.8);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
     /* Compact "2 of 50" counter badge in the header (issue 1) */
     .lp-fs-qcount{flex-shrink:0;font-family:var(--fm);font-size:11px;font-weight:700;color:var(--muted);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:100px;padding:3px 10px;white-space:nowrap;}
+    /* ── Test-timer badge (quiz header) ── */
+    .lp-timer-badge{flex-shrink:0;display:inline-flex;align-items:center;gap:2px;font-family:var(--fm);font-size:11px;font-weight:800;color:#f97316;background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.3);border-radius:100px;padding:3px 10px;white-space:nowrap;transition:color .3s,background .3s,border-color .3s;}
+    .lp-timer-badge.paused{color:var(--muted);background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.1);}
+    /* ── Completed Topics tab ── */
+    .ct-card{display:flex;align-items:flex-start;gap:14px;padding:14px 0;border-bottom:1px solid var(--border);}
+    .ct-card:last-child{border-bottom:none;}
+    .ct-icon{width:38px;height:38px;border-radius:10px;background:rgba(0,198,167,.1);border:1px solid rgba(0,198,167,.2);display:flex;align-items:center;justify-content:center;flex-shrink:0;color:var(--teal);font-size:15px;}
+    .ct-body{flex:1;min-width:0;}
+    .ct-title{font-family:var(--fd);font-size:13.5px;font-weight:800;color:#fff;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .ct-meta{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
+    .ct-pill{display:inline-flex;align-items:center;gap:4px;border-radius:100px;padding:2px 9px;font-size:10.5px;font-weight:700;white-space:nowrap;}
+    .ct-pill.time{color:#f97316;background:rgba(249,115,22,.08);border:1px solid rgba(249,115,22,.25);}
+    .ct-pill.date{color:#60a5fa;background:rgba(96,165,250,.08);border:1px solid rgba(96,165,250,.25);}
+    .ct-pill.score{color:#4ade80;background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.25);}
+    .ct-pill.newq{color:#a78bfa;background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.3);animation:ct-pulse 2s ease-in-out infinite;}
+    @keyframes ct-pulse{0%,100%{opacity:1;}50%{opacity:.65;}}
+    .ct-retake-btn{flex-shrink:0;font-size:12px;padding:5px 12px;white-space:nowrap;}
+    .ct-subj{font-size:11px;color:rgba(255,255,255,.4);font-weight:600;}
+    .ct-empty{text-align:center;color:var(--muted);padding:48px 20px;}
+    .ct-empty i{font-size:30px;margin-bottom:12px;display:block;opacity:.35;}
     /* Slim progress bar directly under header — no separate wrapper section */
     .lp-fs-progress-wrap{padding:0;flex-shrink:0;}
     .lp-fs-bar{margin:0;height:3px;border-radius:0;}
@@ -3410,6 +3779,8 @@ function PortalInner() {
                     onExit={()=>setActiveModuleId(null)}
                     backLabel={`${t('p_back_to')} ${activeAssignmentSubject} ${t('p_topics_suffix')}`}
                     soundConfig={cfg.config || {}}
+                    timerConfig={cfg.config || {}}
+                    profile={profile}
                     t={t}
                   />
                 </>
@@ -3478,6 +3849,8 @@ function PortalInner() {
                       onRangeComplete={()=>completeMyAssignment(row.AssignmentID)}
                       backLabel="Back to Assignments for you"
                       soundConfig={cfg.config || {}}
+                      timerConfig={cfg.config || {}}
+                      profile={profile}
                       t={t}
                     />
                   </>
@@ -3540,6 +3913,31 @@ function PortalInner() {
             )}
 
 
+
+            {/* ── COMPLETED TOPICS ──────────────────────────────────────────
+                Lists every module the student has finished, the date it was
+                completed, and the time taken (from the timer or sheet log). */}
+            {tab==='completedtopics' && (
+              <>
+                <div className="main-top">
+                  <div>
+                    <div className="pg-h">Completed Topics</div>
+                    <div className="pg-s">Topics you have finished — when you completed them and how long it took</div>
+                  </div>
+                </div>
+                <CompletedTopicsTab
+                  learnProgress={learnProgress}
+                  learningModules={LMOD}
+                  stepsFor={stepsFor}
+                  saveLearnProgress={saveLearnProgress}
+                  onRetake={(moduleId, subjectName) => {
+                    setActiveAssignmentSubject(subjectName);
+                    setActiveModuleId(moduleId);
+                    setTab('assignments');
+                  }}
+                />
+              </>
+            )}
 
             {/* SCHEDULE */}
             {tab==='schedule' && (<>
