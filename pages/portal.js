@@ -1237,8 +1237,14 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
           </div>
         </div>
 
-        {/* ── Scrollable body: everything between bar and bottom nav ── */}
+        {/* ── Scrollable body: everything between bar and bottom nav ──
+            Issue 2/3/4: .lp-fs-inner centers + caps content width on large
+            screens and uses the full available height; .lp-fs-question-wrap
+            groups the question+options so they can flex to fill any
+            leftover vertical space instead of leaving the bottom of the
+            screen empty. ── */}
         <div className="lp-fs-body">
+        <div className="lp-fs-inner">
 
         {/* ── Dot nav (always shown; dropdown only when ShowQuestionDropdown=TRUE) ── */}
         <div className="lp-fs-nav-wrap">
@@ -1291,45 +1297,49 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
           </div>
         )}
 
-        {/* ── Question ── */}
-        <div className="lp-fs-question">{step.Question}</div>
+        {/* ── Question + Options — wrapped together so this block can grow
+            (flex:1) and absorb any leftover vertical space, keeping the
+            whole screen filled rather than leaving the bottom blank. ── */}
+        <div className="lp-fs-question-wrap">
+          <div className="lp-fs-question">{step.Question}</div>
 
-        {/* ── Options — 2-column grid, full-width on mobile ── */}
-        <div className="lp-fs-opts">
-          {opts.map(letter => {
-            const text = step[`Option ${letter}`];
-            if (!text) return null;
-            let cls = 'lp-fs-opt';
-            if (locked && letter === step['Correct Option']) cls += ' correct';
-            else if (locked && letter === selected)         cls += ' incorrect';
-            return (
-              <button key={letter} className={cls} disabled={locked} onClick={()=>choose(letter)}>
-                <span className="lp-fs-letter">{letter}</span>
-                <span className="lp-fs-opt-text">{text}</span>
-              </button>
-            );
-          })}
+          <div className="lp-fs-opts">
+            {opts.map(letter => {
+              const text = step[`Option ${letter}`];
+              if (!text) return null;
+              let cls = 'lp-fs-opt';
+              if (locked && letter === step['Correct Option']) cls += ' correct';
+              else if (locked && letter === selected)         cls += ' incorrect';
+              return (
+                <button key={letter} className={cls} disabled={locked} onClick={()=>choose(letter)}>
+                  <span className="lp-fs-letter">{letter}</span>
+                  <span className="lp-fs-opt-text">{text}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* ── Feedback panel (shown after answering) ── */}
+          {locked && (
+            <div className={`lp-fs-feedback ${selected===step['Correct Option']?'good':'bad'}`}>
+              <i className={`fa-solid ${selected===step['Correct Option']?'fa-circle-check':'fa-circle-xmark'} lp-fs-fb-icon`} />
+              <div>
+                <strong>{selected===step['Correct Option']?t('p_correct_excl'):t('p_not_quite')}</strong>
+                <span> {step.Explanation}</span>
+                {step['Learn More URL'] && (
+                  <div style={{marginTop:'8px'}}>
+                    <a className="lp-learnmore" href={step['Learn More URL']} target="_blank" rel="noopener noreferrer">
+                      <i className="fa-solid fa-book-open" /> {step['Learn More Label'] || t('p_learn_more')} <i className="fa-solid fa-arrow-up-right-from-square" />
+                    </a>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* ── Feedback panel (shown after answering) ── */}
-        {locked && (
-          <div className={`lp-fs-feedback ${selected===step['Correct Option']?'good':'bad'}`}>
-            <i className={`fa-solid ${selected===step['Correct Option']?'fa-circle-check':'fa-circle-xmark'} lp-fs-fb-icon`} />
-            <div>
-              <strong>{selected===step['Correct Option']?t('p_correct_excl'):t('p_not_quite')}</strong>
-              <span> {step.Explanation}</span>
-              {step['Learn More URL'] && (
-                <div style={{marginTop:'8px'}}>
-                  <a className="lp-learnmore" href={step['Learn More URL']} target="_blank" rel="noopener noreferrer">
-                    <i className="fa-solid fa-book-open" /> {step['Learn More Label'] || t('p_learn_more')} <i className="fa-solid fa-arrow-up-right-from-square" />
-                  </a>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* ── end lp-fs-body ── */}
+        {/* ── end lp-fs-inner / lp-fs-body ── */}
+        </div>
         </div>
 
         {/* ── Nav row: Previous | Next / Finish — sticky at bottom, outside scroll ── */}
@@ -2357,7 +2367,14 @@ function PortalInner() {
   const CSS = `
     @keyframes skpulse{0%,100%{opacity:1}50%{opacity:.35}}
     *{box-sizing:border-box;margin:0;padding:0;}
-    :root{--navy:#0a0f2c;--navy-mid:#121a3e;--surf:#161d3f;--surf2:#1e2850;--teal:#00c6a7;--accent:#f5a623;--text:#e2e8f0;--muted:#64748b;--border:rgba(255,255,255,.08);--r:14px;--fd:'Playfair Display',Georgia,serif;--fb:'DM Sans',system-ui,sans-serif;}
+    :root{--navy:#0a0f2c;--navy-mid:#121a3e;--surf:#161d3f;--surf2:#1e2850;--teal:#00c6a7;--accent:#f5a623;--text:#e2e8f0;--muted:#64748b;--border:rgba(255,255,255,.08);--r:14px;--fd:'Playfair Display',Georgia,serif;--fb:'DM Sans',system-ui,sans-serif;--fm:'Inter',system-ui,sans-serif;
+      /* Issue 1 — clean, simple, highly-readable quiz typography (separate
+         from the site's decorative --fd serif so question text never
+         renders in a fallback serif font). --fq = quiz body copy,
+         --fqh = quiz headings/labels. */
+      --fq:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+      --fqh:'Poppins','Inter',-apple-system,sans-serif;
+    }
     html,body{height:100%;font-family:var(--fb);background:var(--navy);color:var(--text);-webkit-font-smoothing:antialiased;}
     .lw{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--navy);position:relative;overflow:hidden;}
     .lbg{position:absolute;inset:0;background:radial-gradient(ellipse 55% 55% at 70% 30%,rgba(0,198,167,.12) 0%,transparent 60%),radial-gradient(ellipse 40% 40% at 20% 70%,rgba(245,166,35,.08) 0%,transparent 60%);}
@@ -2669,16 +2686,233 @@ function PortalInner() {
        fills the real screen and the nav row is always visible without
        scrolling, on any device. */
     .lp-fullscreen{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;height:100vh;height:100dvh;padding:0;background:var(--navy);overflow:hidden;}
-    /* Header: back + title + counter (issue 1 — counter moves here) + streak */
-    .lp-fs-header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--navy);z-index:10;flex-shrink:0;}
-    .lp-fs-back{width:34px;height:34px;border-radius:9px;border:1px solid var(--border);background:rgba(255,255,255,.04);color:rgba(255,255,255,.7);font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s;}
+    /* Header: back + title + counter + streak + timer */
+    .lp-fs-header{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--navy);z-index:10;flex-shrink:0;}
+    .lp-fs-back{width:36px;height:36px;border-radius:9px;border:1px solid var(--border);background:rgba(255,255,255,.04);color:rgba(255,255,255,.7);font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s;}
     .lp-fs-back:hover{background:rgba(255,255,255,.1);color:#fff;}
-    .lp-fs-title{flex:1;font-family:var(--fd);font-size:13px;font-weight:700;color:rgba(255,255,255,.8);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    /* Compact "2 of 50" counter badge in the header (issue 1) */
-    .lp-fs-qcount{flex-shrink:0;font-family:var(--fm);font-size:11px;font-weight:700;color:var(--muted);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:100px;padding:3px 10px;white-space:nowrap;}
-    /* ── Test-timer badge (quiz header) ── */
-    .lp-timer-badge{flex-shrink:0;display:inline-flex;align-items:center;gap:2px;font-family:var(--fm);font-size:11px;font-weight:800;color:#f97316;background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.3);border-radius:100px;padding:3px 10px;white-space:nowrap;transition:color .3s,background .3s,border-color .3s;}
+    .lp-fs-title{flex:1;font-family:var(--fqh);font-size:14px;font-weight:700;color:rgba(255,255,255,.82);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .lp-fs-qcount{flex-shrink:0;font-family:var(--fm);font-size:12px;font-weight:700;color:var(--muted);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:100px;padding:4px 11px;white-space:nowrap;}
+    .lp-timer-badge{flex-shrink:0;display:inline-flex;align-items:center;gap:2px;font-family:var(--fm);font-size:12px;font-weight:800;color:#f97316;background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.3);border-radius:100px;padding:4px 11px;white-space:nowrap;transition:color .3s,background .3s,border-color .3s;}
     .lp-timer-badge.paused{color:var(--muted);background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.1);}
+
+    /* ── Slim progress bar flush under header ── */
+    .lp-fs-progress-wrap{padding:0;flex-shrink:0;}
+    .lp-fs-bar{margin:0;height:4px;border-radius:0;}
+    .lp-fs-bar .lp-bar-outer{border-radius:0;height:4px;}
+    .lp-fs-counter{display:none;}
+
+    /* ════════════════════════════════════════════════════════════════════
+       ISSUE 2 & 3 — Full-viewport, dynamically-scaling quiz body.
+       ────────────────────────────────────────────────────────────────────
+       .lp-fs-body is now a CSS Grid container that fills 100% of the
+       remaining viewport height (flex:1 inside the fixed .lp-fullscreen
+       column). Content no longer sits top-aligned with empty space below;
+       instead the grid distributes rows so the question + options block
+       expands to use the available height, while Learning Section /
+       Teaching boxes get a fair, capped share rather than a fixed small
+       max-height. All type uses clamp() so it scales fluidly between a
+       sensible mobile minimum and a generous desktop maximum, instead of
+       fixed small px values — this directly answers "make the fonts and
+       boxes bigger and aligned to full screen use."
+
+       Breakpoint strategy (Issue 4 — device coverage):
+         < 480px   → phones (portrait)              1-col options, compact
+         480-767px → large phones / small tablets    1-col options, roomier
+         768-1023px→ tablets (portrait) / small laptop 2-col options
+         1024-1439px→ laptops/desktops                2-col options, wide canvas
+         ≥1440px   → large desktops                   2-col options, capped
+                      max-width so lines don't sprawl edge-to-edge, centered
+       ════════════════════════════════════════════════════════════════════ */
+    .lp-fs-body{
+      flex:1;
+      overflow-y:auto;
+      display:flex;
+      flex-direction:column;
+      padding-bottom:env(safe-area-inset-bottom,0px);
+    }
+    .lp-fs-body::-webkit-scrollbar{width:6px;}
+    .lp-fs-body::-webkit-scrollbar-track{background:transparent;}
+    .lp-fs-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:99px;}
+
+    /* Inner content column — centers and caps width on very large screens
+       so text never stretches into unreadable full-width lines, while still
+       using the full available height. */
+    .lp-fs-inner{
+      width:100%;
+      max-width:1180px;
+      margin:0 auto;
+      padding:clamp(10px,2vw,20px) clamp(16px,4vw,40px) clamp(16px,3vw,32px);
+      box-sizing:border-box;
+      flex:1;
+      display:flex;
+      flex-direction:column;
+      gap:clamp(10px,1.6vh,18px);
+    }
+
+    /* Nav wrap (dots / dropdown) */
+    .lp-fs-nav-wrap{padding:0;flex-shrink:0;}
+
+    /* Learning Section + Teaching boxes — bigger, more generous, fluid type */
+    .lp-fs-learn-sec,.lp-fs-teach{
+      background:rgba(99,179,237,.07);
+      border:1px solid rgba(99,179,237,.2);
+      border-radius:14px;
+      padding:clamp(14px,2vw,20px) clamp(16px,2.4vw,24px);
+      margin:0;
+      max-height:min(32vh,320px);
+      overflow-y:auto;
+      flex-shrink:0;
+    }
+    .lp-fs-teach{background:rgba(0,198,167,.07);border-color:rgba(0,198,167,.18);display:flex;gap:12px;align-items:flex-start;}
+    .lp-fs-learn-sec::-webkit-scrollbar,.lp-fs-teach::-webkit-scrollbar{width:5px;}
+    .lp-fs-learn-sec::-webkit-scrollbar-track,.lp-fs-teach::-webkit-scrollbar-track{background:transparent;}
+    .lp-fs-learn-sec::-webkit-scrollbar-thumb{background:rgba(99,179,237,.3);border-radius:99px;}
+    .lp-fs-teach::-webkit-scrollbar-thumb{background:rgba(0,198,167,.3);border-radius:99px;}
+    .lp-fs-teach-icon{color:var(--teal);font-size:clamp(14px,1.6vw,18px);margin-top:3px;flex-shrink:0;}
+    .lp-fs-teach p{font-family:var(--fq);font-size:clamp(13px,1.3vw,16px);color:rgba(255,255,255,.92);line-height:1.65;margin:0;}
+    .lp-fs-learn-sec-hd{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
+    .lp-fs-learn-sec-hd i{color:#63b3ed;font-size:clamp(13px,1.4vw,16px);flex-shrink:0;}
+    .lp-fs-learn-sec-hd span{font-family:var(--fqh);font-size:clamp(10.5px,1vw,12px);font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:#63b3ed;}
+    .lp-fs-learn-sec p{font-family:var(--fq);font-size:clamp(13px,1.3vw,16px);color:rgba(255,255,255,.92);line-height:1.65;margin:0;}
+
+    /* Step image */
+    .lp-fs-step-img{border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,.08);max-height:min(36vh,340px);display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.03);flex-shrink:0;}
+    .lp-fs-step-img img{width:100%;max-height:min(36vh,340px);object-fit:contain;display:block;}
+
+    /* ── Question block — this is the visual anchor of the screen, so it
+       gets the largest, clearest, most generous type and grows to fill
+       leftover vertical space via flex:1 on its wrapping row below. ── */
+    .lp-fs-question-wrap{flex:1;display:flex;flex-direction:column;justify-content:center;min-height:0;gap:clamp(14px,2.2vh,28px);}
+    .lp-fs-question{
+      font-family:var(--fqh);
+      font-size:clamp(19px,2.6vw,34px);
+      font-weight:800;
+      color:#fff;
+      line-height:1.4;
+      margin:0;
+      box-sizing:border-box;
+      width:100%;
+      letter-spacing:-.01em;
+    }
+
+    /* ── Options — fluid grid: 1 col on phones, 2 cols from tablet up.
+       Each option scales its padding/min-height/font with clamp() so
+       larger screens get noticeably larger, easier-to-read tap targets
+       instead of the same cramped 13px row regardless of screen size. ── */
+    .lp-fs-opts{
+      display:grid;
+      grid-template-columns:1fr;
+      gap:clamp(10px,1.4vw,16px);
+      box-sizing:border-box;
+    }
+    .lp-fs-opt{
+      background:var(--surf2);
+      border:1.5px solid var(--border);
+      border-radius:14px;
+      padding:clamp(14px,1.6vw,20px) clamp(16px,1.8vw,22px);
+      text-align:left;
+      font-family:var(--fq);
+      font-size:clamp(14.5px,1.5vw,18px);
+      font-weight:600;
+      color:rgba(255,255,255,.88);
+      cursor:pointer;
+      transition:all .15s;
+      display:flex;
+      align-items:flex-start;
+      gap:clamp(10px,1.2vw,14px);
+      min-height:clamp(54px,7vh,76px);
+      box-sizing:border-box;
+    }
+    .lp-fs-opt:hover:not(:disabled){border-color:rgba(0,198,167,.45);background:rgba(0,198,167,.06);transform:translateY(-1px);}
+    .lp-fs-opt:disabled{cursor:default;}
+    .lp-fs-letter{width:clamp(26px,2.4vw,32px);height:clamp(26px,2.4vw,32px);border-radius:8px;background:rgba(255,255,255,.09);display:flex;align-items:center;justify-content:center;font-family:var(--fqh);font-size:clamp(12px,1.1vw,14px);font-weight:800;flex-shrink:0;margin-top:1px;}
+    .lp-fs-opt-text{flex:1;line-height:1.5;font-size:clamp(14.5px,1.5vw,18px);}
+    .lp-fs-opt.correct{border-color:rgba(34,197,94,.55);background:rgba(34,197,94,.1);color:#4ade80;}
+    .lp-fs-opt.correct .lp-fs-letter{background:#22c55e;color:#fff;}
+    .lp-fs-opt.incorrect{border-color:rgba(239,68,68,.55);background:rgba(239,68,68,.1);color:#f87171;}
+    .lp-fs-opt.incorrect .lp-fs-letter{background:#ef4444;color:#fff;}
+
+    /* Feedback panel */
+    .lp-fs-feedback{
+      border-radius:14px;
+      padding:clamp(14px,1.6vw,20px);
+      margin:0;
+      display:flex;
+      gap:12px;
+      align-items:flex-start;
+      font-family:var(--fq);
+      font-size:clamp(13px,1.3vw,16px);
+      line-height:1.65;
+      color:rgba(255,255,255,.9);
+      flex-shrink:0;
+    }
+    .lp-fs-feedback.good{background:rgba(34,197,94,.09);border:1px solid rgba(34,197,94,.28);}
+    .lp-fs-feedback.bad{background:rgba(239,68,68,.09);border:1px solid rgba(239,68,68,.28);}
+    .lp-fs-fb-icon{font-size:clamp(18px,2vw,24px);margin-top:2px;flex-shrink:0;}
+    .lp-fs-feedback.good .lp-fs-fb-icon{color:#4ade80;}
+    .lp-fs-feedback.bad  .lp-fs-fb-icon{color:#f87171;}
+
+    /* Bottom nav row */
+    .lp-fs-nav-row{padding:14px 16px calc(14px + env(safe-area-inset-bottom,0px));gap:12px;flex-shrink:0;}
+    .lp-fs-nav-row button{flex:1;font-family:var(--fqh);font-size:clamp(13px,1.2vw,15px);min-height:clamp(46px,5.5vh,54px);}
+
+    /* ════════════════════════════════════════════════════════════════════
+       RESPONSIVE BREAKPOINTS — Issue 4: desktop / laptop / tablet / mobile
+       ════════════════════════════════════════════════════════════════════ */
+
+    /* Tablet portrait and up (≥600px): options move to 2 columns */
+    @media(min-width:600px){
+      .lp-fs-opts{grid-template-columns:1fr 1fr;}
+    }
+
+    /* Tablet landscape / small laptop (≥768px): roomier inner padding,
+       Learning Section + Teaching sit side-by-side if both present to
+       reclaim vertical space for the question. */
+    @media(min-width:768px){
+      .lp-fs-header{padding:12px 24px;}
+      .lp-fs-nav-wrap{padding:0;}
+    }
+
+    /* Laptop / desktop (≥1024px): wider inner column, larger question type
+       already handled by clamp() max end; add extra breathing room. */
+    @media(min-width:1024px){
+      .lp-fs-inner{padding-top:24px;padding-bottom:28px;}
+      .lp-fs-question-wrap{gap:28px;}
+    }
+
+    /* Large desktop (≥1440px): cap inner width a bit wider, since there's
+       more room, but still centered so lines stay readable. */
+    @media(min-width:1440px){
+      .lp-fs-inner{max-width:1320px;}
+    }
+
+    /* Phones (≤599px): single column options, tighter spacing, safe-area
+       aware header/footer padding, slightly smaller (but still fluid) type
+       floor so text never gets too small to read on a small screen. */
+    @media(max-width:599px){
+      .lp-fs-header{padding:calc(8px + env(safe-area-inset-top,0px)) 14px 8px;gap:8px;}
+      .lp-fs-back{width:38px;height:38px;}
+      .lp-fs-title{font-size:12.5px;}
+      .lp-fs-qcount,.lp-timer-badge{font-size:11px;padding:3px 9px;}
+      .lp-fs-inner{padding:10px 16px 18px;gap:12px;}
+      .lp-fs-question{font-size:clamp(18px,5.2vw,22px);line-height:1.38;}
+      .lp-fs-opt{min-height:52px;padding:13px 14px;}
+      .lp-fs-opt-text{font-size:clamp(14px,3.8vw,15.5px);}
+      .lp-fs-learn-sec,.lp-fs-teach{max-height:34vh;padding:13px 14px;}
+      .lp-fs-nav-row{padding:10px 14px calc(12px + env(safe-area-inset-bottom,0px));gap:8px;}
+      .lp-fs-nav-row button{min-height:48px;font-size:13px;}
+    }
+
+    /* Very short viewports (landscape phones, small laptops with browser
+       chrome) — shrink the optional Learning Section/Teaching boxes
+       further so the question + options remain visible without forcing a
+       scroll past the fold. */
+    @media(max-height:560px){
+      .lp-fs-learn-sec,.lp-fs-teach{max-height:18vh;}
+      .lp-fs-question-wrap{gap:10px;}
+      .lp-fs-question{font-size:clamp(16px,3vw,20px);}
+    }
+
     /* ── Completed Topics tab ── */
     .ct-card{display:flex;align-items:flex-start;gap:14px;padding:14px 0;border-bottom:1px solid var(--border);}
     .ct-card:last-child{border-bottom:none;}
@@ -2696,81 +2930,6 @@ function PortalInner() {
     .ct-subj{font-size:11px;color:rgba(255,255,255,.4);font-weight:600;}
     .ct-empty{text-align:center;color:var(--muted);padding:48px 20px;}
     .ct-empty i{font-size:30px;margin-bottom:12px;display:block;opacity:.35;}
-    /* Slim progress bar directly under header — no separate wrapper section */
-    .lp-fs-progress-wrap{padding:0;flex-shrink:0;}
-    .lp-fs-bar{margin:0;height:3px;border-radius:0;}
-    .lp-fs-bar .lp-bar-outer{border-radius:0;height:3px;}
-    .lp-fs-counter{display:none;} /* hidden — counter is now in header */
-    /* Scrollable body — everything between bar and bottom nav */
-    .lp-fs-body{flex:1;overflow-y:auto;padding-bottom:8px;}
-    .lp-fs-body::-webkit-scrollbar{width:4px;}
-    .lp-fs-body::-webkit-scrollbar-track{background:transparent;}
-    .lp-fs-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:99px;}
-    /* Nav wrap (dots) — compact, no padding-heavy section */
-    .lp-fs-nav-wrap{padding:8px 16px 4px;}
-    /* Teaching box (issue 4) — larger, smaller font, taller cap */
-    .lp-fs-teach{background:rgba(0,198,167,.07);border:1px solid rgba(0,198,167,.18);border-radius:12px;padding:12px 14px;margin:10px 16px 10px;display:flex;gap:10px;align-items:flex-start;max-height:260px;overflow-y:auto;}
-    .lp-fs-teach::-webkit-scrollbar{width:4px;}
-    .lp-fs-teach::-webkit-scrollbar-track{background:transparent;}
-    .lp-fs-teach::-webkit-scrollbar-thumb{background:rgba(0,198,167,.3);border-radius:99px;}
-    .lp-fs-teach-icon{color:var(--teal);font-size:13px;margin-top:2px;flex-shrink:0;}
-    .lp-fs-teach p{font-size:11.5px;color:rgba(255,255,255,.9);line-height:1.7;margin:0;}
-    /* Learning Section content box */
-    .lp-fs-learn-sec{background:rgba(99,179,237,.07);border:1px solid rgba(99,179,237,.2);border-radius:12px;padding:12px 14px;margin:10px 16px 10px;max-height:240px;overflow-y:auto;}
-    .lp-fs-learn-sec::-webkit-scrollbar{width:4px;}
-    .lp-fs-learn-sec::-webkit-scrollbar-track{background:transparent;}
-    .lp-fs-learn-sec::-webkit-scrollbar-thumb{background:rgba(99,179,237,.3);border-radius:99px;}
-    .lp-fs-learn-sec-hd{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
-    .lp-fs-learn-sec-hd i{color:#63b3ed;font-size:12px;flex-shrink:0;}
-    .lp-fs-learn-sec-hd span{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:#63b3ed;}
-    .lp-fs-learn-sec p{font-size:11.5px;color:rgba(255,255,255,.9);line-height:1.7;margin:0;}
-    /* Step image */
-    .lp-fs-step-img{margin:8px 16px 10px;border-radius:10px;overflow:hidden;border:1px solid rgba(255,255,255,.08);max-height:220px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.03);}
-    .lp-fs-step-img img{width:100%;max-height:220px;object-fit:contain;display:block;}
-    /* Question text (issue 5 — fix left margin overflow) */
-    .lp-fs-question{font-family:var(--fd);font-size:16px;font-weight:900;color:#fff;line-height:1.5;padding:8px 16px 12px;margin:0;box-sizing:border-box;width:100%;}
-    /* Options: 2-col on tablet+, 1-col on narrow mobile (issue 5 — consistent padding) */
-    .lp-fs-opts{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:0 16px 12px;box-sizing:border-box;}
-    .lp-fs-opt{background:var(--surf2);border:1.5px solid var(--border);border-radius:12px;padding:11px 12px;text-align:left;font-family:var(--fb);font-size:13px;font-weight:600;color:rgba(255,255,255,.85);cursor:pointer;transition:all .15s;display:flex;align-items:flex-start;gap:9px;min-height:52px;box-sizing:border-box;}
-    .lp-fs-opt:hover:not(:disabled){border-color:rgba(0,198,167,.45);background:rgba(0,198,167,.05);}
-    .lp-fs-opt:disabled{cursor:default;}
-    .lp-fs-letter{width:24px;height:24px;border-radius:7px;background:rgba(255,255,255,.09);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;flex-shrink:0;margin-top:1px;}
-    .lp-fs-opt-text{flex:1;line-height:1.45;font-size:13px;}
-    .lp-fs-opt.correct{border-color:rgba(34,197,94,.55);background:rgba(34,197,94,.1);color:#4ade80;}
-    .lp-fs-opt.correct .lp-fs-letter{background:#22c55e;color:#fff;}
-    .lp-fs-opt.incorrect{border-color:rgba(239,68,68,.55);background:rgba(239,68,68,.1);color:#f87171;}
-    .lp-fs-opt.incorrect .lp-fs-letter{background:#ef4444;color:#fff;}
-    /* Feedback */
-    .lp-fs-feedback{border-radius:12px;padding:12px 14px;margin:0 16px 12px;display:flex;gap:10px;align-items:flex-start;font-size:12.5px;line-height:1.6;color:rgba(255,255,255,.85);}
-    .lp-fs-feedback.good{background:rgba(34,197,94,.09);border:1px solid rgba(34,197,94,.28);}
-    .lp-fs-feedback.bad{background:rgba(239,68,68,.09);border:1px solid rgba(239,68,68,.28);}
-    .lp-fs-fb-icon{font-size:17px;margin-top:2px;flex-shrink:0;}
-    .lp-fs-feedback.good .lp-fs-fb-icon{color:#4ade80;}
-    .lp-fs-feedback.bad  .lp-fs-fb-icon{color:#f87171;}
-    /* Bottom nav row */
-    .lp-fs-nav-row{padding:6px 16px 16px;gap:8px;}
-    .lp-fs-nav-row button{flex:1;}
-    @media(max-width:480px){
-      .lp-fs-opts{grid-template-columns:1fr;}
-      .lp-fs-question{font-size:15px;}
-      .lp-fs-teach p{font-size:11px;}
-      .lp-fs-learn-sec p{font-size:11px;}
-      .lp-fs-teach{max-height:200px;}
-      .lp-fs-learn-sec{max-height:180px;}
-    }
-    /* ── Mobile-friendly pass for the full-screen quiz (notch/safe-area aware,
-       bigger tap targets, fluid type) ── */
-    @media(max-width:640px){
-      .lp-fs-header{padding:calc(8px + env(safe-area-inset-top,0px)) 12px 8px;}
-      .lp-fs-back{width:38px;height:38px;}
-      .lp-fs-title{font-size:clamp(11px,3vw,13px);}
-      .lp-fs-question{font-size:clamp(14px,4vw,16px);padding:10px 14px 12px;}
-      .lp-fs-opt{min-height:48px;padding:12px 12px;font-size:clamp(12.5px,3.4vw,13.5px);}
-      .lp-fs-letter{width:26px;height:26px;}
-      .lp-fs-nav-row{padding:10px 14px calc(12px + env(safe-area-inset-bottom,0px));}
-      .lp-fs-nav-row button{min-height:46px;font-size:13px;}
-      .lp-fs-feedback{margin:0 14px 12px;font-size:12px;}
-    }
     /* ── Sidebar auto-collapse when question is open (issue 6) ── */
     .dash.quiz-mode .sb{width:0;min-width:0;overflow:hidden;border-right:none;transition:width .25s ease;}
     .dash.quiz-mode .main{flex:1;}
@@ -2822,6 +2981,15 @@ function PortalInner() {
     <>
       <Head>
         <title>{`${S.SiteName} | ${S.AcademyName}`}</title>
+        {/* Clean, highly-legible type for quiz content (Issue 1: simple,
+            clear, readable fonts). Inter is used for the question/options/
+            learning-section body copy; Poppins for headings/titles. Both
+            load with font-display:swap so there's no FOUT-related layout
+            shift, and both fall back gracefully to system fonts if the
+            network request fails. */}
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Poppins:wght@600;700;800;900&display=swap" rel="stylesheet" />
         <style>{CSS}</style>
       </Head>
       <Script src="https://cdn.jsdelivr.net/npm/chart.js" strategy="afterInteractive" />
