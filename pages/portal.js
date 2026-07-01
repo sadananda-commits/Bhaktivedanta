@@ -1681,6 +1681,12 @@ function PortalInner() {
   const [learnProgress,  setLearnProgress]  = useState({});
   const [leaderboard,    setLeaderboard]    = useState({ overall:[], bySubject:{} });
   const [leaderboardLoading, setLeaderboardLoading] = useState(false);
+  // Weighted leaderboard — same shape as `leaderboard`, but scoped to only
+  // the questions a student was assigned via "Assignments for you", ranked
+  // by accuracy % instead of raw attempted count. See
+  // /api/student/weighted-leaderboard for the full rules.
+  const [weightedLeaderboard,        setWeightedLeaderboard]        = useState({ overall:[], bySubject:{} });
+  const [weightedLeaderboardLoading, setWeightedLeaderboardLoading] = useState(false);
   // Time-window filter for the leaderboard: 0 = all time, 7 = last 7 days, etc.
   const [lbDays, setLbDays] = useState(30); // default: last 30 days
   // Daily questions-attempted board — derived locally from learnProgress
@@ -2460,6 +2466,20 @@ function PortalInner() {
       .then(data => setLeaderboard({ overall: data.overall||[], bySubject: data.bySubject||{} }))
       .catch(() => {})
       .finally(() => setLeaderboardLoading(false));
+  }, [tab, authed]);
+
+  // Weighted leaderboard fetched the same way — lazily, once the Leaderboard
+  // tab is opened. Kept as a separate request/cache from the regular
+  // leaderboard since it's a different aggregate (assignment-scoped,
+  // accuracy-ranked, min-50-attempts gated).
+  useEffect(() => {
+    if (tab !== 'leaderboard' || !authed) return;
+    setWeightedLeaderboardLoading(true);
+    fetch('/api/student/weighted-leaderboard')
+      .then(r => r.json())
+      .then(data => setWeightedLeaderboard({ overall: data.overall||[], bySubject: data.bySubject||{} }))
+      .catch(() => {})
+      .finally(() => setWeightedLeaderboardLoading(false));
   }, [tab, authed]);
 
   const notifStyle = type => ({
@@ -3497,6 +3517,70 @@ function PortalInner() {
                                 ) : (
                                   <div style={{color:'var(--muted)',fontSize:'13px'}}>
                                     {lbDays > 0 ? `No activity in the last ${lbDays} day${lbDays===1?'':'s'}` : t('p_no_attempts_yet')}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* ── WEIGHTED LEADERBOARD (assignment-scoped, accuracy-ranked) ── */}
+                      <div className="sec-divider">
+                        Weighted Leaderboard
+                        <span style={{marginLeft:'8px',fontWeight:400,fontSize:'10px',color:'var(--muted)'}}>
+                          Assigned questions only · min. 50 attempted · ranked by accuracy
+                        </span>
+                      </div>
+                      <div className="card" style={{marginBottom:'22px'}}>
+                        <div className="card-t">
+                          <i className="fa-solid fa-star" style={{color:'#f5a623'}} /> Weighted Ranking
+                        </div>
+                        {weightedLeaderboardLoading ? (
+                          <>{[1,2,3].map(i=><div key={i} style={{marginBottom:'10px'}}><SK h="44px" /></div>)}</>
+                        ) : !weightedLeaderboard.overall.length ? (
+                          <div style={{textAlign:'center',color:'var(--muted)',fontSize:'13px',padding:'20px 0'}}>
+                            No students have answered at least 50 assigned questions yet.
+                          </div>
+                        ) : (
+                          <div className="lb-list">
+                            {weightedLeaderboard.overall.slice(0,20).map((row,i)=>{
+                              const rank = i+1;
+                              const isMe = row.studentId === profile.id;
+                              return (
+                                <div key={row.studentId} className={`lb-row${isMe?' me':''}`}>
+                                  <div className={`lb-rank${rank<=3?` top${rank}`:''}`}>{rank<=3 ? <i className="fa-solid fa-star" /> : rank}</div>
+                                  <div className="lb-name">{row.studentName}{isMe && <span className="lb-you">{t('p_you_suffix')}</span>}</div>
+                                  <div className="lb-stats">
+                                    <span className="lb-correct">{row.attempted} assigned attempted</span>
+                                    <span className="lb-acc">{row.accuracy}% {t('p_accuracy')}</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      {!weightedLeaderboardLoading && Object.keys(weightedLeaderboard.bySubject).length > 0 && (
+                        <div className="lb-subj-grid">
+                          {Object.entries(weightedLeaderboard.bySubject).map(([subject, rows]) => {
+                            const champ = rows[0];
+                            const subjMeta = ASGN_SUBJ.find(s=>s.SubjectEN===subject) || ASGN_SUBJ.find(s=>s.Subject===subject);
+                            const subjectDisplay = subjMeta?.Subject || subject;
+                            return (
+                              <div key={subject} className="card lb-subj-card">
+                                <div className="card-t"><i className={`fa-solid ${subjMeta?.['Icon (FontAwesome solid)']||'fa-star'}`} style={{color:subjMeta?.['Color (Hex)']}} /> {subjectDisplay} — Weighted Champion</div>
+                                <div className="lb-champ-name">{champ.studentName}</div>
+                                <div className="lb-champ-stats">{champ.accuracy}% {t('p_accuracy')} · {champ.attempted} assigned attempted</div>
+                                {rows.length>1 && (
+                                  <div className="lb-runner-ups">
+                                    {rows.slice(1,4).map((r,ri)=>(
+                                      <div key={r.studentId} className="lb-runner-row">
+                                        <span>{ri+2}. {r.studentName}{r.studentId===profile.id?t('p_you_suffix'):''}</span>
+                                        <span>{r.accuracy}%</span>
+                                      </div>
+                                    ))}
                                   </div>
                                 )}
                               </div>
