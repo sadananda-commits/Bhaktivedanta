@@ -408,7 +408,12 @@ function rebuildLearnProgressFromRows(rows, totalStepsFor) {
     if (!moduleId) return;
     if (!byModule[moduleId]) byModule[moduleId] = { answers:{}, timestamps:[] };
     const isCorrect = String(r.Status||'').trim().toLowerCase() === 'correct';
-    byModule[moduleId].answers[r.QuestionNumber] = { isCorrect, selected: r.AnswerGiven };
+    // Issue 1: carry the per-question time (if the sheet has it) back into
+    // the rebuilt answer record, so a fresh device's review screen and the
+    // total-time rollup below both have it, not just the device that
+    // originally answered the question.
+    const qSecs = Number(r.TimeTakenSeconds) || 0;
+    byModule[moduleId].answers[r.QuestionNumber] = { isCorrect, selected: r.AnswerGiven, timeTakenSeconds: qSecs };
     if (r.Timestamp) byModule[moduleId].timestamps.push(r.Timestamp);
   });
 
@@ -417,6 +422,10 @@ function rebuildLearnProgressFromRows(rows, totalStepsFor) {
     const { answers, timestamps } = byModule[moduleId];
     const attempted = Object.keys(answers).length;
     const correct   = Object.values(answers).filter(a=>a.isCorrect).length;
+    // Issue 2: total time taken to finish the topic — summed from each
+    // question's individual time, so it's accurate even when rebuilt from
+    // sheet history on a brand-new device that never ran the live timer.
+    const summedSeconds = Object.values(answers).reduce((sum, a) => sum + (a.timeTakenSeconds || 0), 0);
     timestamps.sort();
     const total = totalStepsFor ? totalStepsFor(moduleId) : 0;
     const isComplete = total > 0 && attempted >= total;
@@ -425,6 +434,7 @@ function rebuildLearnProgressFromRows(rows, totalStepsFor) {
       completedAt: isComplete ? (timestamps[timestamps.length-1] || null) : null,
       attempted, correct, incorrect: attempted - correct,
       completionPct: total > 0 ? Math.round((attempted/total)*100) : 0,
+      timeTakenSeconds: summedSeconds,
       answers,
     };
   });
@@ -1006,6 +1016,24 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
   // — used to decide whether to update the streak on this render.
   const lastAnsweredStep = useRef(null);
 
+  // ── Issue 1: per-question time tracking ───────────────────────────────────
+  // questionStartRef marks the moment THIS question first became visible
+  // (performance.now(), so it's immune to clock changes). It resets every
+  // time idx changes to an unanswered question — including on Previous/Next
+  // navigation — so re-visiting an already-answered question never
+  // overwrites its original timeTakenSeconds. choose() reads this ref to
+  // compute how long the student spent on the question before answering.
+  const questionStartRef = useRef(performance.now());
+  useEffect(() => {
+    // Only (re)start the per-question clock if this question hasn't been
+    // answered yet — an already-locked question shouldn't keep ticking.
+    const stepNum = steps[idx]?.['Step Number'];
+    if (!answers[stepNum]) {
+      questionStartRef.current = performance.now();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idx]);
+
   if (!module || !total) {
     return (
       <div className="content">
@@ -1033,9 +1061,14 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
   const choose = letter => {
     if (locked) return;
     const isCorrect = letter === step['Correct Option'];
+    // Issue 1: capture time spent on THIS question (seconds, rounded to the
+    // nearest whole second — sub-second precision isn't useful for review
+    // screens / sheet logging and keeps the stored numbers tidy).
+    const questionTimeSecs = Math.max(0, Math.round((performance.now() - questionStartRef.current) / 1000));
     const nextAnswers = { ...answers, [step['Step Number']]: {
       selected: letter, isCorrect, question: step.Question, correctOpt: step['Correct Option'], explanation: step.Explanation,
       options: { A:step['Option A'], B:step['Option B'], C:step['Option C'], D:step['Option D'] },
+      timeTakenSeconds: questionTimeSecs,
     }};
     setAnswers(nextAnswers);
     const attempted = Object.keys(nextAnswers).length;
@@ -1045,6 +1078,7 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
       moduleId: module['Module ID'], subject: module.SubjectEN || module.Subject, topic: module.Title,
       questionNumber: step['Step Number'], answerGiven: step[`Option ${letter}`] || letter,
       correctAnswer: step[`Option ${step['Correct Option']}`] || step['Correct Option'], isCorrect,
+      timeTakenSeconds: questionTimeSecs,
     });
 
     // ── Sound + streak ──
@@ -1385,7 +1419,28 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
 //   Teacher adds new steps → topic reappears in Question Bank automatically
 //                          → "new questions" badge shown here until retaken
 // ─────────────────────────────────────────────────────────────────────────────
-function CompletedTopicsTab({ learnProgress, learningModules, stepsFor, saveLearnProgress, onRetake }) {
+// CompletedTopicsTab
+//
+// Shows every module the student has fully completed, ORGANIZED BY SUBJECT
+// (Issue 3 — "Sorted by Subject and the Topics should be underneath the
+// respective subject"). Each subject becomes a collapsible group header
+// (reusing the same color/icon/emoji styling as the Question Bank's subject
+// cards), with its completed topics listed underneath, most-recently
+// completed first. Each topic card shows:
+//   • Date completed  • Total time taken to finish the topic (Issue 2)
+//   • Score  • "New questions added" badge when the sheet has grown since
+//     completion  • Retake button — resets progress, moves the topic back
+//     to the Question Bank, and jumps straight into it
+//
+// Topic lifecycle:
+//   finish quiz  → completedAt set  → disappears from Question Bank
+//                                   → appears here, under its subject
+//   Retake click → completedAt cleared → reappears in Question Bank
+//                                      → disappears from here
+//   Teacher adds new steps → topic reappears in Question Bank automatically
+//                          → "new questions" badge shown here until retaken
+// ─────────────────────────────────────────────────────────────────────────────
+function CompletedTopicsTab({ learnProgress, learningModules, subjects, stepsFor, saveLearnProgress, onRetake }) {
   const rows = useMemo(() => {
     return learningModules
       .filter(m => !!learnProgress[m['Module ID']]?.completedAt)
@@ -1409,7 +1464,7 @@ function CompletedTopicsTab({ learnProgress, learningModules, stepsFor, saveLear
         return {
           moduleId:    id,
           title:       m.Title || id,
-          subject:     m.SubjectEN || m.Subject || '',
+          subject:     m.Subject || m.SubjectEN || 'Other',
           completedAt: p.completedAt,
           dateStr:     new Date(p.completedAt).toLocaleDateString(undefined, { day:'numeric', month:'short', year:'numeric' }),
           timeStr,
@@ -1420,6 +1475,35 @@ function CompletedTopicsTab({ learnProgress, learningModules, stepsFor, saveLear
       })
       .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
   }, [learnProgress, learningModules, stepsFor]);
+
+  // ── Group rows by Subject (Issue 3) ───────────────────────────────────────
+  // Groups are ordered to match the subject order from the Question Bank
+  // (the `subjects` list, when supplied) so the two tabs feel consistent;
+  // any subject present in rows but missing from `subjects` (edge case —
+  // e.g. a subject later renamed/removed from the sheet) is appended at the
+  // end rather than silently dropped.
+  const groups = useMemo(() => {
+    const bySubject = {};
+    rows.forEach(row => {
+      if (!bySubject[row.subject]) bySubject[row.subject] = [];
+      bySubject[row.subject].push(row);
+    });
+
+    const orderedNames = [];
+    (subjects || []).forEach(s => { if (bySubject[s.Subject]) orderedNames.push(s.Subject); });
+    Object.keys(bySubject).forEach(name => { if (!orderedNames.includes(name)) orderedNames.push(name); });
+
+    return orderedNames.map(name => {
+      const meta = (subjects || []).find(s => s.Subject === name) || {};
+      return {
+        subject: name,
+        color:   meta['Color (Hex)'] || '#00c6a7',
+        icon:    meta['Icon (FontAwesome solid)'] || 'fa-book',
+        emoji:   meta.Emoji || '',
+        topics:  bySubject[name],
+      };
+    });
+  }, [rows, subjects]);
 
   const handleRetake = (row) => {
     // Clear completedAt so the topic leaves Completed Topics and re-enters
@@ -1442,11 +1526,11 @@ function CompletedTopicsTab({ learnProgress, learningModules, stepsFor, saveLear
       <div className="content">
         <div className="card ct-empty">
           <i className="fa-solid fa-circle-check" />
-          <div style={{ fontFamily:'var(--fd)', fontWeight:800, fontSize:'15px', marginBottom:'6px', color:'rgba(255,255,255,.6)' }}>
+          <div style={{ fontFamily:'var(--fqh)', fontWeight:800, fontSize:'15px', marginBottom:'6px', color:'rgba(255,255,255,.6)' }}>
             No completed topics yet
           </div>
           <div style={{ fontSize:'12.5px' }}>
-            Topics you finish will appear here with the date and time taken.
+            Topics you finish will appear here, grouped by subject, with the date and total time taken.
           </div>
         </div>
       </div>
@@ -1455,54 +1539,64 @@ function CompletedTopicsTab({ learnProgress, learningModules, stepsFor, saveLear
 
   return (
     <div className="content">
-      <div className="card">
-        <div className="card-t">
-          <i className="fa-solid fa-circle-check" style={{ color:'var(--teal)' }} />{' '}
-          Completed Topics ({rows.length})
-        </div>
-        {rows.map(row => (
-          <div key={row.moduleId} className="ct-card">
-            <div className="ct-icon"><i className="fa-solid fa-book-open-reader" /></div>
-            <div className="ct-body">
-              <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:'10px', flexWrap:'wrap' }}>
-                <div style={{ minWidth:0, flex:1 }}>
-                  <div className="ct-title">{row.title}</div>
-                  <div className="ct-meta">
-                    {row.subject && <span className="ct-subj">{row.subject}</span>}
-                    <span className="ct-pill date">
-                      <i className="fa-solid fa-calendar-check" style={{ fontSize:'9px' }} />
-                      {row.dateStr}
-                    </span>
-                    <span className="ct-pill time">
-                      <i className="fa-solid fa-stopwatch" style={{ fontSize:'9px' }} />
-                      {row.timeStr}
-                    </span>
-                    {row.scoreStr && (
-                      <span className="ct-pill score">
-                        <i className="fa-solid fa-star" style={{ fontSize:'9px' }} />
-                        {row.scoreStr} correct
-                      </span>
-                    )}
-                    {row.hasNewQ && (
-                      <span className="ct-pill newq">
-                        <i className="fa-solid fa-bolt" style={{ fontSize:'9px' }} />
-                        {row.newQCount} new question{row.newQCount !== 1 ? 's' : ''} added
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <button
-                  className="btn-outline ct-retake-btn"
-                  onClick={() => handleRetake(row)}
-                  title="Reset your progress and retake this topic from the beginning"
-                >
-                  <i className="fa-solid fa-rotate-right" /> Retake
-                </button>
-              </div>
+      {groups.map(group => (
+        <div key={group.subject} className="card ct-group">
+          {/* ── Subject group header — same visual language as the Question
+              Bank's subject cards (icon/emoji + color) so students recognise
+              it as the same subject. ── */}
+          <div className="ct-group-hd" style={{ borderColor: group.color+'44' }}>
+            <div className="ct-group-icon" style={{ background:`${group.color}18`, color:group.color }}>
+              {group.emoji || <i className={`fa-solid ${group.icon}`} />}
+            </div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div className="ct-group-name">{group.subject}</div>
+              <div className="ct-group-count">{group.topics.length} topic{group.topics.length !== 1 ? 's' : ''} completed</div>
             </div>
           </div>
-        ))}
-      </div>
+
+          {group.topics.map(row => (
+            <div key={row.moduleId} className="ct-card">
+              <div className="ct-icon"><i className="fa-solid fa-book-open-reader" /></div>
+              <div className="ct-body">
+                <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:'10px', flexWrap:'wrap' }}>
+                  <div style={{ minWidth:0, flex:1 }}>
+                    <div className="ct-title">{row.title}</div>
+                    <div className="ct-meta">
+                      <span className="ct-pill date">
+                        <i className="fa-solid fa-calendar-check" style={{ fontSize:'9px' }} />
+                        {row.dateStr}
+                      </span>
+                      <span className="ct-pill time">
+                        <i className="fa-solid fa-stopwatch" style={{ fontSize:'9px' }} />
+                        {row.timeStr}
+                      </span>
+                      {row.scoreStr && (
+                        <span className="ct-pill score">
+                          <i className="fa-solid fa-star" style={{ fontSize:'9px' }} />
+                          {row.scoreStr} correct
+                        </span>
+                      )}
+                      {row.hasNewQ && (
+                        <span className="ct-pill newq">
+                          <i className="fa-solid fa-bolt" style={{ fontSize:'9px' }} />
+                          {row.newQCount} new question{row.newQCount !== 1 ? 's' : ''} added
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    className="btn-outline ct-retake-btn"
+                    onClick={() => handleRetake(row)}
+                    title="Reset your progress and retake this topic from the beginning"
+                  >
+                    <i className="fa-solid fa-rotate-right" /> Retake
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ))}
     </div>
   );
 }
@@ -1587,6 +1681,12 @@ function PortalInner() {
   const [learnProgress,  setLearnProgress]  = useState({});
   const [leaderboard,    setLeaderboard]    = useState({ overall:[], bySubject:{} });
   const [leaderboardLoading, setLeaderboardLoading] = useState(false);
+  // Weighted leaderboard — same shape as `leaderboard`, but scoped to only
+  // the questions a student was assigned via "Assignments for you", ranked
+  // by accuracy % instead of raw attempted count. See
+  // /api/student/weighted-leaderboard for the full rules.
+  const [weightedLeaderboard,        setWeightedLeaderboard]        = useState({ overall:[], bySubject:{} });
+  const [weightedLeaderboardLoading, setWeightedLeaderboardLoading] = useState(false);
   // Time-window filter for the leaderboard: 0 = all time, 7 = last 7 days, etc.
   const [lbDays, setLbDays] = useState(30); // default: last 30 days
   // Daily questions-attempted board — derived locally from learnProgress
@@ -1954,13 +2054,19 @@ function PortalInner() {
   };
 
   // ── subjectStats: progress summary for one subject card ─────────────────────
+  // allTopicsForSubjectKey: every module in this subject, regardless of
+  // completion status — used purely for progress stats (% complete, X/Y
+  // topics) so the progress bar reflects true completion even though
+  // completed topics are hidden from the playable list below.
+  const allTopicsForSubjectKey = subjectName => ASSIGN_LMOD.filter(m => m.Subject === subjectName);
+
   const ageSubjectStats = subjectName => {
-    const topics = topicsForSubjectKey(subjectName);
-    const completed = topics.filter(m => learnProgress[m['Module ID']]?.completedAt).length;
-    const attempted = topics.reduce((s,m) => s+(learnProgress[m['Module ID']]?.attempted||0),0);
-    const correct   = topics.reduce((s,m) => s+(learnProgress[m['Module ID']]?.correct||0),0);
-    const pct = topics.length ? Math.round((completed/topics.length)*100) : 0;
-    return { total: topics.length, completed, remaining: topics.length-completed, pct, attempted, correct };
+    const allTopics = allTopicsForSubjectKey(subjectName);
+    const completed = allTopics.filter(m => learnProgress[m['Module ID']]?.completedAt).length;
+    const attempted = allTopics.reduce((s,m) => s+(learnProgress[m['Module ID']]?.attempted||0),0);
+    const correct   = allTopics.reduce((s,m) => s+(learnProgress[m['Module ID']]?.correct||0),0);
+    const pct = allTopics.length ? Math.round((completed/allTopics.length)*100) : 0;
+    return { total: allTopics.length, completed, remaining: allTopics.length-completed, pct, attempted, correct };
   };
 
   // ── classFilter-aware subject list ──────────────────────────────────────────
@@ -2199,6 +2305,13 @@ function PortalInner() {
   // so the correct age group / class shows immediately — even before the auth
   // API responds. The auth re-validates credentials, but the UI doesn't have
   // to wait for that before showing the right content.
+  //
+  // Issue 4 fix: previously this restored `profile` but never called
+  // setAuthed(true), so a page refresh always fell back to the login screen
+  // even though a valid session was sitting in localStorage. Now a restored
+  // session with a real studentId is treated as authenticated immediately —
+  // the student stays logged in across refreshes, exactly like the rest of
+  // the app already assumed it worked.
   useEffect(() => {
     try {
       const saved = localStorage.getItem('vedanta_profile');
@@ -2207,6 +2320,7 @@ function PortalInner() {
         // Only restore if there's a real studentId — don't restore a half-empty state
         if (parsed?.id) {
           setProfile(parsed);
+          setAuthed(true);
         }
       }
     } catch {}
@@ -2298,12 +2412,13 @@ function PortalInner() {
   // if the network call fails, the student's local progress (above) is
   // already saved, so nothing is lost; it just won't show up in the
   // dashboard/leaderboard on another device until the next successful sync.
-  const recordAnswer = useCallback(({ moduleId, subject, topic, questionNumber, answerGiven, correctAnswer, isCorrect }) => {
+  const recordAnswer = useCallback(({ moduleId, subject, topic, questionNumber, answerGiven, correctAnswer, isCorrect, timeTakenSeconds }) => {
     fetch('/api/student/progress', {
       method: 'POST', headers: { 'Content-Type':'application/json' },
       body: JSON.stringify({
         studentId: profile.id, studentName: profile.name, subject, topic, moduleId,
         questionNumber, answerGiven, correctAnswer, status: isCorrect ? 'Correct' : 'Incorrect',
+        timeTakenSeconds,
       }),
     }).catch(() => {});
   }, [profile.id, profile.name]);
@@ -2351,6 +2466,20 @@ function PortalInner() {
       .then(data => setLeaderboard({ overall: data.overall||[], bySubject: data.bySubject||{} }))
       .catch(() => {})
       .finally(() => setLeaderboardLoading(false));
+  }, [tab, authed]);
+
+  // Weighted leaderboard fetched the same way — lazily, once the Leaderboard
+  // tab is opened. Kept as a separate request/cache from the regular
+  // leaderboard since it's a different aggregate (assignment-scoped,
+  // accuracy-ranked, min-50-attempts gated).
+  useEffect(() => {
+    if (tab !== 'leaderboard' || !authed) return;
+    setWeightedLeaderboardLoading(true);
+    fetch('/api/student/weighted-leaderboard')
+      .then(r => r.json())
+      .then(data => setWeightedLeaderboard({ overall: data.overall||[], bySubject: data.bySubject||{} }))
+      .catch(() => {})
+      .finally(() => setWeightedLeaderboardLoading(false));
   }, [tab, authed]);
 
   const notifStyle = type => ({
@@ -2914,11 +3043,17 @@ function PortalInner() {
     }
 
     /* ── Completed Topics tab ── */
+    .ct-group{margin-bottom:18px;}
+    .ct-group:last-child{margin-bottom:0;}
+    .ct-group-hd{display:flex;align-items:center;gap:12px;padding-bottom:12px;margin-bottom:6px;border-bottom:2px solid;}
+    .ct-group-icon{width:36px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:16px;}
+    .ct-group-name{font-family:var(--fqh);font-size:15px;font-weight:800;color:#fff;}
+    .ct-group-count{font-size:11.5px;color:var(--muted);margin-top:1px;}
     .ct-card{display:flex;align-items:flex-start;gap:14px;padding:14px 0;border-bottom:1px solid var(--border);}
     .ct-card:last-child{border-bottom:none;}
     .ct-icon{width:38px;height:38px;border-radius:10px;background:rgba(0,198,167,.1);border:1px solid rgba(0,198,167,.2);display:flex;align-items:center;justify-content:center;flex-shrink:0;color:var(--teal);font-size:15px;}
     .ct-body{flex:1;min-width:0;}
-    .ct-title{font-family:var(--fd);font-size:13.5px;font-weight:800;color:#fff;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .ct-title{font-family:var(--fqh);font-size:13.5px;font-weight:800;color:#fff;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
     .ct-meta{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
     .ct-pill{display:inline-flex;align-items:center;gap:4px;border-radius:100px;padding:2px 9px;font-size:10.5px;font-weight:700;white-space:nowrap;}
     .ct-pill.time{color:#f97316;background:rgba(249,115,22,.08);border:1px solid rgba(249,115,22,.25);}
@@ -3389,6 +3524,70 @@ function PortalInner() {
                           })}
                         </div>
                       )}
+
+                      {/* ── WEIGHTED LEADERBOARD (assignment-scoped, accuracy-ranked) ── */}
+                      <div className="sec-divider">
+                        Weighted Leaderboard
+                        <span style={{marginLeft:'8px',fontWeight:400,fontSize:'10px',color:'var(--muted)'}}>
+                          Assigned questions only · min. 50 attempted · ranked by accuracy
+                        </span>
+                      </div>
+                      <div className="card" style={{marginBottom:'22px'}}>
+                        <div className="card-t">
+                          <i className="fa-solid fa-star" style={{color:'#f5a623'}} /> Weighted Ranking
+                        </div>
+                        {weightedLeaderboardLoading ? (
+                          <>{[1,2,3].map(i=><div key={i} style={{marginBottom:'10px'}}><SK h="44px" /></div>)}</>
+                        ) : !weightedLeaderboard.overall.length ? (
+                          <div style={{textAlign:'center',color:'var(--muted)',fontSize:'13px',padding:'20px 0'}}>
+                            No students have answered at least 50 assigned questions yet.
+                          </div>
+                        ) : (
+                          <div className="lb-list">
+                            {weightedLeaderboard.overall.slice(0,20).map((row,i)=>{
+                              const rank = i+1;
+                              const isMe = row.studentId === profile.id;
+                              return (
+                                <div key={row.studentId} className={`lb-row${isMe?' me':''}`}>
+                                  <div className={`lb-rank${rank<=3?` top${rank}`:''}`}>{rank<=3 ? <i className="fa-solid fa-star" /> : rank}</div>
+                                  <div className="lb-name">{row.studentName}{isMe && <span className="lb-you">{t('p_you_suffix')}</span>}</div>
+                                  <div className="lb-stats">
+                                    <span className="lb-correct">{row.attempted} assigned attempted</span>
+                                    <span className="lb-acc">{row.accuracy}% {t('p_accuracy')}</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      {!weightedLeaderboardLoading && Object.keys(weightedLeaderboard.bySubject).length > 0 && (
+                        <div className="lb-subj-grid">
+                          {Object.entries(weightedLeaderboard.bySubject).map(([subject, rows]) => {
+                            const champ = rows[0];
+                            const subjMeta = ASGN_SUBJ.find(s=>s.SubjectEN===subject) || ASGN_SUBJ.find(s=>s.Subject===subject);
+                            const subjectDisplay = subjMeta?.Subject || subject;
+                            return (
+                              <div key={subject} className="card lb-subj-card">
+                                <div className="card-t"><i className={`fa-solid ${subjMeta?.['Icon (FontAwesome solid)']||'fa-star'}`} style={{color:subjMeta?.['Color (Hex)']}} /> {subjectDisplay} — Weighted Champion</div>
+                                <div className="lb-champ-name">{champ.studentName}</div>
+                                <div className="lb-champ-stats">{champ.accuracy}% {t('p_accuracy')} · {champ.attempted} assigned attempted</div>
+                                {rows.length>1 && (
+                                  <div className="lb-runner-ups">
+                                    {rows.slice(1,4).map((r,ri)=>(
+                                      <div key={r.studentId} className="lb-runner-row">
+                                        <span>{ri+2}. {r.studentName}{r.studentId===profile.id?t('p_you_suffix'):''}</span>
+                                        <span>{r.accuracy}%</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </>
                   );
                 })()}
@@ -3634,7 +3833,7 @@ function PortalInner() {
 
                     {/* ── PROGRESS SUMMARY STRIP ─────────────────────────────── */}
                     {(() => {
-                      const totalTopics     = FILTERED_SUBJECTS.reduce((s,subj)=>s+topicsForSubjectKey(subj.Subject).length,0);
+                      const totalTopics     = FILTERED_SUBJECTS.reduce((s,subj)=>s+allTopicsForSubjectKey(subj.Subject).length,0);
                       const completedTopics = FILTERED_SUBJECTS.reduce((s,subj)=>s+ageSubjectStats(subj.Subject).completed,0);
                       const pendingAsgns    = ASGN.filter(a=>['Not Started','In Progress','Overdue'].includes(a.Status)).length;
                       const overdueCnt      = ASGN.filter(a=>a.Status==='Overdue').length;
@@ -3744,13 +3943,14 @@ function PortalInner() {
                             </div>
                             {/* Progress summary */}
                             <div style={{display:'flex',alignItems:'center',gap:'16px',flexShrink:0}}>
-                              {quizTopics.length > 0 && (
+                              {stats.total > 0 && (
                                 <div style={{textAlign:'right'}}>
                                   <div style={{fontSize:'18px',fontWeight:900,color:stats.pct>=75?'#22c55e':stats.pct>=40?'var(--accent)':'rgba(255,255,255,.6)',fontFamily:'var(--fd)'}}>{stats.pct}%</div>
                                   <div style={{fontSize:'11px',color:'var(--muted)'}}>{stats.completed}/{stats.total} topics</div>
                                 </div>
                               )}
-                              {/* Quick-open button (shown when collapsed) */}
+                              {/* Quick-open button (shown when collapsed) — only if there's
+                                  at least one playable (not-yet-completed) topic. */}
                               {!isExpanded && quizTopics.length > 0 && (
                                 <button
                                   className="btn-t"
@@ -3764,8 +3964,10 @@ function PortalInner() {
                             </div>
                           </div>
 
-                          {/* Progress bar (always visible) */}
-                          {quizTopics.length > 0 && (
+                          {/* Progress bar — visible whenever this subject has any topics at
+                              all (including fully completed ones), so a 100%-complete subject
+                              still shows its progress rather than disappearing. */}
+                          {stats.total > 0 && (
                             <div style={{padding:'0 20px 12px'}}>
                               <div style={{height:'5px',background:'rgba(255,255,255,.07)',borderRadius:'100px',overflow:'hidden'}}>
                                 <div style={{height:'100%',width:`${stats.pct}%`,background:stats.pct>=75?'#22c55e':stats.pct>=40?'var(--accent)':color,borderRadius:'100px',transition:'width .6s ease'}} />
@@ -3783,13 +3985,26 @@ function PortalInner() {
                               <div style={{padding:'0 20px 6px',borderTop:'1px solid rgba(255,255,255,.06)',marginTop:'4px'}}>
 
                                 {quizTopics.length === 0 ? (
-                                  <div style={{textAlign:'center',padding:'24px 0'}}>
-                                    <div style={{fontSize:'32px',marginBottom:'10px'}}>🚧</div>
-                                    <div style={{fontWeight:700,color:'#fff',marginBottom:'6px'}}>Content Coming Soon</div>
-                                    <div style={{fontSize:'13px',color:'var(--muted)',lineHeight:1.7}}>
-                                      Your teacher will add {subjectName} topics shortly.
+                                  stats.total > 0 ? (
+                                    // Issue 3: all topics in this subject are completed (and no new
+                                    // questions have been added since) — direct the student to the
+                                    // Completed Topics tab rather than implying there's no content.
+                                    <div style={{textAlign:'center',padding:'24px 0'}}>
+                                      <div style={{fontSize:'32px',marginBottom:'10px'}}>🎉</div>
+                                      <div style={{fontWeight:700,color:'#fff',marginBottom:'6px'}}>All {subjectName} topics completed!</div>
+                                      <div style={{fontSize:'13px',color:'var(--muted)',lineHeight:1.7}}>
+                                        Great work — find your finished topics, scores, and time taken in the <strong>Completed Topics</strong> tab. New topics will appear here as soon as your teacher adds them.
+                                      </div>
                                     </div>
-                                  </div>
+                                  ) : (
+                                    <div style={{textAlign:'center',padding:'24px 0'}}>
+                                      <div style={{fontSize:'32px',marginBottom:'10px'}}>🚧</div>
+                                      <div style={{fontWeight:700,color:'#fff',marginBottom:'6px'}}>Content Coming Soon</div>
+                                      <div style={{fontSize:'13px',color:'var(--muted)',lineHeight:1.7}}>
+                                        Your teacher will add {subjectName} topics shortly.
+                                      </div>
+                                    </div>
+                                  )
                                 ) : (
                                   <>
                                     {/* Topic list — each row is one Learning Module from the sheet */}
@@ -4096,6 +4311,7 @@ function PortalInner() {
                 <CompletedTopicsTab
                   learnProgress={learnProgress}
                   learningModules={LMOD}
+                  subjects={ASSIGN_SUBJ}
                   stepsFor={stepsFor}
                   saveLearnProgress={saveLearnProgress}
                   onRetake={(moduleId, subjectName) => {
