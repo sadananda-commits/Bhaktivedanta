@@ -51,6 +51,18 @@ const CACHE_TTL_MS   = 60_000;
 const csvUrl = (sheetId, tab) =>
   `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(tab)}`;
 
+// Alternate export URL keyed by gid (tab's internal numeric ID) instead of
+// tab name. Used for the "Config" tab: the gviz/tq?sheet=Config endpoint was
+// intermittently mangling that tab's export (rows fusing together), while
+// this export?format=csv&gid= endpoint reads it cleanly.
+const csvUrlByGid = (sheetId, gid) =>
+  `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
+
+// gid of the "Config" tab in MASTER_SHEET_ID (find via the tab's URL:
+// .../edit#gid=XXXXXXXXX — update this if the tab is ever deleted/recreated,
+// since recreating a tab assigns it a new gid).
+const CONFIG_TAB_GID = '1195062296';
+
 function parseCSV(text) {
   const rows = [];
   let row = [], field = '', inQuotes = false;
@@ -92,8 +104,8 @@ function rowsToObjects(rows) {
   return out;
 }
 
-async function fetchTab(sheetId, tabName) {
-  const url = csvUrl(sheetId, tabName);
+async function fetchTab(sheetId, tabName, overrideUrl) {
+  const url = overrideUrl || csvUrl(sheetId, tabName);
   try {
     const res = await fetch(url);
     if (!res.ok) {
@@ -265,20 +277,64 @@ export default async function handler(req, res) {
       fetchTab(MASTER_SHEET_ID, 'Class Subject Map'),
       fetchTab(MASTER_SHEET_ID, 'Subject Sheet Map'),
       fetchTab(MASTER_SHEET_ID, 'Assignment Subjects'),
-      fetchTab(MASTER_SHEET_ID, 'Config'),
+      fetchTab(MASTER_SHEET_ID, 'Config', csvUrlByGid(MASTER_SHEET_ID, CONFIG_TAB_GID)),
     ]);
 
     // ── Parse Config tab (Key / Value rows) into a plain object ──────────────
     // Each row: { Key: 'AnnouncementDocUrl', Value: 'https://...' }
     // Keys are trimmed; empty-key rows are skipped.
+    //
+    // BUGFIX: fetchTab was successfully pulling rows from the "Config" tab
+    // (logs showed "✓ 3 rows"), but the extraction below only recognised
+    // headers named exactly "Key"/"key" and "Value"/"value". If the sheet's
+    // actual header row uses any other spelling/casing (e.g. "Setting",
+    // "Name", "Config Key", trailing space, etc.), row['Key'] is always
+    // undefined, config ends up with 0 keys, and we log the misleading
+    // "empty or not yet present" message even though the tab has real data.
+    //
+    // Fix: try a wider set of common aliases (case-insensitively), and if
+    // none of those match, fall back to treating the first two columns —
+    // whatever they're named — as key/value by position. Also log the
+    // actual header names whenever this fallback path is needed, so a
+    // future mismatch is diagnosable from the logs instead of silent.
+    const CONFIG_KEY_ALIASES   = ['key', 'name', 'setting', 'config key', 'configkey', 'parameter', 'field'];
+    const CONFIG_VALUE_ALIASES = ['value', 'val', 'config value', 'configvalue', 'setting value'];
+
+    function findAliasedField(row, aliases) {
+      const lowerMap = {};
+      Object.keys(row).forEach(h => { lowerMap[h.trim().toLowerCase()] = h; });
+      for (const alias of aliases) {
+        if (lowerMap[alias] !== undefined) return row[lowerMap[alias]];
+      }
+      return undefined;
+    }
+
     const config = {};
+    let usedPositionalFallback = false;
     for (const row of configRows) {
-      const key = (row['Key'] || row['key'] || '').trim();
-      const val = (row['Value'] || row['value'] || '').trim();
+      let keyRaw = findAliasedField(row, CONFIG_KEY_ALIASES);
+      let valRaw = findAliasedField(row, CONFIG_VALUE_ALIASES);
+
+      if (keyRaw === undefined) {
+        // No recognised header name — fall back to first two columns by
+        // position (object key order mirrors the sheet's column order).
+        const cols = Object.values(row);
+        if (cols.length >= 1) { keyRaw = cols[0]; usedPositionalFallback = true; }
+        if (cols.length >= 2 && valRaw === undefined) valRaw = cols[1];
+      }
+
+      const key = (keyRaw ?? '').toString().trim();
+      const val = (valRaw ?? '').toString().trim();
       if (key) config[key] = val;
     }
+
     if (Object.keys(config).length) {
       console.log(`[portal-config] ✓ Config tab loaded — keys: ${Object.keys(config).join(', ')}`);
+      if (usedPositionalFallback) {
+        console.warn(`[portal-config] ⚠ "Config" tab headers weren't named Key/Value — matched by column position instead. Actual headers: ${configRows.length ? Object.keys(configRows[0]).join(', ') : '(none)'}. Rename the columns to "Key" and "Value" to avoid relying on position.`);
+      }
+    } else if (configRows.length) {
+      console.warn(`[portal-config] ⚠ "Config" tab has ${configRows.length} row(s) but none produced a usable key. Actual headers found: ${Object.keys(configRows[0]).join(', ') || '(none)'}. Expected a "Key" column (or one of: ${CONFIG_KEY_ALIASES.join(', ')}) with a non-empty value.`);
     } else {
       console.log('[portal-config] ℹ Config tab is empty or not yet present — skipping.');
     }
