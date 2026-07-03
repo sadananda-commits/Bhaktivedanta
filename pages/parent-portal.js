@@ -180,14 +180,14 @@ function ChapterAssignmentBuilder({ student, chapterConfig, chapterConfigLoading
   // De-duplicate classLevels defensively — some sheets end up with repeat
   // rows (e.g. pasted once per subject by mistake); the dropdown should
   // only ever show each class once regardless of sheet hygiene.
+  // NOTE: classLevels is the only thing still sourced from the global,
+  // unfiltered `chapterConfig` fetch — the "Class Levels" tab isn't tied to
+  // a per-class Sheet ID, so it isn't affected by the collapse bug below.
   const classLevels = useMemo(() => {
     const seen = new Map();
     (chapterConfig?.classLevels || []).forEach(c => { if (c.Class && !seen.has(c.Class)) seen.set(c.Class, c); });
     return [...seen.values()];
   }, [chapterConfig]);
-
-  const allModules   = chapterConfig?.learningModules || [];
-  const allSteps     = chapterConfig?.learningSteps   || [];
 
   const [selClass,    setSelClass]    = useState(student?.classLevel || '');
   const [selSubject,  setSelSubject]  = useState('');
@@ -202,19 +202,58 @@ function ChapterAssignmentBuilder({ student, chapterConfig, chapterConfigLoading
   // Keep the class dropdown in sync if the parent switches students.
   useEffect(() => { setSelClass(student?.classLevel || ''); }, [student?.studentId]);
 
-  // Subjects available for the chosen class.
-  // IMPORTANT: this is derived from `learningModules`, NOT `assignmentSubjects`.
-  // /api/portal-config is called here without a ?classLevel filter, and on
-  // that "show everything" path it deduplicates assignmentSubjects down to
-  // ONE row per subject name (picking whichever class happened to match
-  // first) — so its Class tag is unreliable across classes (this was the
-  // "Mathematics missing for Class 5" bug: the single surviving row was
-  // tagged with a different class). learningModules is never deduped like
-  // that — every row keeps its own real Class — so it's the reliable source.
+  // ── Per-class subject/chapter config ──────────────────────────────────
+  // Each class now has its own Google Sheet ID per subject (separate Drive
+  // folders per class). Fetching /api/portal-config WITHOUT a classLevel
+  // (the old approach) merges every class's rows together server-side, and
+  // that merge keeps only the FIRST Sheet ID it sees for a given subject
+  // name — so every class after the first one to expose "Mathematics" (etc.)
+  // silently loses its modules. That's exactly why only Class 1 populated.
+  //
+  // The Student Portal never hits this because it always calls
+  // /api/portal-config?classLevel=X for the student's own class, which
+  // resolves the correct per-class Sheet ID server-side. We do the same
+  // here: fetch a fresh, class-scoped config the moment a class is picked,
+  // and read subjects/chapters/questions only from that response — never
+  // from the global unfiltered `chapterConfig`.
+  const [classConfig,        setClassConfig]        = useState(null);
+  const [classConfigLoading, setClassConfigLoading]  = useState(false);
+  const [classConfigError,   setClassConfigError]    = useState(false);
+  const classConfigCache = useRef({}); // { [classLevel]: data } — avoid refetching when toggling back and forth
+
+  useEffect(() => {
+    if (!selClass) { setClassConfig(null); setClassConfigError(false); return; }
+
+    const cached = classConfigCache.current[selClass];
+    if (cached) { setClassConfig(cached); setClassConfigError(false); return; }
+
+    let cancelled = false;
+    setClassConfigLoading(true);
+    setClassConfigError(false);
+    fetch(`/api/portal-config?classLevel=${encodeURIComponent(selClass)}`, { cache: 'no-store' })
+      .then(r => r.json())
+      .then(data => {
+        if (cancelled) return;
+        classConfigCache.current[selClass] = data;
+        setClassConfig(data);
+      })
+      .catch(() => { if (!cancelled) setClassConfigError(true); })
+      .finally(() => { if (!cancelled) setClassConfigLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [selClass]);
+
+  const allModules = classConfig?.learningModules || [];
+  const allSteps    = classConfig?.learningSteps   || [];
+
+  // Subjects available for the chosen class. The server has already scoped
+  // this to selClass (via ?classLevel=), so no further class filtering is
+  // strictly needed — but we keep a defensive check for any row tagged with
+  // a different/blank Class (e.g. a genuinely shared "All classes" subject).
   const subjectNames = useMemo(() => {
     const seen = new Set();
     allModules
-      .filter(m => !selClass || !m.Class || m.Class === selClass)
+      .filter(m => !m.Class || m.Class === selClass)
       .forEach(m => m.Subject && seen.add(m.Subject));
     return [...seen].sort();
   }, [allModules, selClass]);
@@ -222,7 +261,7 @@ function ChapterAssignmentBuilder({ student, chapterConfig, chapterConfigLoading
   // Chapters (Learning Modules) for the chosen subject + class
   const chapters = useMemo(() => {
     return allModules
-      .filter(m => m.Subject === selSubject && (!selClass || !m.Class || m.Class === selClass))
+      .filter(m => m.Subject === selSubject && (!m.Class || m.Class === selClass))
       .sort((a,b) => (Number(a['Display Order'])||0) - (Number(b['Display Order'])||0));
   }, [allModules, selSubject, selClass]);
 
@@ -322,10 +361,20 @@ function ChapterAssignmentBuilder({ student, chapterConfig, chapterConfigLoading
             </div>
             <div>
               <label className="pt-field-l">Subject</label>
-              <select className="pt-input" value={selSubject} onChange={e=>setSelSubject(e.target.value)} disabled={!selClass}>
-                <option value="">Select subject…</option>
+              <select className="pt-input" value={selSubject} onChange={e=>setSelSubject(e.target.value)} disabled={!selClass || classConfigLoading}>
+                <option value="">{classConfigLoading ? 'Loading subjects…' : 'Select subject…'}</option>
                 {subjectNames.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
+              {selClass && !classConfigLoading && !classConfigError && subjectNames.length === 0 && (
+                <div style={{fontSize:'11px',color:'#f87171',marginTop:'4px'}}>
+                  No subjects found for {selClass}. Check the Class Subject Map tab has an active row mapping this class's subjects to a Sheet ID.
+                </div>
+              )}
+              {classConfigError && (
+                <div style={{fontSize:'11px',color:'#f87171',marginTop:'4px'}}>
+                  Couldn't load subjects for {selClass}. Please try selecting the class again.
+                </div>
+              )}
             </div>
             <div style={{gridColumn:'1 / -1'}}>
               <label className="pt-field-l">Chapter</label>
@@ -453,12 +502,12 @@ function ParentPortalInner() {
       .finally(() => setDataLoading(false));
   }, [authed, ptUser]);
 
-  // ── Fetch subject/class/chapter config for the assignment builder ────────
-  // Same /api/portal-config the Student Portal uses — no classLevel param,
-  // so we get every class's subjects, chapters (learningModules) and
-  // questions (learningSteps) in one shot. Edits to the Class Subject Map /
-  // Learning Modules / Learning Steps tabs in the Google Sheet show up here
-  // automatically, same as in the Student Portal.
+  // ── Fetch the Class list for the assignment builder's Class dropdown ────
+  // Called without a classLevel param, but its ONLY use now is
+  // chapterConfig.classLevels (the "Class Levels" tab, not tied to a
+  // per-class Sheet ID, so it's unaffected by the multi-class collapse bug).
+  // Subjects/chapters/questions are fetched separately, per selected class,
+  // inside ChapterAssignmentBuilder — see the comment there for why.
   const [chapterConfig,        setChapterConfig]        = useState(null);
   const [chapterConfigLoading, setChapterConfigLoading]  = useState(false);
   useEffect(() => {
