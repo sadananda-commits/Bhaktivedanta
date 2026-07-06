@@ -4,6 +4,11 @@
 // shuffled right-side items. Student drags each right-side box onto the
 // left-side item it matches, then presses Submit to lock and score it.
 //
+// v4 — after Submit, any incorrectly-matched pair now shows the correct
+// answer directly beneath it (not just a red highlight), so a student who
+// gets something wrong can see what they should have matched instead of
+// just knowing they missed it.
+//
 // v3 — FIX: every text element now has an EXPLICIT color, and the whole
 // widget sits inside its own light card. v2 relied on inherited text color
 // for a few elements (the bank items, the left-side prompt boxes, the
@@ -219,37 +224,44 @@ export default function MatchTheFollowing({
               slotTextColor = result.correct[p.id] ? '#1e6b3d' : '#a12a2a';
             }
             return (
-              <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <div style={{ width: 20, fontSize: 12, color: '#888' }}>{idx + 1}.</div>
-                <div style={{ flex: 1, background: '#ffffff', color: '#1a1a1a', border: '1px solid #e2e2e0', borderRadius: 8, padding: '10px 12px', fontSize: 14 }}>
-                  {p.left}
+              <div key={p.id}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ width: 20, fontSize: 12, color: '#888' }}>{idx + 1}.</div>
+                  <div style={{ flex: 1, background: '#ffffff', color: '#1a1a1a', border: '1px solid #e2e2e0', borderRadius: 8, padding: '10px 12px', fontSize: 14 }}>
+                    {p.left}
+                  </div>
+                  <div
+                    data-slot-id={p.id}
+                    style={{
+                      width: 140,
+                      minHeight: 40,
+                      border: `1.5px ${filledItem ? 'solid' : 'dashed'} ${borderColor}`,
+                      background: filledItem ? bg : '#f0f0ee',
+                      borderRadius: 8,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      padding: '6px 8px',
+                    }}
+                  >
+                    {filledItem
+                      ? (
+                        <div
+                          onPointerDown={(e) => handlePointerDown(e, filledItem.id)}
+                          style={{ fontSize: 13, color: slotTextColor, cursor: submitted ? 'default' : 'grab', textAlign: 'center', width: '100%' }}
+                        >
+                          {filledItem.right}
+                        </div>
+                      )
+                      : <span style={{ fontSize: 11, color: '#999' }}>drop here</span>
+                    }
+                  </div>
                 </div>
-                <div
-                  data-slot-id={p.id}
-                  style={{
-                    width: 140,
-                    minHeight: 40,
-                    border: `1.5px ${filledItem ? 'solid' : 'dashed'} ${borderColor}`,
-                    background: filledItem ? bg : '#f0f0ee',
-                    borderRadius: 8,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    padding: '6px 8px',
-                  }}
-                >
-                  {filledItem
-                    ? (
-                      <div
-                        onPointerDown={(e) => handlePointerDown(e, filledItem.id)}
-                        style={{ fontSize: 13, color: slotTextColor, cursor: submitted ? 'default' : 'grab', textAlign: 'center', width: '100%' }}
-                      >
-                        {filledItem.right}
-                      </div>
-                    )
-                    : <span style={{ fontSize: 11, color: '#999' }}>drop here</span>
-                  }
-                </div>
+                {submitted && result && !result.correct[p.id] && (
+                  <div style={{ margin: '4px 0 0 28px', fontSize: 12, color: '#1e6b3d' }}>
+                    Correct answer: <strong>{p.right}</strong>
+                  </div>
+                )}
               </div>
             );
           })}
