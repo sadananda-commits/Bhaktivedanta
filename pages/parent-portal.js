@@ -176,7 +176,7 @@ const subjectColor = s => SUBJECT_COLORS[s] || '#00c6a7';
 // all come live from the same Google Sheet the Student Portal reads
 // (/api/portal-config) — editing that sheet is the only "admin" needed.
 // ─────────────────────────────────────────────────────────────────────────────
-function ChapterAssignmentBuilder({ student, chapterConfig, chapterConfigLoading, createdBy, onCreated }) {
+function ChapterAssignmentBuilder({ student, chapterConfig, chapterConfigLoading, createdBy, onCreated, editingAssignment, onUpdated, onCancelEdit }) {
   // De-duplicate classLevels defensively — some sheets end up with repeat
   // rows (e.g. pasted once per subject by mistake); the dropdown should
   // only ever show each class once regardless of sheet hygiene.
@@ -279,37 +279,107 @@ function ChapterAssignmentBuilder({ student, chapterConfig, chapterConfigLoading
   const selModule = chapters.find(m => m['Module ID'] === selModuleId) || null;
   const totalQuestions = selModuleId ? (stepCountByModule[selModuleId] || 0) : 0;
 
-  // Reset downstream selections whenever an upstream one changes.
-  useEffect(() => { setSelSubject(''); setSelModuleId(''); }, [selClass]);
-  useEffect(() => { setSelModuleId(''); }, [selSubject]);
+  // ── Edit-mode hydration ────────────────────────────────────────────────
+  // When `editingAssignment` is set (parent clicked "Edit" on a row), we
+  // need to pre-fill this same cascading form with that row's values. The
+  // tricky part: selecting a class triggers an async class-scoped config
+  // fetch, and the three "reset downstream" effects right below this block
+  // normally clear subject/module/question-range the moment selClass or
+  // selSubject changes — which would immediately wipe out the values we're
+  // trying to hydrate. `hydratingEditRef` suppresses those resets only
+  // while we're actively populating the form from an assignment being
+  // edited, and clears itself once every field has been set.
+  const hydratingEditRef = useRef(false);
+  const lastHydratedIdRef = useRef(null);
+
   useEffect(() => {
+    if (!editingAssignment || lastHydratedIdRef.current === editingAssignment.AssignmentID) return;
+    lastHydratedIdRef.current = editingAssignment.AssignmentID;
+    hydratingEditRef.current = true;
+    setSelClass(editingAssignment.ClassLevel || student?.classLevel || '');
+    setAssignedDate(String(editingAssignment.AssignedDate || '').slice(0, 10) || new Date().toISOString().slice(0, 10));
+    setComments(editingAssignment.Comments || '');
+  }, [editingAssignment]);
+
+  // Once the class-scoped config has loaded and contains this assignment's
+  // subject, select it (guarded so it only fires while hydrating).
+  useEffect(() => {
+    if (!hydratingEditRef.current || !editingAssignment) return;
+    if (subjectNames.includes(editingAssignment.Subject)) {
+      setSelSubject(editingAssignment.Subject);
+    }
+  }, [editingAssignment, subjectNames]);
+
+  // Once chapters for that subject have loaded and contain this
+  // assignment's module, select it.
+  useEffect(() => {
+    if (!hydratingEditRef.current || !editingAssignment) return;
+    if (chapters.some(c => c['Module ID'] === editingAssignment.ModuleID)) {
+      setSelModuleId(editingAssignment.ModuleID);
+    }
+  }, [editingAssignment, chapters]);
+
+  // Once the module (and its question count) is actually selected, restore
+  // the original From/To question range and release the hydration guard —
+  // from this point on the form behaves exactly as it does when creating a
+  // brand new assignment.
+  useEffect(() => {
+    if (!hydratingEditRef.current || !editingAssignment) return;
+    if (selModuleId === editingAssignment.ModuleID && totalQuestions > 0) {
+      setFromQ(Number(editingAssignment.FromQuestion) || 1);
+      setToQ(Number(editingAssignment.ToQuestion) || totalQuestions);
+      hydratingEditRef.current = false;
+    }
+  }, [editingAssignment, selModuleId, totalQuestions]);
+
+  // Reset downstream selections whenever an upstream one changes — except
+  // while we're mid-hydration for an edit (see above).
+  useEffect(() => { if (hydratingEditRef.current) return; setSelSubject(''); setSelModuleId(''); }, [selClass]);
+  useEffect(() => { if (hydratingEditRef.current) return; setSelModuleId(''); }, [selSubject]);
+  useEffect(() => {
+    if (hydratingEditRef.current) return;
     setFromQ(1);
     setToQ(totalQuestions || 1);
   }, [selModuleId, totalQuestions]);
 
+  const isEditing = !!editingAssignment;
   const canSubmit = student && selClass && selSubject && selModuleId && totalQuestions > 0 && fromQ >= 1 && toQ >= fromQ && !submitting;
+
+  function handleCancelEdit() {
+    lastHydratedIdRef.current = null;
+    hydratingEditRef.current = false;
+    setSelSubject(''); setSelModuleId(''); setComments('');
+    setMsg(null);
+    onCancelEdit?.();
+  }
 
   async function handleAssign() {
     if (!canSubmit) return;
     setSubmitting(true); setMsg(null);
     try {
-      const res = await fetch('/api/parent/create-assignment', {
-        method: 'POST',
+      const endpoint = isEditing ? '/api/parent/update-assignment' : '/api/parent/create-assignment';
+      const body = {
+        studentId:      student.studentId,
+        studentName:    student.studentName,
+        classLevel:     selClass,
+        subject:        selSubject,
+        moduleId:       selModuleId,
+        chapterTitle:   selModule?.Title || selModuleId,
+        fromQuestion:   fromQ,
+        toQuestion:     toQ,
+        totalQuestions: totalQuestions || (toQ - fromQ + 1),
+        assignedDate,
+        comments,
+        createdBy,
+      };
+      if (isEditing) {
+        body.assignmentId = editingAssignment.AssignmentID;
+        body.updatedBy = createdBy;
+      }
+      const res = await fetch(endpoint, {
+        method: isEditing ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          studentId:      student.studentId,
-          studentName:    student.studentName,
-          classLevel:     selClass,
-          subject:        selSubject,
-          moduleId:       selModuleId,
-          chapterTitle:   selModule?.Title || selModuleId,
-          fromQuestion:   fromQ,
-          toQuestion:     toQ,
-          totalQuestions: totalQuestions || (toQ - fromQ + 1),
-          assignedDate,
-          comments,
-          createdBy,
-        }),
+        body: JSON.stringify(body),
       });
 
       // The API route itself always replies with JSON (even on its own
@@ -319,19 +389,24 @@ function ChapterAssignmentBuilder({ student, chapterConfig, chapterConfigLoading
       const contentType = res.headers.get('content-type') || '';
       if (!contentType.includes('application/json')) {
         setMsg({ ok:false, text: res.status === 404
-          ? 'Assign endpoint not found (404). Make sure create-assignment.js has been deployed to pages/api/parent/.'
+          ? `${isEditing ? 'Update' : 'Assign'} endpoint not found (404). Make sure ${isEditing ? 'update-assignment.js' : 'create-assignment.js'} has been deployed to pages/api/parent/.`
           : `Unexpected server response (HTTP ${res.status}). Check the Apps Script deployment.` });
         return;
       }
 
       const data = await res.json();
       if (data.success) {
-        onCreated?.(data.assignment);
-        setMsg({ ok:true, text:`Assigned "${selModule?.Title || selModuleId}" (Q${fromQ}–${toQ}) to ${student.studentName}.` });
-        setSelModuleId('');
-        setComments('');
+        if (isEditing) {
+          onUpdated?.(data.assignment);
+          setMsg({ ok:true, text:`Updated "${selModule?.Title || selModuleId}" (Q${fromQ}–${toQ}) for ${student.studentName}.` });
+        } else {
+          onCreated?.(data.assignment);
+          setMsg({ ok:true, text:`Assigned "${selModule?.Title || selModuleId}" (Q${fromQ}–${toQ}) to ${student.studentName}.` });
+          setSelModuleId('');
+          setComments('');
+        }
       } else {
-        setMsg({ ok:false, text: data.message || 'Could not save the assignment.' });
+        setMsg({ ok:false, text: data.message || `Could not ${isEditing ? 'update' : 'save'} the assignment.` });
       }
     } catch (err) {
       setMsg({ ok:false, text:`Connection failed: ${err.message}. Check that the dev server picked up the new API route and that the Apps Script deployment includes the chapter-assignment actions.` });
@@ -341,8 +416,15 @@ function ChapterAssignmentBuilder({ student, chapterConfig, chapterConfigLoading
   }
 
   return (
-    <div className="pt-card" style={{marginBottom:'20px'}}>
-      <div className="pt-card-t"><i className="fa-solid fa-square-plus" /> Assign a New Chapter</div>
+    <div className="pt-card" style={{marginBottom:'20px', border: isEditing ? '1px solid var(--accent, #00c6a7)' : undefined}}>
+      <div className="pt-card-t" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <span><i className={`fa-solid ${isEditing ? 'fa-pen' : 'fa-square-plus'}`} /> {isEditing ? `Edit Chapter Assignment — ${student?.studentName || ''}` : 'Assign a New Chapter'}</span>
+        {isEditing && (
+          <button onClick={handleCancelEdit} style={{background:'none',border:'none',color:'rgba(255,255,255,.5)',cursor:'pointer',fontSize:'13px'}}>
+            <i className="fa-solid fa-xmark" /> Cancel
+          </button>
+        )}
+      </div>
       {chapterConfigLoading && !chapterConfig ? (
         <div className="pt-empty">Loading subjects &amp; chapters…</div>
       ) : (
@@ -428,9 +510,18 @@ function ChapterAssignmentBuilder({ student, chapterConfig, chapterConfigLoading
               "{selModule?.Title}" has no questions added to the sheet yet, so it can't be assigned. Add questions to its Learning Steps tab first, or pick a different chapter.
             </div>
           )}
-          <button className="ptbtn" style={{width:'auto',padding:'10px 22px'}} disabled={!canSubmit} onClick={handleAssign}>
-            {submitting ? <><i className="fa-solid fa-circle-notch fa-spin" /> Assigning…</> : <><i className="fa-solid fa-paper-plane" /> Assign Chapter</>}
-          </button>
+          <div style={{display:'flex',gap:'10px',alignItems:'center'}}>
+            <button className="ptbtn" style={{width:'auto',padding:'10px 22px'}} disabled={!canSubmit} onClick={handleAssign}>
+              {submitting
+                ? <><i className="fa-solid fa-circle-notch fa-spin" /> {isEditing ? 'Saving…' : 'Assigning…'}</>
+                : <><i className={`fa-solid ${isEditing ? 'fa-floppy-disk' : 'fa-paper-plane'}`} /> {isEditing ? 'Save Changes' : 'Assign Chapter'}</>}
+            </button>
+            {isEditing && (
+              <button onClick={handleCancelEdit} style={{padding:'10px 18px',borderRadius:'8px',border:'1px solid rgba(255,255,255,.15)',background:'transparent',color:'rgba(255,255,255,.7)',cursor:'pointer'}}>
+                Cancel
+              </button>
+            )}
+          </div>
           {msg && (
             <div style={{marginTop:'12px',fontSize:'13px',fontWeight:600,color: msg.ok ? '#4ade80' : '#f87171'}}>
               {msg.ok ? '✅' : '⚠'} {msg.text}
@@ -460,6 +551,44 @@ function ParentPortalInner() {
   const [selectedStudentId, setSelectedStudentId] = useState(null);
   const [tab, setTab]     = useState('overview'); // overview | daily | weekly | subjects
   const [period, setPeriod] = useState('30');     // days for daily chart
+
+  // ── Chapter assignment edit/delete state ────────────────────────────────
+  const [editingAssignment, setEditingAssignment] = useState(null); // the row (from chapterAssignments) currently being edited, or null
+  const [deletingId, setDeletingId] = useState(null); // AssignmentID currently mid-delete, for the row's spinner
+
+  async function handleDeleteAssignment(assignmentId, chapterTitle) {
+    if (!window.confirm(`Delete the assignment "${chapterTitle || assignmentId}"? This cannot be undone.`)) return;
+    setDeletingId(assignmentId);
+    try {
+      const res = await fetch('/api/parent/delete-assignment', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assignmentId }),
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        alert(res.status === 404
+          ? 'Delete endpoint not found (404). Make sure delete-assignment.js has been deployed to pages/api/parent/.'
+          : `Unexpected server response (HTTP ${res.status}). Check the Apps Script deployment.`);
+        return;
+      }
+      const data = await res.json();
+      if (data.success) {
+        setStudents(prev => prev.map(s =>
+          s.studentId === selectedStudentId
+            ? { ...s, chapterAssignments: (s.chapterAssignments || []).filter(a => a.AssignmentID !== assignmentId) }
+            : s
+        ));
+        if (editingAssignment?.AssignmentID === assignmentId) setEditingAssignment(null);
+      } else {
+        alert(data.message || 'Could not delete the assignment.');
+      }
+    } catch (err) {
+      alert(`Connection failed: ${err.message}`);
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   // ── Login handler ────────────────────────────────────────────────────────
   async function handleLogin(e) {
@@ -1294,7 +1423,8 @@ function ParentPortalInner() {
 
                       return (
                         <>
-                          {/* ── Assign a New Chapter (builder) ──────────────── */}
+                          {/* ── Assign a New Chapter (builder) — doubles as the Edit
+                              form when editingAssignment is set. ──────────────── */}
                           <ChapterAssignmentBuilder
                             student={selectedStudent}
                             chapterConfig={chapterConfig}
@@ -1307,6 +1437,17 @@ function ParentPortalInner() {
                                   : s
                               ));
                             }}
+                            editingAssignment={editingAssignment}
+                            onUpdated={(updatedRow) => {
+                              setStudents(prev => prev.map(s =>
+                                s.studentId === selectedStudentId
+                                  ? { ...s, chapterAssignments: (s.chapterAssignments||[]).map(a =>
+                                      a.AssignmentID === updatedRow.AssignmentID ? updatedRow : a) }
+                                  : s
+                              ));
+                              setEditingAssignment(null);
+                            }}
+                            onCancelEdit={() => setEditingAssignment(null)}
                           />
 
                           {/* ── Chapter Assignments table — one row per chapter, exactly
@@ -1320,13 +1461,13 @@ function ParentPortalInner() {
                               <div style={{overflowX:'auto'}}>
                                 <table className="pt-topic-t">
                                   <thead>
-                                    <tr><th>Subject</th><th>Class</th><th>Chapter</th><th>Questions</th><th>Date</th><th>Comments</th><th>Status</th></tr>
+                                    <tr><th>Subject</th><th>Class</th><th>Chapter</th><th>Questions</th><th>Date</th><th>Comments</th><th>Status</th><th>Actions</th></tr>
                                   </thead>
                                   <tbody>
                                     {chAsgns.map((a,i) => {
                                       const isDone = a.Status === 'Completed';
                                       return (
-                                        <tr key={a.AssignmentID||i}>
+                                        <tr key={a.AssignmentID||i} style={editingAssignment?.AssignmentID===a.AssignmentID ? {background:'rgba(0,198,167,.08)'} : undefined}>
                                           <td>{a.Subject}</td>
                                           <td>{a.ClassLevel}</td>
                                           <td style={{fontWeight:600}}>{a.ChapterTitle}</td>
@@ -1334,6 +1475,26 @@ function ParentPortalInner() {
                                           <td style={{color:COLORS.muted}}>{String(a.AssignedDate||'').slice(0,10)||'—'}</td>
                                           <td style={{color:'rgba(255,255,255,.6)',fontStyle:a.Comments?'italic':'normal',maxWidth:'160px'}}>{a.Comments||'—'}</td>
                                           <td><span style={{fontSize:'12px',fontWeight:700,color:isDone?'#4ade80':COLORS.accent}}>{isDone?'✓ Completed':a.Status||'Task assigned'}</span></td>
+                                          <td style={{whiteSpace:'nowrap'}}>
+                                            <button
+                                              title="Edit"
+                                              onClick={() => setEditingAssignment(a)}
+                                              disabled={deletingId === a.AssignmentID}
+                                              style={{background:'none',border:'none',color:COLORS.accent,cursor:'pointer',marginRight:'10px',fontSize:'14px'}}
+                                            >
+                                              <i className="fa-solid fa-pen" />
+                                            </button>
+                                            <button
+                                              title="Delete"
+                                              onClick={() => handleDeleteAssignment(a.AssignmentID, a.ChapterTitle)}
+                                              disabled={deletingId === a.AssignmentID}
+                                              style={{background:'none',border:'none',color:'#f87171',cursor:'pointer',fontSize:'14px'}}
+                                            >
+                                              {deletingId === a.AssignmentID
+                                                ? <i className="fa-solid fa-circle-notch fa-spin" />
+                                                : <i className="fa-solid fa-trash" />}
+                                            </button>
+                                          </td>
                                         </tr>
                                       );
                                     })}
