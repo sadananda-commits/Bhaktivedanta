@@ -3,6 +3,7 @@ import Script from 'next/script';
 import Link from 'next/link';
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { LanguageProvider, useLanguage, LanguageToggle } from '../lib/i18n';
+import MatchTheFollowing from '../components/MatchTheFollowing';
 import { QUIZ_LEARNING_MODULES_DA, QUIZ_LEARNING_STEPS_DA, QUIZ_ASSIGNMENT_SUBJECTS_DA } from '../lib/quizContentDA';
 import {
   PORTAL_SETTINGS_DA, PORTAL_NAVIGATION_DA, PORTAL_DASH_STATS_DA, PORTAL_SUBJECTS_DEMO_DA,
@@ -1058,6 +1059,65 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
     begin(0);
   };
 
+  // Reads Left 1..Left 10 / Right 1..Right 10 off a Learning Steps row into
+  // the { id, left, right } shape MatchTheFollowing expects. Skips any pair
+  // where both cells are blank, so 5/6/8/10-pair rows all work.
+  const pairsFromStep = (s) => {
+    const pairs = [];
+    for (let n = 1; n <= 10; n++) {
+      const left = (s[`Left ${n}`] || '').trim();
+      const right = (s[`Right ${n}`] || '').trim();
+      if (!left && !right) continue;
+      pairs.push({ id: String(n), left, right });
+    }
+    return pairs;
+  };
+
+  const isMatchStep = (s) => (s['Question Type'] || '').trim().toLowerCase() === 'matchthefollowing';
+
+  const submitMatchTheFollowing = (result) => {
+    if (locked) return; // guards a stray double-call on an already-answered question
+    const questionTimeSecs = Math.max(0, Math.round((performance.now() - questionStartRef.current) / 1000));
+    const isCorrect = result.score === result.total;
+    const nextAnswers = { ...answers, [step['Step Number']]: {
+      type: 'matchTheFollowing',
+      isCorrect,
+      question: step.Question,
+      placements: result.placements,
+      score: result.score,
+      total: result.total,
+      explanation: step.Explanation,
+      timeTakenSeconds: questionTimeSecs,
+    }};
+    setAnswers(nextAnswers);
+    const attempted = Object.keys(nextAnswers).length;
+    const correct   = Object.values(nextAnswers).filter(a => a.isCorrect).length;
+    onSave({ attempted, correct, incorrect: attempted - correct, completionPct: Math.round((attempted / total) * 100), answers: nextAnswers });
+    onAnswer?.({
+      moduleId: module['Module ID'], subject: module.SubjectEN || module.Subject, topic: module.Title,
+      questionNumber: step['Step Number'], answerGiven: `${result.score}/${result.total} matched`,
+      correctAnswer: `${result.total}/${result.total} matched`, isCorrect,
+      timeTakenSeconds: questionTimeSecs,
+    });
+
+    // Same sound/streak treatment as choose() — full marks counts as a streak
+    // hit, a partial match breaks it.
+    if (isCorrect) {
+      if (soundOnCorrect) playCorrect();
+      const nextStreak = streak + 1;
+      setStreak(nextStreak);
+      const isMilestone = nextStreak >= streakThreshold && nextStreak % streakThreshold === 0;
+      if (isMilestone) {
+        if (soundOnStreak) playStreak(nextStreak);
+        setToastStreak(nextStreak);
+        if (nextStreak % (streakThreshold * 2) === 0) setShowFireworks(true);
+      }
+    } else {
+      if (soundOnWrong) playWrong();
+      setStreak(0);
+    }
+  };
+
   const choose = letter => {
     if (locked) return;
     const isCorrect = letter === step['Correct Option'];
@@ -1185,8 +1245,14 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
               {mistakes.map((m,i) => (
                 <div key={i} className="lp-mistake">
                   <div className="lp-mistake-q">{m.question}</div>
-                  <div className="lp-mistake-row">{t('p_your_answer')} <span style={{color:'#f87171',fontWeight:700}}>{m.options[m.selected]}</span></div>
-                  <div className="lp-mistake-row">{t('p_correct_answer')} <span style={{color:'#4ade80',fontWeight:700}}>{m.options[m.correctOpt]}</span></div>
+                  {m.type === 'matchTheFollowing' ? (
+                    <div className="lp-mistake-row">Matched {m.score} of {m.total} correctly</div>
+                  ) : (
+                    <>
+                      <div className="lp-mistake-row">{t('p_your_answer')} <span style={{color:'#f87171',fontWeight:700}}>{m.options[m.selected]}</span></div>
+                      <div className="lp-mistake-row">{t('p_correct_answer')} <span style={{color:'#4ade80',fontWeight:700}}>{m.options[m.correctOpt]}</span></div>
+                    </>
+                  )}
                   <div className="lp-mistake-row">{m.explanation}</div>
                 </div>
               ))}
@@ -1337,38 +1403,68 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
         <div className="lp-fs-question-wrap">
           <div className="lp-fs-question">{step.Question}</div>
 
-          <div className="lp-fs-opts">
-            {opts.map(letter => {
-              const text = step[`Option ${letter}`];
-              if (!text) return null;
-              let cls = 'lp-fs-opt';
-              if (locked && letter === step['Correct Option']) cls += ' correct';
-              else if (locked && letter === selected)         cls += ' incorrect';
-              return (
-                <button key={letter} className={cls} disabled={locked} onClick={()=>choose(letter)}>
-                  <span className="lp-fs-letter">{letter}</span>
-                  <span className="lp-fs-opt-text">{text}</span>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* ── Feedback panel (shown after answering) ── */}
-          {locked && (
-            <div className={`lp-fs-feedback ${selected===step['Correct Option']?'good':'bad'}`}>
-              <i className={`fa-solid ${selected===step['Correct Option']?'fa-circle-check':'fa-circle-xmark'} lp-fs-fb-icon`} />
-              <div>
-                <strong>{selected===step['Correct Option']?t('p_correct_excl'):t('p_not_quite')}</strong>
-                <span> {step.Explanation}</span>
-                {step['Learn More URL'] && (
-                  <div style={{marginTop:'8px'}}>
-                    <a className="lp-learnmore" href={step['Learn More URL']} target="_blank" rel="noopener noreferrer">
-                      <i className="fa-solid fa-book-open" /> {step['Learn More Label'] || t('p_learn_more')} <i className="fa-solid fa-arrow-up-right-from-square" />
-                    </a>
+          {isMatchStep(step) ? (
+            <>
+              <MatchTheFollowing
+                key={`${step['Module ID']}-${step['Step Number']}`}
+                pairs={pairsFromStep(step)}
+                onSubmit={submitMatchTheFollowing}
+                initialPlacements={currentAnswer?.placements}
+                initialLocked={locked}
+              />
+              {locked && (
+                <div className={`lp-fs-feedback ${currentAnswer.isCorrect ? 'good' : 'bad'}`}>
+                  <i className={`fa-solid ${currentAnswer.isCorrect ? 'fa-circle-check' : 'fa-circle-xmark'} lp-fs-fb-icon`} />
+                  <div>
+                    <strong>{currentAnswer.isCorrect ? t('p_correct_excl') : t('p_not_quite')}</strong>
+                    <span> {step.Explanation}</span>
+                    {step['Learn More URL'] && (
+                      <div style={{marginTop:'8px'}}>
+                        <a className="lp-learnmore" href={step['Learn More URL']} target="_blank" rel="noopener noreferrer">
+                          <i className="fa-solid fa-book-open" /> {step['Learn More Label'] || t('p_learn_more')} <i className="fa-solid fa-arrow-up-right-from-square" />
+                        </a>
+                      </div>
+                    )}
                   </div>
-                )}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="lp-fs-opts">
+                {opts.map(letter => {
+                  const text = step[`Option ${letter}`];
+                  if (!text) return null;
+                  let cls = 'lp-fs-opt';
+                  if (locked && letter === step['Correct Option']) cls += ' correct';
+                  else if (locked && letter === selected)         cls += ' incorrect';
+                  return (
+                    <button key={letter} className={cls} disabled={locked} onClick={()=>choose(letter)}>
+                      <span className="lp-fs-letter">{letter}</span>
+                      <span className="lp-fs-opt-text">{text}</span>
+                    </button>
+                  );
+                })}
               </div>
-            </div>
+
+              {/* ── Feedback panel (shown after answering) ── */}
+              {locked && (
+                <div className={`lp-fs-feedback ${selected===step['Correct Option']?'good':'bad'}`}>
+                  <i className={`fa-solid ${selected===step['Correct Option']?'fa-circle-check':'fa-circle-xmark'} lp-fs-fb-icon`} />
+                  <div>
+                    <strong>{selected===step['Correct Option']?t('p_correct_excl'):t('p_not_quite')}</strong>
+                    <span> {step.Explanation}</span>
+                    {step['Learn More URL'] && (
+                      <div style={{marginTop:'8px'}}>
+                        <a className="lp-learnmore" href={step['Learn More URL']} target="_blank" rel="noopener noreferrer">
+                          <i className="fa-solid fa-book-open" /> {step['Learn More Label'] || t('p_learn_more')} <i className="fa-solid fa-arrow-up-right-from-square" />
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
 
