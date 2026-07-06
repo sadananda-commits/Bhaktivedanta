@@ -4,9 +4,15 @@
 // shuffled right-side items. Student drags each right-side box onto the
 // left-side item it matches, then presses Submit to lock and score it.
 //
-// v2 — now supports revisiting an already-answered question (same pattern
-// as the MCQ flow in portal.js: jump to any step via dot-nav/Previous and
-// see it locked + colored, no re-shuffle, no re-submit).
+// v3 — FIX: every text element now has an EXPLICIT color, and the whole
+// widget sits inside its own light card. v2 relied on inherited text color
+// for a few elements (the bank items, the left-side prompt boxes, the
+// Reset button) — fine on a page with dark text by default, but on
+// portal.js's dark theme (white body text) those elements had a light box
+// background AND inherited white text, so the text was invisible: white on
+// white/light-gray. Wrapping everything in one explicit light card, with
+// every piece of text given its own color, means this never depends on
+// whatever theme the page around it happens to use.
 //
 // USAGE (fresh question):
 //   <MatchTheFollowing
@@ -164,7 +170,8 @@ export default function MatchTheFollowing({
         onPointerDown={(e) => handlePointerDown(e, p.id)}
         style={{
           background: '#ffffff',
-          border: '1px solid #e2e2e0',
+          color: '#1a1a1a',
+          border: '1px solid #d5d5d2',
           borderRadius: 8,
           padding: '10px 12px',
           fontSize: 14,
@@ -179,13 +186,23 @@ export default function MatchTheFollowing({
   }
 
   return (
-    <div style={{ maxWidth: 680 }}>
+    // Self-contained light card — deliberately does NOT rely on any color
+    // inherited from the surrounding page, since portal.js's quiz screens
+    // use a dark theme (white body text) that would otherwise make text
+    // invisible against this widget's light boxes.
+    <div style={{
+      maxWidth: 680,
+      background: '#f7f7f5',
+      borderRadius: 14,
+      padding: '18px 20px',
+      border: '1px solid #e2e2e0',
+    }}>
       {title && (
-        <h3 style={{ fontSize: 16, fontWeight: 500, margin: '0 0 12px' }}>{title}</h3>
+        <h3 style={{ fontSize: 16, fontWeight: 500, margin: '0 0 12px', color: '#1a1a1a' }}>{title}</h3>
       )}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <span style={{ fontSize: 13, color: '#666' }}>Drag each meaning on the right onto its matching word</span>
-        {!submitted && <span style={{ fontSize: 12, color: '#999' }}>{placedCount} / {pairs.length} placed</span>}
+        <span style={{ fontSize: 13, color: '#555' }}>Drag each meaning on the right onto its matching word</span>
+        {!submitted && <span style={{ fontSize: 12, color: '#888' }}>{placedCount} / {pairs.length} placed</span>}
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
@@ -194,15 +211,17 @@ export default function MatchTheFollowing({
             const filledId = placements[p.id];
             const filledItem = filledId ? pairs.find(x => x.id === filledId) : null;
             let borderColor = '#d5d5d2';
-            let bg = 'transparent';
+            let bg = '#ffffff';
+            let slotTextColor = '#1a1a1a';
             if (submitted && result) {
               borderColor = result.correct[p.id] ? '#3b9e5a' : '#d64545';
               bg = result.correct[p.id] ? '#eaf6ee' : '#fbeaea';
+              slotTextColor = result.correct[p.id] ? '#1e6b3d' : '#a12a2a';
             }
             return (
               <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <div style={{ width: 20, fontSize: 12, color: '#999' }}>{idx + 1}.</div>
-                <div style={{ flex: 1, background: '#f4f4f2', borderRadius: 8, padding: '10px 12px', fontSize: 14 }}>
+                <div style={{ width: 20, fontSize: 12, color: '#888' }}>{idx + 1}.</div>
+                <div style={{ flex: 1, background: '#ffffff', color: '#1a1a1a', border: '1px solid #e2e2e0', borderRadius: 8, padding: '10px 12px', fontSize: 14 }}>
                   {p.left}
                 </div>
                 <div
@@ -211,7 +230,7 @@ export default function MatchTheFollowing({
                     width: 140,
                     minHeight: 40,
                     border: `1.5px ${filledItem ? 'solid' : 'dashed'} ${borderColor}`,
-                    background: bg,
+                    background: filledItem ? bg : '#f0f0ee',
                     borderRadius: 8,
                     display: 'flex',
                     alignItems: 'center',
@@ -223,12 +242,12 @@ export default function MatchTheFollowing({
                     ? (
                       <div
                         onPointerDown={(e) => handlePointerDown(e, filledItem.id)}
-                        style={{ fontSize: 13, cursor: submitted ? 'default' : 'grab', textAlign: 'center', width: '100%' }}
+                        style={{ fontSize: 13, color: slotTextColor, cursor: submitted ? 'default' : 'grab', textAlign: 'center', width: '100%' }}
                       >
                         {filledItem.right}
                       </div>
                     )
-                    : <span style={{ fontSize: 11, color: '#bbb' }}>drop here</span>
+                    : <span style={{ fontSize: 11, color: '#999' }}>drop here</span>
                   }
                 </div>
               </div>
@@ -245,7 +264,7 @@ export default function MatchTheFollowing({
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 20 }}>
           <button
             onClick={handleReset}
-            style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #d5d5d2', background: '#fff', fontSize: 14, cursor: 'pointer' }}
+            style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #d5d5d2', background: '#ffffff', color: '#333333', fontSize: 14, cursor: 'pointer' }}
           >
             Reset
           </button>
@@ -256,8 +275,8 @@ export default function MatchTheFollowing({
               padding: '8px 20px',
               borderRadius: 8,
               border: 'none',
-              background: placedCount < pairs.length ? '#ccc' : '#00c6a7',
-              color: '#fff',
+              background: placedCount < pairs.length ? '#cccccc' : '#00c6a7',
+              color: '#ffffff',
               fontSize: 14,
               fontWeight: 500,
               cursor: placedCount < pairs.length ? 'default' : 'pointer',
@@ -269,7 +288,7 @@ export default function MatchTheFollowing({
       )}
 
       {submitted && result && (
-        <div style={{ marginTop: 16, fontSize: 15, fontWeight: 500, color: result.score === result.total ? '#3b9e5a' : '#333' }}>
+        <div style={{ marginTop: 16, fontSize: 15, fontWeight: 500, color: result.score === result.total ? '#1e6b3d' : '#333333' }}>
           Score: {result.score} / {result.total} correct
         </div>
       )}
