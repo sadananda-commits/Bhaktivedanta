@@ -92,6 +92,13 @@ export default function MatchTheFollowing({
     const offsetY = e.clientY - rect.top;
 
     el.setPointerCapture(e.pointerId);
+    // Kill the element's own transition (defined on .mtf-bank-item as
+    // "transition: transform 0.15s ease, box-shadow 0.15s ease") before
+    // switching to fixed positioning. Without this, the browser tweens from
+    // whatever transform happened to be live at pointerdown (e.g. the
+    // :hover translateY(-1px)) to the new scale(1.03) over 150ms, which
+    // reads as the box drifting/sliding before it locks onto the pointer.
+    el.style.transition = 'none';
     el.style.position = 'fixed';
     el.style.zIndex = 1000;
     el.style.width = rect.width + 'px';
@@ -116,6 +123,7 @@ export default function MatchTheFollowing({
       el.style.transform = '';
       el.style.pointerEvents = '';
       el.style.width = '';
+      el.style.transition = '';
 
       const target = document.elementFromPoint(ev.clientX, ev.clientY);
       const slotEl = target ? target.closest('[data-slot-id]') : null;
@@ -604,12 +612,12 @@ export default function MatchTheFollowing({
         .mtf-score-banner.is-partial { background: var(--meaning-tint); color: var(--meaning-ink); }
 
         @keyframes mtf-card-in {
-          from { opacity: 0; transform: translateY(6px); }
-          to   { opacity: 1; transform: translateY(0); }
+          from { opacity: 0; }
+          to   { opacity: 1; }
         }
         @keyframes mtf-row-in {
-          from { opacity: 0; transform: translateY(4px); }
-          to   { opacity: 1; transform: translateY(0); }
+          from { opacity: 0; }
+          to   { opacity: 1; }
         }
         @keyframes mtf-banner-in {
           from { opacity: 0; transform: scale(0.97); }
