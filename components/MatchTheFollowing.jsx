@@ -154,7 +154,9 @@ export default function MatchTheFollowing({
     if (onSubmit) onSubmit(payload);
   }
 
-  const bankItems = rightShuffled.filter(p => locations[p.id] === 'bank');
+  // Rendering iterates `rightShuffled` directly in its fixed original order
+  // (see the Meanings column below) rather than filtering — that fixed
+  // order is what keeps every row's position stable as answers get placed.
 
   // Progress ring math
   const total = pairs.length;
@@ -235,22 +237,33 @@ export default function MatchTheFollowing({
         <div className="mtf-col">
           <div className="mtf-col-label mtf-col-label--meaning">Meanings</div>
           <div className="mtf-bank" data-bank-zone="true">
-            {bankItems.map(p => (
-              <div
-                key={p.id}
-                className="mtf-bank-item"
-                onPointerDown={(e) => handlePointerDown(e, p.id)}
-                style={{ cursor: submitted ? 'default' : 'grab' }}
-              >
-                <span className="mtf-drag-handle" aria-hidden="true">
-                  <i className="fa-solid fa-grip-vertical" />
-                </span>
-                {p.right}
-              </div>
-            ))}
-            {bankItems.length === 0 && !submitted && (
-              <div className="mtf-bank-empty">All matched — press Submit below</div>
-            )}
+            {rightShuffled.map(p => {
+              const isPlaced = locations[p.id] !== 'bank';
+              if (isPlaced) {
+                // Keeps this slot's height/position in the list instead of
+                // removing it — that's what keeps the two columns lined up
+                // row-for-row as answers get dragged out, rather than the
+                // right side reflowing upward and drifting out of sync.
+                return (
+                  <div key={p.id} className="mtf-bank-item mtf-bank-item--placed" aria-hidden="true">
+                    <i className="fa-solid fa-check" /> Matched
+                  </div>
+                );
+              }
+              return (
+                <div
+                  key={p.id}
+                  className="mtf-bank-item"
+                  onPointerDown={(e) => handlePointerDown(e, p.id)}
+                  style={{ cursor: submitted ? 'default' : 'grab' }}
+                >
+                  <span className="mtf-drag-handle" aria-hidden="true">
+                    <i className="fa-solid fa-grip-vertical" />
+                  </span>
+                  {p.right}
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -399,27 +412,29 @@ export default function MatchTheFollowing({
         .mtf-word-chip {
           flex: 1;
           min-width: 0;
-          min-height: var(--chip-min-h);
+          height: var(--chip-min-h);
+          box-sizing: border-box;
           display: flex;
           align-items: center;
           background: linear-gradient(160deg, #FFFFFF 0%, var(--word-tint) 130%);
           border: 1px solid #E1E0F5;
           border-left: 5px solid var(--word-ink);
           border-radius: 12px;
-          padding: 12px 14px;
+          padding: 10px 14px;
           font-size: 15.5px;
           font-weight: 700;
           letter-spacing: -0.01em;
-          line-height: 1.3;
+          line-height: 1.25;
           color: var(--ink);
           box-shadow: 0 1px 2px rgba(28,33,48,0.05);
-          overflow-wrap: break-word;
+          overflow: hidden;
         }
 
         .mtf-slot {
           width: 42%;
           min-width: 130px;
-          min-height: var(--chip-min-h);
+          height: var(--chip-min-h);
+          box-sizing: border-box;
           border-radius: 12px;
           border: 1.5px dashed #C9C2B4;
           background: var(--rail);
@@ -446,9 +461,11 @@ export default function MatchTheFollowing({
           font-size: 15px;
           font-weight: 700;
           letter-spacing: -0.01em;
-          line-height: 1.3;
+          line-height: 1.25;
           color: var(--ink);
           text-align: center;
+          overflow: hidden;
+          max-height: 100%;
         }
         .mtf-slot-placeholder {
           font-size: 12.5px;
@@ -475,17 +492,17 @@ export default function MatchTheFollowing({
         }
         .mtf-bank-item {
           width: 100%;
-          min-height: var(--chip-min-h);
+          height: var(--chip-min-h);
           box-sizing: border-box;
           background: linear-gradient(160deg, #FFFFFF 0%, var(--meaning-tint) 130%);
           border: 1px solid #F2DFC0;
           border-left: 5px solid var(--meaning-ink);
           border-radius: 12px;
-          padding: 12px 14px;
+          padding: 10px 14px;
           font-size: 15.5px;
           font-weight: 700;
           letter-spacing: -0.01em;
-          line-height: 1.3;
+          line-height: 1.25;
           color: var(--ink);
           text-align: right;
           box-shadow: 0 1px 2px rgba(28,33,48,0.05);
@@ -493,6 +510,7 @@ export default function MatchTheFollowing({
           align-items: center;
           justify-content: flex-end;
           gap: 8px;
+          overflow: hidden;
           user-select: none;
           touch-action: none;
           transition: transform 0.15s ease, box-shadow 0.15s ease;
@@ -500,6 +518,20 @@ export default function MatchTheFollowing({
         .mtf-bank-item:hover {
           transform: translateY(-1px);
           box-shadow: 0 6px 14px rgba(194,118,12,0.18);
+        }
+        .mtf-bank-item--placed {
+          background: var(--rail);
+          border: 1.5px dashed #D8D3C6;
+          border-left: 1.5px dashed #D8D3C6;
+          color: var(--ink-muted);
+          font-weight: 600;
+          font-size: 13px;
+          box-shadow: none;
+          cursor: default;
+        }
+        .mtf-bank-item--placed:hover {
+          transform: none;
+          box-shadow: none;
         }
         .mtf-drag-handle {
           color: var(--meaning-ink);
