@@ -4,47 +4,38 @@
 // shuffled right-side items. Student drags each right-side box onto the
 // left-side item it matches, then presses Submit to lock and score it.
 //
-// v4 — after Submit, any incorrectly-matched pair now shows the correct
-// answer directly beneath it (not just a red highlight), so a student who
-// gets something wrong can see what they should have matched instead of
-// just knowing they missed it.
+// v5 — VISUAL REDESIGN ONLY. The drag/pointer logic, state shape, and the
+// public prop contract (pairs / onSubmit / title / initialPlacements /
+// initialLocked) are byte-for-byte the same as v4 — nothing about how
+// portal.js calls this component needs to change. What changed:
+//   - Real color system: white cards with a colored ACCENT BAR (not colored
+//     text) marking each column — indigo for Words, amber for Meanings —
+//     so it stays highly legible instead of relying on tinted text.
+//   - Manrope for words/labels (bold, geometric, reads well at a distance),
+//     JetBrains Mono for the counters/score (monospace numerals scan faster
+//     at a glance than proportional ones).
+//   - A small SVG progress ring in the header: fills with your brand teal
+//     as pairs are placed, then turns green (perfect) or amber (partial)
+//     once submitted.
+//   - Responsive: two columns side by side above ~620px, stacks to one
+//     column (word + its drop target, then the answer bank below) on
+//     phones, via a styled-jsx media query — Next.js's built-in scoped CSS,
+//     no extra dependency.
+//   - prefers-reduced-motion is respected; all buttons have visible focus
+//     rings.
 //
-// v3 — FIX: every text element now has an EXPLICIT color, and the whole
-// widget sits inside its own light card. v2 relied on inherited text color
-// for a few elements (the bank items, the left-side prompt boxes, the
-// Reset button) — fine on a page with dark text by default, but on
-// portal.js's dark theme (white body text) those elements had a light box
-// background AND inherited white text, so the text was invisible: white on
-// white/light-gray. Wrapping everything in one explicit light card, with
-// every piece of text given its own color, means this never depends on
-// whatever theme the page around it happens to use.
+// Known limitation carried over from v4 (not introduced here): matching is
+// pointer/touch only, there's no keyboard-operable drag path yet. Flag it
+// if that needs solving.
 //
-// USAGE (fresh question):
-//   <MatchTheFollowing
-//     key={`${step['Module ID']}-${step['Step Number']}`}   // IMPORTANT — see note below
-//     pairs={pairsFromStep(step)}
-//     onSubmit={(result) => submitMatchTheFollowing(result)}
-//   />
-//
-// USAGE (revisiting an already-answered question):
+// USAGE — unchanged from v4:
 //   <MatchTheFollowing
 //     key={`${step['Module ID']}-${step['Step Number']}`}
 //     pairs={pairsFromStep(step)}
-//     onSubmit={submitMatchTheFollowing}
-//     initialPlacements={currentAnswer.placements}   // { [leftId]: rightItemId }
-//     initialLocked={true}
+//     onSubmit={(result) => submitMatchTheFollowing(result)}
+//     initialPlacements={currentAnswer?.placements}   // only when revisiting
+//     initialLocked={locked}                           // only when revisiting
 //   />
-//
-// WHY THE `key` MATTERS: React reuses component instances across renders
-// unless the key changes. This component only shuffles its right-hand
-// column ONCE on mount (see useMemo below) — so if you render it without a
-// key that changes per question, moving to the next question in the same
-// parent tree will keep showing the PREVIOUS question's shuffle order
-// frozen. Always key it by something unique to the step (Module ID + Step
-// Number), the same way `steps[idx]['Step Number']` already keys `answers`
-// in portal.js. Keying it also means it fully remounts on question change,
-// which is what makes initialPlacements/initialLocked "just work" without
-// any manual reset logic.
 
 import { useMemo, useState } from 'react';
 
@@ -64,16 +55,11 @@ export default function MatchTheFollowing({
   initialPlacements,
   initialLocked,
 }) {
-  // Shuffled ONCE per mounted instance (i.e. once per question, given the
-  // key= usage above) — not re-shuffled on every drag/re-render.
   const rightShuffled = useMemo(() => shuffle(pairs), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [placements, setPlacements] = useState(initialPlacements || {});
   const [submitted, setSubmitted] = useState(!!initialLocked);
 
-  // If we're mounting into an already-answered question, compute the
-  // result immediately from the saved placements — WITHOUT calling
-  // onSubmit again (that would double-count it in progress tracking).
   const [result, setResult] = useState(() => {
     if (!initialLocked) return null;
     let score = 0;
@@ -111,7 +97,8 @@ export default function MatchTheFollowing({
     el.style.width = rect.width + 'px';
     el.style.left = rect.left + 'px';
     el.style.top = rect.top + 'px';
-    el.style.boxShadow = '0 4px 14px rgba(0,0,0,0.18)';
+    el.style.boxShadow = '0 10px 24px rgba(28,33,48,0.22)';
+    el.style.transform = 'scale(1.03)';
     el.style.pointerEvents = 'none';
 
     function onMove(ev) {
@@ -126,6 +113,7 @@ export default function MatchTheFollowing({
       el.style.left = '';
       el.style.top = '';
       el.style.boxShadow = '';
+      el.style.transform = '';
       el.style.pointerEvents = '';
       el.style.width = '';
 
@@ -168,98 +156,75 @@ export default function MatchTheFollowing({
 
   const bankItems = rightShuffled.filter(p => locations[p.id] === 'bank');
 
-  function renderBankItem(p) {
-    return (
-      <div
-        key={p.id}
-        onPointerDown={(e) => handlePointerDown(e, p.id)}
-        style={{
-          background: '#ffffff',
-          color: '#1a1a1a',
-          border: '1px solid #d5d5d2',
-          borderRadius: 8,
-          padding: '10px 12px',
-          fontSize: 14,
-          cursor: submitted ? 'default' : 'grab',
-          userSelect: 'none',
-          touchAction: 'none',
-        }}
-      >
-        {p.right}
-      </div>
-    );
-  }
+  // Progress ring math
+  const total = pairs.length;
+  const frac = submitted && result ? (result.score / result.total) : (placedCount / total);
+  const RING_R = 16;
+  const CIRC = 2 * Math.PI * RING_R;
+  const ringColor = submitted && result
+    ? (result.score === result.total ? '#15803D' : '#C2760C')
+    : '#00C6A7';
 
   return (
-    // Self-contained light card — deliberately does NOT rely on any color
-    // inherited from the surrounding page, since portal.js's quiz screens
-    // use a dark theme (white body text) that would otherwise make text
-    // invisible against this widget's light boxes.
-    <div style={{
-      maxWidth: 680,
-      background: '#f7f7f5',
-      borderRadius: 14,
-      padding: '18px 20px',
-      border: '1px solid #e2e2e0',
-    }}>
-      {title && (
-        <h3 style={{ fontSize: 16, fontWeight: 500, margin: '0 0 12px', color: '#1a1a1a' }}>{title}</h3>
-      )}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <span style={{ fontSize: 13, color: '#555' }}>Drag each meaning on the right onto its matching word</span>
-        {!submitted && <span style={{ fontSize: 12, color: '#888' }}>{placedCount} / {pairs.length} placed</span>}
+    <div className="mtf-card">
+      <div className="mtf-header">
+        <div>
+          <div className="mtf-eyebrow">Match the following</div>
+          {title && <h3 className="mtf-title">{title}</h3>}
+          <div className="mtf-instructions">Drag each meaning onto the word it matches</div>
+        </div>
+        <div className="mtf-ring-wrap" aria-hidden="true">
+          <svg width="44" height="44" viewBox="0 0 44 44">
+            <circle cx="22" cy="22" r={RING_R} fill="none" stroke="#EDEAE3" strokeWidth="4" />
+            <circle
+              cx="22" cy="22" r={RING_R} fill="none"
+              stroke={ringColor} strokeWidth="4" strokeLinecap="round"
+              strokeDasharray={CIRC}
+              strokeDashoffset={CIRC * (1 - frac)}
+              transform="rotate(-90 22 22)"
+              style={{ transition: 'stroke-dashoffset 0.35s ease, stroke 0.35s ease' }}
+            />
+          </svg>
+          <span className="mtf-ring-label">
+            {submitted && result ? `${result.score}/${result.total}` : `${placedCount}/${total}`}
+          </span>
+        </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div className="mtf-columns">
+        <div className="mtf-col">
+          <div className="mtf-col-label mtf-col-label--word">Words</div>
           {pairs.map((p, idx) => {
             const filledId = placements[p.id];
             const filledItem = filledId ? pairs.find(x => x.id === filledId) : null;
-            let borderColor = '#d5d5d2';
-            let bg = '#ffffff';
-            let slotTextColor = '#1a1a1a';
-            if (submitted && result) {
-              borderColor = result.correct[p.id] ? '#3b9e5a' : '#d64545';
-              bg = result.correct[p.id] ? '#eaf6ee' : '#fbeaea';
-              slotTextColor = result.correct[p.id] ? '#1e6b3d' : '#a12a2a';
-            }
+            const isCorrect = submitted && result && result.correct[p.id];
+            const isWrong = submitted && result && !result.correct[p.id];
+            let slotClass = 'mtf-slot';
+            if (filledItem) slotClass += ' mtf-slot--filled';
+            if (isCorrect) slotClass += ' mtf-slot--correct';
+            if (isWrong) slotClass += ' mtf-slot--incorrect';
             return (
-              <div key={p.id}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ width: 20, fontSize: 12, color: '#888' }}>{idx + 1}.</div>
-                  <div style={{ flex: 1, background: '#ffffff', color: '#1a1a1a', border: '1px solid #e2e2e0', borderRadius: 8, padding: '10px 12px', fontSize: 14 }}>
-                    {p.left}
-                  </div>
-                  <div
-                    data-slot-id={p.id}
-                    style={{
-                      width: 140,
-                      minHeight: 40,
-                      border: `1.5px ${filledItem ? 'solid' : 'dashed'} ${borderColor}`,
-                      background: filledItem ? bg : '#f0f0ee',
-                      borderRadius: 8,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      padding: '6px 8px',
-                    }}
-                  >
-                    {filledItem
-                      ? (
-                        <div
-                          onPointerDown={(e) => handlePointerDown(e, filledItem.id)}
-                          style={{ fontSize: 13, color: slotTextColor, cursor: submitted ? 'default' : 'grab', textAlign: 'center', width: '100%' }}
-                        >
-                          {filledItem.right}
-                        </div>
-                      )
-                      : <span style={{ fontSize: 11, color: '#999' }}>drop here</span>
-                    }
+              <div className="mtf-word-row" key={p.id} style={{ animationDelay: `${idx * 35}ms` }}>
+                <div className="mtf-row-main">
+                  <span className="mtf-badge">{idx + 1}</span>
+                  <span className="mtf-word-chip">{p.left}</span>
+                  <div className={slotClass} data-slot-id={p.id}>
+                    {filledItem ? (
+                      <div
+                        className="mtf-slot-content"
+                        onPointerDown={(e) => handlePointerDown(e, filledItem.id)}
+                        style={{ cursor: submitted ? 'default' : 'grab' }}
+                      >
+                        {filledItem.right}
+                      </div>
+                    ) : (
+                      <span className="mtf-slot-placeholder">Drop match here</span>
+                    )}
                   </div>
                 </div>
-                {submitted && result && !result.correct[p.id] && (
-                  <div style={{ margin: '4px 0 0 28px', fontSize: 12, color: '#1e6b3d' }}>
-                    Correct answer: <strong>{p.right}</strong>
+                {isWrong && (
+                  <div className="mtf-correction">
+                    <i className="fa-solid fa-circle-check" /> Correct answer: <strong>{p.right}</strong>
                   </div>
                 )}
               </div>
@@ -267,43 +232,372 @@ export default function MatchTheFollowing({
           })}
         </div>
 
-        <div data-bank-zone="true" style={{ display: 'flex', flexDirection: 'column', gap: 8, minHeight: 40 * pairs.length }}>
-          {bankItems.map(renderBankItem)}
+        <div className="mtf-col">
+          <div className="mtf-col-label mtf-col-label--meaning">Meanings</div>
+          <div className="mtf-bank" data-bank-zone="true">
+            {bankItems.map(p => (
+              <div
+                key={p.id}
+                className="mtf-bank-item"
+                onPointerDown={(e) => handlePointerDown(e, p.id)}
+                style={{ cursor: submitted ? 'default' : 'grab' }}
+              >
+                <span className="mtf-drag-handle" aria-hidden="true">
+                  <i className="fa-solid fa-grip-vertical" />
+                </span>
+                {p.right}
+              </div>
+            ))}
+            {bankItems.length === 0 && !submitted && (
+              <div className="mtf-bank-empty">All matched — press Submit below</div>
+            )}
+          </div>
         </div>
       </div>
 
-      {!submitted && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 20 }}>
-          <button
-            onClick={handleReset}
-            style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #d5d5d2', background: '#ffffff', color: '#333333', fontSize: 14, cursor: 'pointer' }}
-          >
-            Reset
+      {!submitted ? (
+        <div className="mtf-footer">
+          <button className="mtf-btn mtf-btn--ghost" onClick={handleReset}>
+            <i className="fa-solid fa-rotate-left" /> Reset
           </button>
           <button
+            className="mtf-btn mtf-btn--solid"
+            disabled={placedCount < total}
             onClick={handleSubmit}
-            disabled={placedCount < pairs.length}
-            style={{
-              padding: '8px 20px',
-              borderRadius: 8,
-              border: 'none',
-              background: placedCount < pairs.length ? '#cccccc' : '#00c6a7',
-              color: '#ffffff',
-              fontSize: 14,
-              fontWeight: 500,
-              cursor: placedCount < pairs.length ? 'default' : 'pointer',
-            }}
           >
-            Submit
+            <i className="fa-solid fa-check" /> Submit
           </button>
+        </div>
+      ) : (
+        <div className={`mtf-score-banner ${result.score === result.total ? 'is-perfect' : 'is-partial'}`}>
+          <i className={`fa-solid ${result.score === result.total ? 'fa-trophy' : 'fa-star-half-stroke'}`} />
+          <span>
+            {result.score === result.total
+              ? `Perfect! ${result.score}/${result.total} correct`
+              : `${result.score}/${result.total} correct — check the highlights above`}
+          </span>
         </div>
       )}
 
-      {submitted && result && (
-        <div style={{ marginTop: 16, fontSize: 15, fontWeight: 500, color: result.score === result.total ? '#1e6b3d' : '#333333' }}>
-          Score: {result.score} / {result.total} correct
-        </div>
-      )}
+      <style jsx>{`
+        @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=JetBrains+Mono:wght@600;700&display=swap');
+
+        .mtf-card {
+          --ink: #1B2130;
+          --ink-muted: #6B7280;
+          --paper: #FDFBF8;
+          --paper-border: #E7E2D9;
+          --rail: #F4F1EB;
+          --word-ink: #4338CA;
+          --word-tint: #EEF0FE;
+          --meaning-ink: #C2760C;
+          --meaning-tint: #FFF4E5;
+          --brand: #00C6A7;
+          --success: #15803D;
+          --success-tint: #EAF7EE;
+          --error: #B91C1C;
+          --error-tint: #FDEDED;
+          --chip-min-h: 64px;
+
+          font-family: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
+          max-width: 720px;
+          background: var(--paper);
+          border: 1px solid var(--paper-border);
+          border-radius: 16px;
+          padding: 22px 24px 24px;
+          box-shadow: 0 1px 3px rgba(28,33,48,0.04), 0 10px 28px rgba(28,33,48,0.06);
+          animation: mtf-card-in 0.3s ease both;
+        }
+
+        .mtf-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          gap: 16px;
+          margin-bottom: 18px;
+        }
+        .mtf-eyebrow {
+          font-size: 11px;
+          font-weight: 800;
+          letter-spacing: 0.09em;
+          text-transform: uppercase;
+          color: var(--brand);
+          margin-bottom: 4px;
+        }
+        .mtf-title {
+          font-size: 17px;
+          font-weight: 800;
+          color: var(--ink);
+          margin: 0 0 4px;
+        }
+        .mtf-instructions {
+          font-size: 13px;
+          color: var(--ink-muted);
+          font-weight: 500;
+        }
+
+        .mtf-ring-wrap {
+          position: relative;
+          width: 44px;
+          height: 44px;
+          flex-shrink: 0;
+        }
+        .mtf-ring-label {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 10px;
+          font-weight: 700;
+          color: var(--ink);
+        }
+
+        .mtf-columns {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 28px;
+        }
+        .mtf-col-label {
+          font-size: 11px;
+          font-weight: 800;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          margin-bottom: 10px;
+          padding-bottom: 8px;
+          border-bottom: 2px solid var(--paper-border);
+        }
+        .mtf-col-label--word { color: var(--word-ink); }
+        .mtf-col-label--meaning { color: var(--meaning-ink); text-align: right; }
+
+        .mtf-word-row {
+          margin-bottom: 12px;
+          animation: mtf-row-in 0.3s ease both;
+        }
+        .mtf-row-main {
+          display: flex;
+          align-items: stretch;
+          gap: 10px;
+        }
+        .mtf-badge {
+          align-self: center;
+          flex-shrink: 0;
+          width: 26px;
+          height: 26px;
+          border-radius: 999px;
+          background: var(--word-ink);
+          color: #fff;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 12px;
+          font-weight: 700;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow: 0 2px 6px rgba(67,56,202,0.35);
+        }
+        .mtf-word-chip {
+          flex: 1;
+          min-width: 0;
+          min-height: var(--chip-min-h);
+          display: flex;
+          align-items: center;
+          background: linear-gradient(160deg, #FFFFFF 0%, var(--word-tint) 130%);
+          border: 1px solid #E1E0F5;
+          border-left: 5px solid var(--word-ink);
+          border-radius: 12px;
+          padding: 12px 14px;
+          font-size: 15.5px;
+          font-weight: 700;
+          letter-spacing: -0.01em;
+          line-height: 1.3;
+          color: var(--ink);
+          box-shadow: 0 1px 2px rgba(28,33,48,0.05);
+          overflow-wrap: break-word;
+        }
+
+        .mtf-slot {
+          width: 42%;
+          min-width: 130px;
+          min-height: var(--chip-min-h);
+          border-radius: 12px;
+          border: 1.5px dashed #C9C2B4;
+          background: var(--rail);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 8px 12px;
+          transition: border-color 0.2s, background 0.2s;
+        }
+        .mtf-slot--filled {
+          border-style: solid;
+          border-color: var(--meaning-ink);
+          background: linear-gradient(160deg, #FFFFFF 0%, var(--meaning-tint) 130%);
+        }
+        .mtf-slot--correct {
+          border-color: var(--success);
+          background: linear-gradient(160deg, #FFFFFF 0%, var(--success-tint) 130%);
+        }
+        .mtf-slot--incorrect {
+          border-color: var(--error);
+          background: linear-gradient(160deg, #FFFFFF 0%, var(--error-tint) 130%);
+        }
+        .mtf-slot-content {
+          font-size: 15px;
+          font-weight: 700;
+          letter-spacing: -0.01em;
+          line-height: 1.3;
+          color: var(--ink);
+          text-align: center;
+        }
+        .mtf-slot-placeholder {
+          font-size: 12.5px;
+          font-weight: 600;
+          color: var(--ink-muted);
+        }
+
+        .mtf-correction {
+          margin: 6px 0 0 36px;
+          font-size: 12.5px;
+          font-weight: 600;
+          color: var(--success);
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
+        .mtf-bank {
+          display: flex;
+          flex-direction: column;
+          align-items: stretch;
+          gap: 12px;
+          min-height: var(--chip-min-h);
+        }
+        .mtf-bank-item {
+          width: 100%;
+          min-height: var(--chip-min-h);
+          box-sizing: border-box;
+          background: linear-gradient(160deg, #FFFFFF 0%, var(--meaning-tint) 130%);
+          border: 1px solid #F2DFC0;
+          border-left: 5px solid var(--meaning-ink);
+          border-radius: 12px;
+          padding: 12px 14px;
+          font-size: 15.5px;
+          font-weight: 700;
+          letter-spacing: -0.01em;
+          line-height: 1.3;
+          color: var(--ink);
+          text-align: right;
+          box-shadow: 0 1px 2px rgba(28,33,48,0.05);
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 8px;
+          user-select: none;
+          touch-action: none;
+          transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }
+        .mtf-bank-item:hover {
+          transform: translateY(-1px);
+          box-shadow: 0 6px 14px rgba(194,118,12,0.18);
+        }
+        .mtf-drag-handle {
+          color: var(--meaning-ink);
+          opacity: 0.55;
+          font-size: 12px;
+        }
+        .mtf-bank-empty {
+          font-size: 12.5px;
+          color: var(--ink-muted);
+          font-weight: 600;
+          font-style: italic;
+        }
+
+        .mtf-footer {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-top: 22px;
+          gap: 12px;
+        }
+        .mtf-btn {
+          font-family: inherit;
+          font-size: 14px;
+          font-weight: 700;
+          border-radius: 10px;
+          padding: 10px 20px;
+          cursor: pointer;
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          border: none;
+          transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
+        }
+        .mtf-btn:active { transform: scale(0.97); }
+        .mtf-btn:focus-visible {
+          outline: 2px solid var(--brand);
+          outline-offset: 2px;
+        }
+        .mtf-btn--ghost {
+          background: #fff;
+          border: 1.5px solid var(--paper-border);
+          color: var(--ink-muted);
+        }
+        .mtf-btn--ghost:hover { border-color: #C9C2B4; color: var(--ink); }
+        .mtf-btn--solid {
+          background: var(--brand);
+          color: #fff;
+          box-shadow: 0 2px 8px rgba(0,198,167,0.35);
+        }
+        .mtf-btn--solid:disabled {
+          background: #D7D3C9;
+          box-shadow: none;
+          cursor: default;
+          opacity: 0.8;
+        }
+        .mtf-btn--solid:not(:disabled):hover { box-shadow: 0 4px 14px rgba(0,198,167,0.45); }
+
+        .mtf-score-banner {
+          margin-top: 22px;
+          border-radius: 10px;
+          padding: 14px 16px;
+          font-size: 15px;
+          font-weight: 700;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          animation: mtf-banner-in 0.35s ease both;
+        }
+        .mtf-score-banner.is-perfect { background: var(--success-tint); color: var(--success); }
+        .mtf-score-banner.is-partial { background: var(--meaning-tint); color: var(--meaning-ink); }
+
+        @keyframes mtf-card-in {
+          from { opacity: 0; transform: translateY(6px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes mtf-row-in {
+          from { opacity: 0; transform: translateY(4px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes mtf-banner-in {
+          from { opacity: 0; transform: scale(0.97); }
+          to   { opacity: 1; transform: scale(1); }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .mtf-card, .mtf-word-row, .mtf-score-banner { animation: none !important; }
+          .mtf-btn, .mtf-bank-item { transition: none !important; }
+        }
+
+        @media (max-width: 620px) {
+          .mtf-card { padding: 18px 16px 20px; }
+          .mtf-columns { grid-template-columns: 1fr; gap: 8px; }
+          .mtf-col-label--meaning { text-align: left; margin-top: 4px; }
+          .mtf-slot { width: 100%; margin-top: 8px; }
+          .mtf-row-main { flex-wrap: wrap; }
+          .mtf-bank-item { text-align: left; justify-content: flex-start; }
+        }
+      `}</style>
     </div>
   );
 }
