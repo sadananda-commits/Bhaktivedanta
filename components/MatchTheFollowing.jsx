@@ -219,7 +219,14 @@ export default function MatchTheFollowing({
                   <span className="mtf-badge">{idx + 1}</span>
                   <span className="mtf-word-chip">{p.left}</span>
                   <div className={slotClass} data-slot-id={p.id}>
-                    {filledItem ? (
+                    {isWrong ? (
+                      <div className="mtf-slot-content mtf-slot-content--wrong">
+                        <span className="mtf-wrong-text">
+                          {filledItem ? filledItem.right : 'No answer'}
+                        </span>
+                        <span className="mtf-correct-text">{p.right}</span>
+                      </div>
+                    ) : filledItem ? (
                       <div
                         className="mtf-slot-content"
                         onPointerDown={(e) => handlePointerDown(e, filledItem.id)}
@@ -232,11 +239,6 @@ export default function MatchTheFollowing({
                     )}
                   </div>
                 </div>
-                {isWrong && (
-                  <div className="mtf-correction">
-                    <i className="fa-solid fa-circle-check" /> Correct answer: <strong>{p.right}</strong>
-                  </div>
-                )}
               </div>
             );
           })}
@@ -441,7 +443,7 @@ export default function MatchTheFollowing({
         .mtf-slot {
           width: 42%;
           min-width: 130px;
-          height: var(--chip-min-h);
+          min-height: var(--chip-min-h);
           box-sizing: border-box;
           border-radius: 12px;
           border: 1.5px dashed #C9C2B4;
@@ -462,6 +464,7 @@ export default function MatchTheFollowing({
           background: linear-gradient(160deg, #FFFFFF 0%, var(--success-tint) 130%);
         }
         .mtf-slot--incorrect {
+          border-width: 2px;
           border-color: var(--error);
           background: linear-gradient(160deg, #FFFFFF 0%, var(--error-tint) 130%);
         }
@@ -475,20 +478,33 @@ export default function MatchTheFollowing({
           overflow: hidden;
           max-height: 100%;
         }
+        .mtf-slot-content--wrong {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 3px;
+          width: 100%;
+          overflow: visible;
+          max-height: none;
+        }
+        .mtf-wrong-text {
+          font-size: 13.5px;
+          font-weight: 600;
+          color: var(--error);
+          text-decoration: line-through;
+          text-decoration-thickness: 2px;
+          text-decoration-color: var(--error);
+          opacity: 0.75;
+        }
+        .mtf-correct-text {
+          font-size: 15px;
+          font-weight: 800;
+          color: var(--success);
+        }
         .mtf-slot-placeholder {
           font-size: 12.5px;
           font-weight: 600;
           color: var(--ink-muted);
-        }
-
-        .mtf-correction {
-          margin: 6px 0 0 36px;
-          font-size: 12.5px;
-          font-weight: 600;
-          color: var(--success);
-          display: flex;
-          align-items: center;
-          gap: 6px;
         }
 
         .mtf-bank {
