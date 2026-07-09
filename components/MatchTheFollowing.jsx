@@ -1,24 +1,26 @@
 // components/MatchTheFollowing.jsx
 //
-// "Match the following" question type — left-side words, shuffled
-// right-side meanings. Student taps a meaning to select it, then taps the
-// word it matches to place it there, then presses Submit to lock and score.
+// "Match the following" question type — left-side words, each with a
+// native <select> dropdown listing the (shuffled) right-side meanings.
+// Student picks a meaning for each word from its dropdown, then presses
+// Submit to lock and score.
 //
-// v6 — INTERACTION MODEL CHANGE. Earlier versions used pointer-drag on
-// desktop and a separate touch-detected tap mode on phones. That dual-mode
-// setup kept breaking in ways that were hard to pin down (drag was
-// unreliable on real phones — the browser's own scroll kept winning — and
-// even after adding a touch-only tap mode, some mobile browsers misreported
-// touch capability on rotation, which sent landscape taps down the dead
-// drag path and made them silently hit nothing/the wrong thing).
+// v7 — INTERACTION MODEL CHANGE (mobile landscape fix). v6 used tap-to-
+// select-a-meaning / tap-to-place-on-a-word across two side-by-side
+// columns. In mobile landscape the columns sit closer together and the
+// viewport is short, and taps were landing on/selecting the wrong chip —
+// a coordinate/hit-test mismatch that's inherent to any custom tap-target
+// UI once things get cramped, no matter how carefully the handlers are
+// written.
 //
-// Rather than keep patching device detection, this version drops drag
-// entirely: tap-to-select / tap-to-place is now the ONE interaction path
-// for every device, pointer type, and orientation — mouse, touch, trackpad,
-// portrait, landscape. There is no branching on pointer/touch capability
-// anywhere in this file, so there's no detection to get wrong. It's also
-// keyboard-operable now (Tab + Enter/Space), which the drag-only version
-// never was.
+// This version removes custom tap-targets for placement entirely. Each
+// word row now has one native <select> holding that word's meaning
+// options. The device's own picker UI does the tap targeting, so there is
+// no coordinate math left to get wrong — this is orientation-proof and
+// behaves identically on desktop, phone portrait, and phone landscape.
+// The two-column "tap meaning, then tap word" layout is gone in favor of
+// a single-column list of word rows, which is also just simpler to use
+// on a short/narrow screen.
 //
 // Public prop contract (pairs / onSubmit / title / explanation /
 // initialPlacements / initialLocked) is unchanged — nothing about how
@@ -83,7 +85,6 @@ export default function MatchTheFollowing({
 
   const [placements, setPlacements] = useState(initialPlacements || {});
   const [submitted, setSubmitted] = useState(!!initialLocked);
-  const [selectedMeaningId, setSelectedMeaningId] = useState(null);
 
   const [result, setResult] = useState(() => {
     if (!initialLocked) return null;
@@ -97,6 +98,9 @@ export default function MatchTheFollowing({
     return { score, total: pairs.length, correct, placements: initialPlacements || {} };
   });
 
+  // locations[itemId] = the leftId it's currently placed under, or 'bank'.
+  // Used purely to know which dropdown options are already taken by a
+  // different row, so they can be disabled there.
   const [locations, setLocations] = useState(() => {
     const initial = {};
     pairs.forEach(p => {
@@ -107,9 +111,15 @@ export default function MatchTheFollowing({
   });
 
   const placedCount = Object.keys(placements).length;
+  const total = pairs.length;
 
-  // Places `itemId` into `leftId`'s slot. If that slot already held a
-  // different item, that item is bumped back to the bank rather than lost.
+  function englishFor(word) {
+    return englishMeanings[word?.toLowerCase()] || null;
+  }
+
+  // Sets `leftId`'s dropdown to `itemId`. If that item was already placed
+  // under a different word, that other row is cleared back to "no
+  // selection" rather than silently keeping a stale duplicate.
   function placeMeaning(leftId, itemId) {
     if (submitted) return;
     const nextPlacements = { ...placements };
@@ -124,42 +134,23 @@ export default function MatchTheFollowing({
     setLocations(nextLocations);
   }
 
-  function returnToBank(itemId) {
+  function clearSlot(leftId) {
     if (submitted) return;
+    const itemId = placements[leftId];
+    if (!itemId) return;
     const nextPlacements = { ...placements };
-    Object.keys(nextPlacements).forEach(k => { if (nextPlacements[k] === itemId) delete nextPlacements[k]; });
+    delete nextPlacements[leftId];
     setPlacements(nextPlacements);
     setLocations(prev => ({ ...prev, [itemId]: 'bank' }));
   }
 
-  // Tapping a meaning selects it (tap again to deselect, tap a different
-  // one to switch selection — nothing gets placed until you tap a word).
-  function handleTapMeaning(itemId) {
-    if (submitted) return;
-    setSelectedMeaningId(prev => (prev === itemId ? null : itemId));
-  }
-
-  // Tapping a word's slot: if a meaning is selected, place it there
-  // (swapping out whatever was already there, if anything). If nothing is
-  // selected and the slot is filled, tapping it removes the answer back to
-  // the bank — a plain "tap to clear" affordance.
-  function handleTapSlot(leftId) {
-    if (submitted) return;
-    if (selectedMeaningId) {
-      placeMeaning(leftId, selectedMeaningId);
-      setSelectedMeaningId(null);
-    } else if (placements[leftId]) {
-      returnToBank(placements[leftId]);
+  // Handles the <select>'s onChange for a given word row.
+  function handleSelectChange(leftId, value) {
+    if (!value) {
+      clearSlot(leftId);
+    } else {
+      placeMeaning(leftId, value);
     }
-  }
-
-  function handleKeyActivate(fn) {
-    return (e) => {
-      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
-        e.preventDefault();
-        fn();
-      }
-    };
   }
 
   function handleReset() {
@@ -167,7 +158,6 @@ export default function MatchTheFollowing({
     const initial = {};
     pairs.forEach(p => { initial[p.id] = 'bank'; });
     setLocations(initial);
-    setSelectedMeaningId(null);
   }
 
   function handleSubmit() {
@@ -181,16 +171,10 @@ export default function MatchTheFollowing({
     const payload = { score, total: pairs.length, correct, placements };
     setResult(payload);
     setSubmitted(true);
-    setSelectedMeaningId(null);
     if (onSubmit) onSubmit(payload);
   }
 
-  // Rendering iterates `rightShuffled` directly in its fixed original order
-  // (see the Meanings column below) rather than filtering — that fixed
-  // order is what keeps every row's position stable as answers get placed.
-
   // Progress ring math
-  const total = pairs.length;
   const frac = submitted && result ? (result.score / result.total) : (placedCount / total);
   const RING_R = 16;
   const CIRC = 2 * Math.PI * RING_R;
@@ -205,7 +189,7 @@ export default function MatchTheFollowing({
           <div className="mtf-eyebrow">Match the following</div>
           {title && <h3 className="mtf-title">{title}</h3>}
           <div className="mtf-instructions">
-            {selectedMeaningId ? 'Now tap the word it matches' : 'Tap a meaning, then tap the word it matches'}
+            Pick a meaning for each word from its dropdown
           </div>
         </div>
         <div className="mtf-ring-wrap" aria-hidden="true">
@@ -226,120 +210,62 @@ export default function MatchTheFollowing({
         </div>
       </div>
 
-      <div className="mtf-columns">
-        <div className="mtf-col">
-          <div className="mtf-col-label mtf-col-label--word">Words</div>
-          {pairs.map((p, idx) => {
-            const filledId = placements[p.id];
-            const filledItem = filledId ? pairs.find(x => x.id === filledId) : null;
-            const isCorrect = submitted && result && result.correct[p.id];
-            const isWrong = submitted && result && !result.correct[p.id];
-            let slotClass = 'mtf-slot';
-            if (filledItem) slotClass += ' mtf-slot--filled';
-            if (isCorrect) slotClass += ' mtf-slot--correct';
-            if (isWrong) slotClass += ' mtf-slot--incorrect';
-            if (selectedMeaningId && !submitted) slotClass += ' mtf-slot--targetable';
-            return (
-              <div className="mtf-word-row" key={p.id} style={{ animationDelay: `${idx * 35}ms` }}>
-                <div className="mtf-row-main">
-                  <span className="mtf-badge">{idx + 1}</span>
-                  <span className="mtf-word-chip">{p.left}</span>
-                  <div
-                    className={slotClass}
-                    data-slot-id={p.id}
-                    onClick={() => handleTapSlot(p.id)}
-                    onKeyDown={handleKeyActivate(() => handleTapSlot(p.id))}
-                    role={!submitted ? 'button' : undefined}
-                    tabIndex={!submitted ? 0 : undefined}
-                    aria-label={!submitted ? `Slot for ${p.left}` : undefined}
-                  >
+      <div className="mtf-list">
+        {pairs.map((p, idx) => {
+          const filledId = placements[p.id];
+          const filledItem = filledId ? pairs.find(x => x.id === filledId) : null;
+          const isCorrect = submitted && result && result.correct[p.id];
+          const isWrong = submitted && result && !result.correct[p.id];
+          const wordEnglish = englishFor(p.left);
+
+          let selectClass = 'mtf-select';
+          if (filledItem) selectClass += ' mtf-select--filled';
+
+          return (
+            <div className="mtf-row" key={p.id} style={{ animationDelay: `${idx * 35}ms` }}>
+              <span className="mtf-badge">{idx + 1}</span>
+
+              <div className="mtf-word-chip">
+                <span className="mtf-word-text">{p.left}</span>
+                {wordEnglish && <span className="mtf-english-hint">({wordEnglish})</span>}
+              </div>
+
+              <div className="mtf-select-wrap">
+                {submitted ? (
+                  <div className={`mtf-result ${isCorrect ? 'mtf-result--correct' : 'mtf-result--incorrect'}`}>
                     {isWrong ? (
-                      <div className="mtf-slot-content mtf-slot-content--wrong">
-                        <span className="mtf-wrong-text">
+                      <div className="mtf-result-content">
+                        <span className="mtf-result-wrong-text">
                           {filledItem ? filledItem.right : 'No answer'}
                         </span>
-                        <span className="mtf-correct-text">{p.right}</span>
-                      </div>
-                    ) : filledItem ? (
-                      <div className="mtf-slot-content">
-                        {filledItem.right}
+                        <span className="mtf-result-correct-text">{p.right}</span>
                       </div>
                     ) : (
-                      <span className="mtf-slot-placeholder">
-                        {selectedMeaningId ? 'Tap to place here' : 'Tap a meaning first'}
-                      </span>
+                      <span className="mtf-result-content">{p.right}</span>
                     )}
                   </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="mtf-col">
-          <div className="mtf-col-label mtf-col-label--meaning">Meanings</div>
-          <div className="mtf-bank" data-bank-zone="true">
-            {submitted ? (
-              // Once locked, show one row per word-column pair, in the exact
-              // same order as the Words column (pairs), not the shuffled
-              // bank order — so row N here always matches row N on the left,
-              // regardless of where that meaning chip started out in the bank.
-              pairs.map(p => (
-                <div key={p.id} className="mtf-bank-item mtf-bank-item--placed" aria-hidden="true">
-                  <span className="mtf-bank-solved">
-                    <span className="mtf-bank-solved-pair">
-                      <span className="mtf-bank-solved-term">{p.left}</span>
-                      <span className="mtf-bank-solved-eq">=</span>
-                      <span className="mtf-bank-solved-en">
-                        {englishMeanings[p.left?.toLowerCase()] || '—'}
-                      </span>
-                    </span>
-                    <span className="mtf-bank-solved-sep">;</span>
-                    <span className="mtf-bank-solved-pair">
-                      <span className="mtf-bank-solved-term">{p.right}</span>
-                      <span className="mtf-bank-solved-eq">=</span>
-                      <span className="mtf-bank-solved-en">
-                        {englishMeanings[p.right?.toLowerCase()] || '—'}
-                      </span>
-                    </span>
-                  </span>
-                </div>
-              ))
-            ) : (
-              rightShuffled.map(p => {
-                const isPlaced = locations[p.id] !== 'bank';
-                if (isPlaced) {
-                  // Keeps this slot's height/position in the list instead of
-                  // removing it — that's what keeps the two columns lined up
-                  // row-for-row as answers get placed, rather than the right
-                  // side reflowing upward and drifting out of sync.
-                  return (
-                    <div key={p.id} className="mtf-bank-item mtf-bank-item--placed" aria-hidden="true">
-                      <i className="fa-solid fa-check" /> Matched
-                    </div>
-                  );
-                }
-                const isSelected = selectedMeaningId === p.id;
-                return (
-                  <div
-                    key={p.id}
-                    className={`mtf-bank-item${isSelected ? ' mtf-bank-item--selected' : ''}`}
-                    onClick={() => handleTapMeaning(p.id)}
-                    onKeyDown={handleKeyActivate(() => handleTapMeaning(p.id))}
-                    role="button"
-                    tabIndex={0}
-                    aria-pressed={isSelected}
+                ) : (
+                  <select
+                    className={selectClass}
+                    value={filledId || ''}
+                    onChange={(e) => handleSelectChange(p.id, e.target.value)}
+                    aria-label={`Meaning for ${p.left}`}
                   >
-                    <span className="mtf-tap-icon" aria-hidden="true">
-                      <i className={`fa-solid ${isSelected ? 'fa-circle-check' : 'fa-hand-pointer'}`} />
-                    </span>
-                    {p.right}
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
+                    <option value="">Select a meaning…</option>
+                    {rightShuffled.map(opt => {
+                      const usedElsewhere = locations[opt.id] !== 'bank' && locations[opt.id] !== p.id;
+                      return (
+                        <option key={opt.id} value={opt.id} disabled={usedElsewhere}>
+                          {opt.right}{usedElsewhere ? ' (used)' : ''}
+                        </option>
+                      );
+                    })}
+                  </select>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {!submitted ? (
@@ -384,7 +310,7 @@ export default function MatchTheFollowing({
           --success-tint: #EAF7EE;
           --error: #B91C1C;
           --error-tint: #FDEDED;
-          --chip-min-h: 64px;
+          --chip-min-h: 56px;
 
           font-family: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
           max-width: 720px;
@@ -441,31 +367,18 @@ export default function MatchTheFollowing({
           color: var(--ink);
         }
 
-        .mtf-columns {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 28px;
+        .mtf-list {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
         }
-        .mtf-col-label {
-          font-size: 11px;
-          font-weight: 800;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
-          margin-bottom: 10px;
-          padding-bottom: 8px;
-          border-bottom: 2px solid var(--paper-border);
-        }
-        .mtf-col-label--word { color: var(--word-ink); }
-        .mtf-col-label--meaning { color: var(--meaning-ink); text-align: right; }
 
-        .mtf-word-row {
-          margin-bottom: 12px;
-          animation: mtf-row-in 0.3s ease both;
-        }
-        .mtf-row-main {
+        .mtf-row {
           display: flex;
           align-items: stretch;
           gap: 10px;
+          flex-wrap: wrap;
+          animation: mtf-row-in 0.3s ease both;
         }
         .mtf-badge {
           align-self: center;
@@ -484,88 +397,105 @@ export default function MatchTheFollowing({
           box-shadow: 0 2px 6px rgba(67,56,202,0.35);
         }
         .mtf-word-chip {
-          flex: 1;
+          flex: 1 1 180px;
           min-width: 0;
-          height: var(--chip-min-h);
+          min-height: var(--chip-min-h);
           box-sizing: border-box;
           display: flex;
-          align-items: center;
+          flex-direction: column;
+          justify-content: center;
           background: linear-gradient(160deg, #FFFFFF 0%, var(--word-tint) 130%);
           border: 1px solid #E1E0F5;
           border-left: 5px solid var(--word-ink);
           border-radius: 12px;
           padding: 10px 14px;
+          box-shadow: 0 1px 2px rgba(28,33,48,0.05);
+          overflow: hidden;
+        }
+        .mtf-word-text {
           font-size: 15.5px;
           font-weight: 700;
           letter-spacing: -0.01em;
           line-height: 1.25;
           color: var(--ink);
-          box-shadow: 0 1px 2px rgba(28,33,48,0.05);
-          overflow: hidden;
+        }
+        .mtf-english-hint {
+          font-size: 12px;
+          font-weight: 600;
+          color: var(--ink-muted);
+          margin-top: 2px;
         }
 
-        .mtf-slot {
-          width: 42%;
-          min-width: 130px;
+        .mtf-select-wrap {
+          flex: 1 1 220px;
+          display: flex;
+        }
+
+        .mtf-select {
+          width: 100%;
           min-height: var(--chip-min-h);
           box-sizing: border-box;
           border-radius: 12px;
           border: 1.5px dashed #C9C2B4;
           background: var(--rail);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          padding: 8px 12px;
+          padding: 10px 14px;
+          font-family: inherit;
+          font-size: 15px;
+          font-weight: 700;
+          color: var(--ink);
           cursor: pointer;
           transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
+          /* Native appearance is intentional — this is what makes tapping
+             reliable in every orientation, so we don't override it with a
+             custom arrow/box beyond basic theming. */
         }
-        .mtf-slot:focus-visible {
+        .mtf-select:focus-visible {
           outline: 2px solid var(--brand);
           outline-offset: 2px;
         }
-        .mtf-slot--filled {
+        .mtf-select--filled {
           border-style: solid;
           border-color: var(--meaning-ink);
           background: linear-gradient(160deg, #FFFFFF 0%, var(--meaning-tint) 130%);
         }
-        .mtf-slot--correct {
+
+        .mtf-result {
+          width: 100%;
+          min-height: var(--chip-min-h);
+          box-sizing: border-box;
+          border-radius: 12px;
+          border: 1.5px solid var(--meaning-ink);
+          background: linear-gradient(160deg, #FFFFFF 0%, var(--meaning-tint) 130%);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 8px 12px;
+          text-align: center;
+        }
+        .mtf-result--correct {
           border-color: var(--success);
           background: linear-gradient(160deg, #FFFFFF 0%, var(--success-tint) 130%);
-          cursor: default;
         }
-        .mtf-slot--incorrect {
+        .mtf-result--incorrect {
           border-width: 2px;
           border-color: var(--error);
           background: linear-gradient(160deg, #FFFFFF 0%, var(--error-tint) 130%);
-          cursor: default;
         }
-        .mtf-slot--targetable {
-          border-style: solid;
-          border-width: 2px;
-          border-color: var(--brand);
-          background: linear-gradient(160deg, #FFFFFF 0%, #E3FBF6 130%);
-          box-shadow: 0 0 0 3px rgba(0,198,167,0.16);
-        }
-        .mtf-slot-content {
+        .mtf-result-content {
           font-size: 15px;
           font-weight: 700;
           letter-spacing: -0.01em;
           line-height: 1.25;
           color: var(--ink);
-          text-align: center;
-          overflow: hidden;
-          max-height: 100%;
         }
-        .mtf-slot-content--wrong {
+        .mtf-result-content--wrong,
+        .mtf-result--incorrect .mtf-result-content {
           display: flex;
           flex-direction: column;
           align-items: center;
           gap: 3px;
-          width: 100%;
-          overflow: visible;
-          max-height: none;
         }
-        .mtf-wrong-text {
+        .mtf-result-wrong-text {
           font-size: 13.5px;
           font-weight: 600;
           color: var(--error);
@@ -574,128 +504,10 @@ export default function MatchTheFollowing({
           text-decoration-color: var(--error);
           opacity: 0.75;
         }
-        .mtf-correct-text {
+        .mtf-result-correct-text {
           font-size: 15px;
           font-weight: 800;
           color: var(--success);
-        }
-        .mtf-slot-placeholder {
-          font-size: 12.5px;
-          font-weight: 600;
-          color: var(--ink-muted);
-        }
-
-        .mtf-bank {
-          display: flex;
-          flex-direction: column;
-          align-items: stretch;
-          gap: 12px;
-          min-height: var(--chip-min-h);
-        }
-        .mtf-bank-item {
-          width: 100%;
-          height: var(--chip-min-h);
-          box-sizing: border-box;
-          background: linear-gradient(160deg, #FFFFFF 0%, var(--meaning-tint) 130%);
-          border: 1px solid #F2DFC0;
-          border-left: 5px solid var(--meaning-ink);
-          border-radius: 12px;
-          padding: 10px 14px;
-          font-size: 15.5px;
-          font-weight: 700;
-          letter-spacing: -0.01em;
-          line-height: 1.25;
-          color: var(--ink);
-          text-align: right;
-          box-shadow: 0 1px 2px rgba(28,33,48,0.05);
-          display: flex;
-          align-items: center;
-          justify-content: flex-end;
-          gap: 8px;
-          overflow: hidden;
-          user-select: none;
-          -webkit-user-select: none;
-          -webkit-tap-highlight-color: transparent;
-          cursor: pointer;
-          transition: transform 0.15s ease, box-shadow 0.15s ease;
-        }
-        .mtf-bank-item:hover {
-          transform: translateY(-1px);
-          box-shadow: 0 6px 14px rgba(194,118,12,0.18);
-        }
-        .mtf-bank-item:focus-visible {
-          outline: 2px solid var(--brand);
-          outline-offset: 2px;
-        }
-        .mtf-bank-item--selected {
-          border-color: var(--brand);
-          border-width: 2px;
-          background: linear-gradient(160deg, #FFFFFF 0%, #E3FBF6 130%);
-          box-shadow: 0 0 0 3px rgba(0,198,167,0.2), 0 6px 14px rgba(0,198,167,0.22);
-        }
-        .mtf-bank-item--selected .mtf-tap-icon {
-          color: var(--brand);
-          opacity: 1;
-        }
-        .mtf-bank-item--placed {
-          background: var(--rail);
-          border: 1.5px dashed #D8D3C6;
-          border-left: 1.5px dashed #D8D3C6;
-          color: var(--ink-muted);
-          font-weight: 600;
-          font-size: 13px;
-          box-shadow: none;
-          cursor: default;
-          justify-content: flex-start;
-          text-align: left;
-          min-height: var(--chip-min-h);
-          height: auto;
-          overflow: visible;
-        }
-        .mtf-bank-item--placed:hover {
-          transform: none;
-          box-shadow: none;
-        }
-        .mtf-bank-solved {
-          display: flex;
-          align-items: baseline;
-          gap: 8px;
-          flex-wrap: wrap;
-        }
-        .mtf-bank-solved-pair {
-          display: flex;
-          align-items: baseline;
-          gap: 5px;
-          flex-wrap: wrap;
-        }
-        .mtf-bank-solved-term {
-          font-weight: 800;
-          color: var(--ink);
-          font-size: 13px;
-        }
-        .mtf-bank-solved-eq {
-          color: var(--ink-muted);
-          font-weight: 600;
-        }
-        .mtf-bank-solved-en {
-          font-weight: 700;
-          color: var(--meaning-ink);
-          font-size: 13px;
-        }
-        .mtf-bank-solved-sep {
-          color: var(--ink-muted);
-          font-weight: 600;
-        }
-        .mtf-tap-icon {
-          color: var(--meaning-ink);
-          opacity: 0.55;
-          font-size: 13px;
-        }
-        .mtf-bank-empty {
-          font-size: 12.5px;
-          color: var(--ink-muted);
-          font-weight: 600;
-          font-style: italic;
         }
 
         .mtf-footer {
@@ -770,17 +582,24 @@ export default function MatchTheFollowing({
         }
 
         @media (prefers-reduced-motion: reduce) {
-          .mtf-card, .mtf-word-row, .mtf-score-banner { animation: none !important; }
-          .mtf-btn, .mtf-bank-item, .mtf-slot { transition: none !important; }
+          .mtf-card, .mtf-row, .mtf-score-banner { animation: none !important; }
+          .mtf-btn, .mtf-select { transition: none !important; }
         }
 
         @media (max-width: 620px) {
           .mtf-card { padding: 18px 16px 20px; }
-          .mtf-columns { grid-template-columns: 1fr; gap: 8px; }
-          .mtf-col-label--meaning { text-align: left; margin-top: 22px; }
-          .mtf-slot { width: 100%; margin-top: 8px; }
-          .mtf-row-main { flex-wrap: wrap; }
-          .mtf-bank-item { text-align: left; justify-content: flex-start; }
+          .mtf-row { gap: 8px; }
+          .mtf-word-chip, .mtf-select-wrap { flex-basis: 100%; }
+        }
+
+        /* Landscape phones: keep word + dropdown side by side rather than
+           stacking, since there's width to spare but not much height —
+           this is the exact case the old tap UI struggled with, and a
+           native select has no trouble with it. */
+        @media (max-width: 900px) and (max-height: 480px) and (orientation: landscape) {
+          .mtf-card { padding: 14px 16px 16px; }
+          .mtf-word-chip, .mtf-select-wrap { flex-basis: auto; }
+          .mtf-select, .mtf-result { min-height: 44px; }
         }
       `}</style>
     </div>
