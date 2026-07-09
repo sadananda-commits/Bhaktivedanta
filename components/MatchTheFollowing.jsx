@@ -258,9 +258,17 @@ export default function MatchTheFollowing({
                   <div key={p.id} className="mtf-bank-item mtf-bank-item--placed" aria-hidden="true">
                     {submitted ? (
                       <span className="mtf-bank-solved">
-                        <span className="mtf-bank-solved-word">{p.left}</span>
-                        <span className="mtf-bank-solved-eq">=</span>
-                        <span className="mtf-bank-solved-meaning">{p.right}</span>
+                        <span className="mtf-bank-solved-pair">
+                          <span className="mtf-bank-solved-term">{p.left}</span>
+                          <span className="mtf-bank-solved-eq">=</span>
+                          <span className="mtf-bank-solved-en">{p.leftEnglish}</span>
+                        </span>
+                        <span className="mtf-bank-solved-sep">;</span>
+                        <span className="mtf-bank-solved-pair">
+                          <span className="mtf-bank-solved-term">{p.right}</span>
+                          <span className="mtf-bank-solved-eq">=</span>
+                          <span className="mtf-bank-solved-en">{p.rightEnglish}</span>
+                        </span>
                       </span>
                     ) : (
                       <>
@@ -575,10 +583,16 @@ export default function MatchTheFollowing({
         .mtf-bank-solved {
           display: flex;
           align-items: baseline;
-          gap: 6px;
+          gap: 8px;
           flex-wrap: wrap;
         }
-        .mtf-bank-solved-word {
+        .mtf-bank-solved-pair {
+          display: flex;
+          align-items: baseline;
+          gap: 5px;
+          flex-wrap: wrap;
+        }
+        .mtf-bank-solved-term {
           font-weight: 800;
           color: var(--ink);
           font-size: 13px;
@@ -587,10 +601,14 @@ export default function MatchTheFollowing({
           color: var(--ink-muted);
           font-weight: 600;
         }
-        .mtf-bank-solved-meaning {
+        .mtf-bank-solved-en {
           font-weight: 700;
           color: var(--meaning-ink);
           font-size: 13px;
+        }
+        .mtf-bank-solved-sep {
+          color: var(--ink-muted);
+          font-weight: 600;
         }
         .mtf-drag-handle {
           color: var(--meaning-ink);
