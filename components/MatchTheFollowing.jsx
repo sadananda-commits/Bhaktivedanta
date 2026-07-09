@@ -48,14 +48,41 @@ function shuffle(arr) {
   return a;
 }
 
+// The English translations for this question type don't live on the pair
+// objects themselves — they're embedded in one sentence of the explanation
+// text, e.g.:
+//   "...English meanings: ny = new; gammel = old | god = good; dårlig = bad"
+// Pairs within a match are separated by "|", the two sides of a pair by
+// ";" or the leading "English meanings:" marker, and each side is
+// "word = translation". This pulls that apart into a { danishWord:
+// englishWord } lookup, keyed lowercase so matching is case-insensitive.
+function parseEnglishMeanings(explanationText) {
+  const map = {};
+  if (!explanationText) return map;
+  const marker = explanationText.match(/english meanings:/i);
+  if (!marker) return map;
+  const tail = explanationText.slice(marker.index + marker[0].length);
+  tail.split(/[|;]/).forEach(chunk => {
+    const parts = chunk.split('=');
+    if (parts.length < 2) return;
+    const word = parts[0].trim();
+    // Strip a trailing period/whitespace in case it's the last item in the sentence.
+    const meaning = parts[1].trim().replace(/[.\s]+$/, '');
+    if (word && meaning) map[word.toLowerCase()] = meaning;
+  });
+  return map;
+}
+
 export default function MatchTheFollowing({
   pairs,
   onSubmit,
   title,
+  explanation,
   initialPlacements,
   initialLocked,
 }) {
   const rightShuffled = useMemo(() => shuffle(pairs), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const englishMeanings = useMemo(() => parseEnglishMeanings(explanation), [explanation]);
 
   const [placements, setPlacements] = useState(initialPlacements || {});
   const [submitted, setSubmitted] = useState(!!initialLocked);
@@ -261,13 +288,17 @@ export default function MatchTheFollowing({
                         <span className="mtf-bank-solved-pair">
                           <span className="mtf-bank-solved-term">{p.left}</span>
                           <span className="mtf-bank-solved-eq">=</span>
-                          <span className="mtf-bank-solved-en">{p.leftEnglish}</span>
+                          <span className="mtf-bank-solved-en">
+                            {englishMeanings[p.left?.toLowerCase()] || '—'}
+                          </span>
                         </span>
                         <span className="mtf-bank-solved-sep">;</span>
                         <span className="mtf-bank-solved-pair">
                           <span className="mtf-bank-solved-term">{p.right}</span>
                           <span className="mtf-bank-solved-eq">=</span>
-                          <span className="mtf-bank-solved-en">{p.rightEnglish}</span>
+                          <span className="mtf-bank-solved-en">
+                            {englishMeanings[p.right?.toLowerCase()] || '—'}
+                          </span>
                         </span>
                       </span>
                     ) : (
