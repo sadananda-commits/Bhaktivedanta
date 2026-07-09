@@ -256,7 +256,17 @@ export default function MatchTheFollowing({
                 // right side reflowing upward and drifting out of sync.
                 return (
                   <div key={p.id} className="mtf-bank-item mtf-bank-item--placed" aria-hidden="true">
-                    <i className="fa-solid fa-check" /> Matched
+                    {submitted ? (
+                      <span className="mtf-bank-solved">
+                        <span className="mtf-bank-solved-word">{p.left}</span>
+                        <span className="mtf-bank-solved-eq">=</span>
+                        <span className="mtf-bank-solved-meaning">{p.right}</span>
+                      </span>
+                    ) : (
+                      <>
+                        <i className="fa-solid fa-check" /> Matched
+                      </>
+                    )}
                   </div>
                 );
               }
@@ -552,10 +562,35 @@ export default function MatchTheFollowing({
           font-size: 13px;
           box-shadow: none;
           cursor: default;
+          justify-content: flex-start;
+          text-align: left;
+          min-height: var(--chip-min-h);
+          height: auto;
+          overflow: visible;
         }
         .mtf-bank-item--placed:hover {
           transform: none;
           box-shadow: none;
+        }
+        .mtf-bank-solved {
+          display: flex;
+          align-items: baseline;
+          gap: 6px;
+          flex-wrap: wrap;
+        }
+        .mtf-bank-solved-word {
+          font-weight: 800;
+          color: var(--ink);
+          font-size: 13px;
+        }
+        .mtf-bank-solved-eq {
+          color: var(--ink-muted);
+          font-weight: 600;
+        }
+        .mtf-bank-solved-meaning {
+          font-weight: 700;
+          color: var(--meaning-ink);
+          font-size: 13px;
         }
         .mtf-drag-handle {
           color: var(--meaning-ink);
