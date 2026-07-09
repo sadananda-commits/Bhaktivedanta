@@ -1408,6 +1408,7 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
               <MatchTheFollowing
                 key={`${step['Module ID']}-${step['Step Number']}`}
                 pairs={pairsFromStep(step)}
+                explanation={step.Explanation}
                 onSubmit={submitMatchTheFollowing}
                 initialPlacements={currentAnswer?.placements}
                 initialLocked={locked}
