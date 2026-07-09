@@ -274,55 +274,61 @@ export default function MatchTheFollowing({
         <div className="mtf-col">
           <div className="mtf-col-label mtf-col-label--meaning">Meanings</div>
           <div className="mtf-bank" data-bank-zone="true">
-            {rightShuffled.map(p => {
-              const isPlaced = locations[p.id] !== 'bank';
-              if (isPlaced) {
-                // Keeps this slot's height/position in the list instead of
-                // removing it — that's what keeps the two columns lined up
-                // row-for-row as answers get dragged out, rather than the
-                // right side reflowing upward and drifting out of sync.
-                return (
-                  <div key={p.id} className="mtf-bank-item mtf-bank-item--placed" aria-hidden="true">
-                    {submitted ? (
-                      <span className="mtf-bank-solved">
-                        <span className="mtf-bank-solved-pair">
-                          <span className="mtf-bank-solved-term">{p.left}</span>
-                          <span className="mtf-bank-solved-eq">=</span>
-                          <span className="mtf-bank-solved-en">
-                            {englishMeanings[p.left?.toLowerCase()] || '—'}
-                          </span>
-                        </span>
-                        <span className="mtf-bank-solved-sep">;</span>
-                        <span className="mtf-bank-solved-pair">
-                          <span className="mtf-bank-solved-term">{p.right}</span>
-                          <span className="mtf-bank-solved-eq">=</span>
-                          <span className="mtf-bank-solved-en">
-                            {englishMeanings[p.right?.toLowerCase()] || '—'}
-                          </span>
-                        </span>
+            {submitted ? (
+              // Once locked, show one row per word-column pair, in the exact
+              // same order as the Words column (pairs), not the shuffled
+              // bank order — so row N here always matches row N on the left,
+              // regardless of where that meaning chip started out in the bank.
+              pairs.map(p => (
+                <div key={p.id} className="mtf-bank-item mtf-bank-item--placed" aria-hidden="true">
+                  <span className="mtf-bank-solved">
+                    <span className="mtf-bank-solved-pair">
+                      <span className="mtf-bank-solved-term">{p.left}</span>
+                      <span className="mtf-bank-solved-eq">=</span>
+                      <span className="mtf-bank-solved-en">
+                        {englishMeanings[p.left?.toLowerCase()] || '—'}
                       </span>
-                    ) : (
-                      <>
-                        <i className="fa-solid fa-check" /> Matched
-                      </>
-                    )}
-                  </div>
-                );
-              }
-              return (
-                <div
-                  key={p.id}
-                  className="mtf-bank-item"
-                  onPointerDown={(e) => handlePointerDown(e, p.id)}
-                  style={{ cursor: submitted ? 'default' : 'grab' }}
-                >
-                  <span className="mtf-drag-handle" aria-hidden="true">
-                    <i className="fa-solid fa-grip-vertical" />
+                    </span>
+                    <span className="mtf-bank-solved-sep">;</span>
+                    <span className="mtf-bank-solved-pair">
+                      <span className="mtf-bank-solved-term">{p.right}</span>
+                      <span className="mtf-bank-solved-eq">=</span>
+                      <span className="mtf-bank-solved-en">
+                        {englishMeanings[p.right?.toLowerCase()] || '—'}
+                      </span>
+                    </span>
+                  </span>
+                </div>
+              ))
+            ) : (
+              rightShuffled.map(p => {
+                const isPlaced = locations[p.id] !== 'bank';
+                if (isPlaced) {
+                  // Keeps this slot's height/position in the list instead of
+                  // removing it — that's what keeps the two columns lined up
+                  // row-for-row as answers get dragged out, rather than the
+                  // right side reflowing upward and drifting out of sync.
+                  return (
+                    <div key={p.id} className="mtf-bank-item mtf-bank-item--placed" aria-hidden="true">
+                      <i className="fa-solid fa-check" /> Matched
+                    </div>
+                  );
+                }
+                return (
+                  <div
+                    key={p.id}
+                    className="mtf-bank-item"
+                    onPointerDown={(e) => handlePointerDown(e, p.id)}
+                    style={{ cursor: submitted ? 'default' : 'grab' }}
+                  >
+                    <span className="mtf-drag-handle" aria-hidden="true">
+                      <i className="fa-solid fa-grip-vertical" />
                   </span>
                   {p.right}
                 </div>
               );
-            })}
+              })
+            )}
           </div>
         </div>
       </div>
