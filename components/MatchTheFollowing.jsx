@@ -1,43 +1,40 @@
 // components/MatchTheFollowing.jsx
 //
-// "Match the Following" question type — 10 (or fewer) left-side items,
-// shuffled right-side items. Student drags each right-side box onto the
-// left-side item it matches, then presses Submit to lock and score it.
+// "Match the following" question type — left-side words, shuffled
+// right-side meanings. Student taps a meaning to select it, then taps the
+// word it matches to place it there, then presses Submit to lock and score.
 //
-// v5 — VISUAL REDESIGN ONLY. The drag/pointer logic, state shape, and the
-// public prop contract (pairs / onSubmit / title / initialPlacements /
-// initialLocked) are byte-for-byte the same as v4 — nothing about how
-// portal.js calls this component needs to change. What changed:
-//   - Real color system: white cards with a colored ACCENT BAR (not colored
-//     text) marking each column — indigo for Words, amber for Meanings —
-//     so it stays highly legible instead of relying on tinted text.
-//   - Manrope for words/labels (bold, geometric, reads well at a distance),
-//     JetBrains Mono for the counters/score (monospace numerals scan faster
-//     at a glance than proportional ones).
-//   - A small SVG progress ring in the header: fills with your brand teal
-//     as pairs are placed, then turns green (perfect) or amber (partial)
-//     once submitted.
-//   - Responsive: two columns side by side above ~620px, stacks to one
-//     column (word + its drop target, then the answer bank below) on
-//     phones, via a styled-jsx media query — Next.js's built-in scoped CSS,
-//     no extra dependency.
-//   - prefers-reduced-motion is respected; all buttons have visible focus
-//     rings.
+// v6 — INTERACTION MODEL CHANGE. Earlier versions used pointer-drag on
+// desktop and a separate touch-detected tap mode on phones. That dual-mode
+// setup kept breaking in ways that were hard to pin down (drag was
+// unreliable on real phones — the browser's own scroll kept winning — and
+// even after adding a touch-only tap mode, some mobile browsers misreported
+// touch capability on rotation, which sent landscape taps down the dead
+// drag path and made them silently hit nothing/the wrong thing).
 //
-// Known limitation carried over from v4 (not introduced here): matching is
-// pointer/touch only, there's no keyboard-operable drag path yet. Flag it
-// if that needs solving.
+// Rather than keep patching device detection, this version drops drag
+// entirely: tap-to-select / tap-to-place is now the ONE interaction path
+// for every device, pointer type, and orientation — mouse, touch, trackpad,
+// portrait, landscape. There is no branching on pointer/touch capability
+// anywhere in this file, so there's no detection to get wrong. It's also
+// keyboard-operable now (Tab + Enter/Space), which the drag-only version
+// never was.
 //
-// USAGE — unchanged from v4:
+// Public prop contract (pairs / onSubmit / title / explanation /
+// initialPlacements / initialLocked) is unchanged — nothing about how
+// portal.js calls this component needs to change.
+//
+// USAGE:
 //   <MatchTheFollowing
 //     key={`${step['Module ID']}-${step['Step Number']}`}
 //     pairs={pairsFromStep(step)}
+//     explanation={step.Explanation}
 //     onSubmit={(result) => submitMatchTheFollowing(result)}
 //     initialPlacements={currentAnswer?.placements}   // only when revisiting
 //     initialLocked={locked}                           // only when revisiting
 //   />
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 
 function shuffle(arr) {
   const a = arr.slice();
@@ -86,6 +83,7 @@ export default function MatchTheFollowing({
 
   const [placements, setPlacements] = useState(initialPlacements || {});
   const [submitted, setSubmitted] = useState(!!initialLocked);
+  const [selectedMeaningId, setSelectedMeaningId] = useState(null);
 
   const [result, setResult] = useState(() => {
     if (!initialLocked) return null;
@@ -110,33 +108,8 @@ export default function MatchTheFollowing({
 
   const placedCount = Object.keys(placements).length;
 
-  // Free-drag with a finger turned out to be unreliable on real phones (easy
-  // to trigger the browser's own scroll/selection instead of a drag, and
-  // dragging any real distance is awkward on a small screen even with
-  // auto-scroll). So on touch devices we swap to a tap-to-select /
-  // tap-to-place flow instead: tap a meaning to select it, then tap the
-  // word you want to put it on. Desktop keeps the original drag-and-drop
-  // untouched.
-  //
-  // This used to detect touch via a `matchMedia('(pointer: coarse)')`
-  // *live* query — but some mobile browsers re-evaluate that query on
-  // orientation change and report it inconsistently, which made tapping
-  // silently stop working after rotating to landscape. Checking hardware
-  // touch support directly, once, avoids that: it's a fixed capability of
-  // the device, not something that can change when the screen rotates.
-  const [isTouchDevice, setIsTouchDevice] = useState(false);
-  useEffect(() => {
-    const touchCapable =
-      ('ontouchstart' in window) ||
-      (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0) ||
-      (typeof navigator !== 'undefined' && navigator.msMaxTouchPoints > 0);
-    setIsTouchDevice(!!touchCapable);
-  }, []);
-  const [selectedMeaningId, setSelectedMeaningId] = useState(null);
-
-  // Shared by both the drag path and the tap path so they can't disagree
-  // about what happens to whichever item previously occupied the target
-  // slot: it always gets bumped back to the bank rather than silently lost.
+  // Places `itemId` into `leftId`'s slot. If that slot already held a
+  // different item, that item is bumped back to the bank rather than lost.
   function placeMeaning(leftId, itemId) {
     if (submitted) return;
     const nextPlacements = { ...placements };
@@ -159,13 +132,19 @@ export default function MatchTheFollowing({
     setLocations(prev => ({ ...prev, [itemId]: 'bank' }));
   }
 
+  // Tapping a meaning selects it (tap again to deselect, tap a different
+  // one to switch selection — nothing gets placed until you tap a word).
   function handleTapMeaning(itemId) {
-    if (!isTouchDevice || submitted) return;
+    if (submitted) return;
     setSelectedMeaningId(prev => (prev === itemId ? null : itemId));
   }
 
+  // Tapping a word's slot: if a meaning is selected, place it there
+  // (swapping out whatever was already there, if anything). If nothing is
+  // selected and the slot is filled, tapping it removes the answer back to
+  // the bank — a plain "tap to clear" affordance.
   function handleTapSlot(leftId) {
-    if (!isTouchDevice || submitted) return;
+    if (submitted) return;
     if (selectedMeaningId) {
       placeMeaning(leftId, selectedMeaningId);
       setSelectedMeaningId(null);
@@ -174,88 +153,13 @@ export default function MatchTheFollowing({
     }
   }
 
-  function handlePointerDown(e, itemId) {
-    if (isTouchDevice || submitted) return;
-    e.preventDefault();
-    const el = e.currentTarget;
-    const rect = el.getBoundingClientRect();
-    const offsetX = e.clientX - rect.left;
-    const offsetY = e.clientY - rect.top;
-
-    el.setPointerCapture(e.pointerId);
-    // Kill the element's own transition (defined on .mtf-bank-item as
-    // "transition: transform 0.15s ease, box-shadow 0.15s ease") before
-    // switching to fixed positioning. Without this, the browser tweens from
-    // whatever transform happened to be live at pointerdown (e.g. the
-    // :hover translateY(-1px)) to the new scale(1.03) over 150ms, which
-    // reads as the box drifting/sliding before it locks onto the pointer.
-    el.style.transition = 'none';
-    el.style.position = 'fixed';
-    el.style.zIndex = 1000;
-    el.style.width = rect.width + 'px';
-    el.style.left = rect.left + 'px';
-    el.style.top = rect.top + 'px';
-    el.style.boxShadow = '0 10px 24px rgba(28,33,48,0.22)';
-    el.style.transform = 'scale(1.03)';
-    el.style.pointerEvents = 'none';
-
-    // On phones the Words and Meanings columns stack into one tall page
-    // (see the max-width:620px media query below), so the chip you're
-    // dragging and the slot you're dragging it to are very often not both
-    // on screen at once. Without this, there's no way to reach an
-    // off-screen target — the finger just can't drag past the edge of the
-    // viewport. This mirrors what drag-and-drop libraries do: keep
-    // scrolling in a rAF loop for as long as the pointer sits near the top
-    // or bottom edge, even if the finger itself has stopped moving.
-    let lastClientY = e.clientY;
-    let scrollRAF = null;
-    const EDGE = 70; // px from the viewport edge that triggers auto-scroll
-    const MAX_SPEED = 16; // px per animation frame at the very edge
-
-    function autoScrollTick() {
-      const vh = window.innerHeight;
-      let dy = 0;
-      if (lastClientY < EDGE) {
-        dy = -MAX_SPEED * (1 - lastClientY / EDGE);
-      } else if (lastClientY > vh - EDGE) {
-        dy = MAX_SPEED * (1 - (vh - lastClientY) / EDGE);
+  function handleKeyActivate(fn) {
+    return (e) => {
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+        e.preventDefault();
+        fn();
       }
-      if (dy) window.scrollBy(0, dy);
-      scrollRAF = requestAnimationFrame(autoScrollTick);
-    }
-    scrollRAF = requestAnimationFrame(autoScrollTick);
-
-    function onMove(ev) {
-      lastClientY = ev.clientY;
-      el.style.left = (ev.clientX - offsetX) + 'px';
-      el.style.top = (ev.clientY - offsetY) + 'px';
-    }
-    function onUp(ev) {
-      cancelAnimationFrame(scrollRAF);
-      el.removeEventListener('pointermove', onMove);
-      el.removeEventListener('pointerup', onUp);
-      el.style.position = '';
-      el.style.zIndex = '';
-      el.style.left = '';
-      el.style.top = '';
-      el.style.boxShadow = '';
-      el.style.transform = '';
-      el.style.pointerEvents = '';
-      el.style.width = '';
-      el.style.transition = '';
-
-      const target = document.elementFromPoint(ev.clientX, ev.clientY);
-      const slotEl = target ? target.closest('[data-slot-id]') : null;
-      const leftId = slotEl ? slotEl.getAttribute('data-slot-id') : null;
-
-      if (leftId) {
-        placeMeaning(leftId, itemId);
-      } else {
-        returnToBank(itemId);
-      }
-    }
-    el.addEventListener('pointermove', onMove);
-    el.addEventListener('pointerup', onUp);
+    };
   }
 
   function handleReset() {
@@ -277,6 +181,7 @@ export default function MatchTheFollowing({
     const payload = { score, total: pairs.length, correct, placements };
     setResult(payload);
     setSubmitted(true);
+    setSelectedMeaningId(null);
     if (onSubmit) onSubmit(payload);
   }
 
@@ -300,9 +205,7 @@ export default function MatchTheFollowing({
           <div className="mtf-eyebrow">Match the following</div>
           {title && <h3 className="mtf-title">{title}</h3>}
           <div className="mtf-instructions">
-            {isTouchDevice
-              ? (selectedMeaningId ? 'Now tap the word it matches' : 'Tap a meaning, then tap the word it matches')
-              : 'Drag each meaning onto the word it matches'}
+            {selectedMeaningId ? 'Now tap the word it matches' : 'Tap a meaning, then tap the word it matches'}
           </div>
         </div>
         <div className="mtf-ring-wrap" aria-hidden="true">
@@ -335,7 +238,7 @@ export default function MatchTheFollowing({
             if (filledItem) slotClass += ' mtf-slot--filled';
             if (isCorrect) slotClass += ' mtf-slot--correct';
             if (isWrong) slotClass += ' mtf-slot--incorrect';
-            if (isTouchDevice && selectedMeaningId && !submitted) slotClass += ' mtf-slot--targetable';
+            if (selectedMeaningId && !submitted) slotClass += ' mtf-slot--targetable';
             return (
               <div className="mtf-word-row" key={p.id} style={{ animationDelay: `${idx * 35}ms` }}>
                 <div className="mtf-row-main">
@@ -345,8 +248,10 @@ export default function MatchTheFollowing({
                     className={slotClass}
                     data-slot-id={p.id}
                     onClick={() => handleTapSlot(p.id)}
-                    role={isTouchDevice && !submitted ? 'button' : undefined}
-                    tabIndex={isTouchDevice && !submitted ? 0 : undefined}
+                    onKeyDown={handleKeyActivate(() => handleTapSlot(p.id))}
+                    role={!submitted ? 'button' : undefined}
+                    tabIndex={!submitted ? 0 : undefined}
+                    aria-label={!submitted ? `Slot for ${p.left}` : undefined}
                   >
                     {isWrong ? (
                       <div className="mtf-slot-content mtf-slot-content--wrong">
@@ -356,16 +261,12 @@ export default function MatchTheFollowing({
                         <span className="mtf-correct-text">{p.right}</span>
                       </div>
                     ) : filledItem ? (
-                      <div
-                        className="mtf-slot-content"
-                        onPointerDown={(e) => handlePointerDown(e, filledItem.id)}
-                        style={{ cursor: submitted ? 'default' : (isTouchDevice ? 'pointer' : 'grab') }}
-                      >
+                      <div className="mtf-slot-content">
                         {filledItem.right}
                       </div>
                     ) : (
                       <span className="mtf-slot-placeholder">
-                        {isTouchDevice ? (selectedMeaningId ? 'Tap to place here' : 'Tap a meaning first') : 'Drop match here'}
+                        {selectedMeaningId ? 'Tap to place here' : 'Tap a meaning first'}
                       </span>
                     )}
                   </div>
@@ -410,28 +311,31 @@ export default function MatchTheFollowing({
                 if (isPlaced) {
                   // Keeps this slot's height/position in the list instead of
                   // removing it — that's what keeps the two columns lined up
-                  // row-for-row as answers get dragged out, rather than the
-                  // right side reflowing upward and drifting out of sync.
+                  // row-for-row as answers get placed, rather than the right
+                  // side reflowing upward and drifting out of sync.
                   return (
                     <div key={p.id} className="mtf-bank-item mtf-bank-item--placed" aria-hidden="true">
                       <i className="fa-solid fa-check" /> Matched
                     </div>
                   );
                 }
+                const isSelected = selectedMeaningId === p.id;
                 return (
                   <div
                     key={p.id}
-                    className={`mtf-bank-item${selectedMeaningId === p.id ? ' mtf-bank-item--selected' : ''}`}
-                    onPointerDown={(e) => handlePointerDown(e, p.id)}
+                    className={`mtf-bank-item${isSelected ? ' mtf-bank-item--selected' : ''}`}
                     onClick={() => handleTapMeaning(p.id)}
-                    style={{ cursor: submitted ? 'default' : (isTouchDevice ? 'pointer' : 'grab') }}
+                    onKeyDown={handleKeyActivate(() => handleTapMeaning(p.id))}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={isSelected}
                   >
-                    <span className="mtf-drag-handle" aria-hidden="true">
-                      <i className={`fa-solid ${isTouchDevice ? 'fa-hand-pointer' : 'fa-grip-vertical'}`} />
-                  </span>
-                  {p.right}
-                </div>
-              );
+                    <span className="mtf-tap-icon" aria-hidden="true">
+                      <i className={`fa-solid ${isSelected ? 'fa-circle-check' : 'fa-hand-pointer'}`} />
+                    </span>
+                    {p.right}
+                  </div>
+                );
               })
             )}
           </div>
@@ -612,7 +516,12 @@ export default function MatchTheFollowing({
           align-items: center;
           justify-content: center;
           padding: 8px 12px;
-          transition: border-color 0.2s, background 0.2s;
+          cursor: pointer;
+          transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
+        }
+        .mtf-slot:focus-visible {
+          outline: 2px solid var(--brand);
+          outline-offset: 2px;
         }
         .mtf-slot--filled {
           border-style: solid;
@@ -622,11 +531,13 @@ export default function MatchTheFollowing({
         .mtf-slot--correct {
           border-color: var(--success);
           background: linear-gradient(160deg, #FFFFFF 0%, var(--success-tint) 130%);
+          cursor: default;
         }
         .mtf-slot--incorrect {
           border-width: 2px;
           border-color: var(--error);
           background: linear-gradient(160deg, #FFFFFF 0%, var(--error-tint) 130%);
+          cursor: default;
         }
         .mtf-slot--targetable {
           border-style: solid;
@@ -634,7 +545,6 @@ export default function MatchTheFollowing({
           border-color: var(--brand);
           background: linear-gradient(160deg, #FFFFFF 0%, #E3FBF6 130%);
           box-shadow: 0 0 0 3px rgba(0,198,167,0.16);
-          cursor: pointer;
         }
         .mtf-slot-content {
           font-size: 15px;
@@ -645,10 +555,6 @@ export default function MatchTheFollowing({
           text-align: center;
           overflow: hidden;
           max-height: 100%;
-          touch-action: none;
-          user-select: none;
-          -webkit-user-select: none;
-          -webkit-touch-callout: none;
         }
         .mtf-slot-content--wrong {
           display: flex;
@@ -709,13 +615,17 @@ export default function MatchTheFollowing({
           overflow: hidden;
           user-select: none;
           -webkit-user-select: none;
-          -webkit-touch-callout: none;
-          touch-action: none;
+          -webkit-tap-highlight-color: transparent;
+          cursor: pointer;
           transition: transform 0.15s ease, box-shadow 0.15s ease;
         }
         .mtf-bank-item:hover {
           transform: translateY(-1px);
           box-shadow: 0 6px 14px rgba(194,118,12,0.18);
+        }
+        .mtf-bank-item:focus-visible {
+          outline: 2px solid var(--brand);
+          outline-offset: 2px;
         }
         .mtf-bank-item--selected {
           border-color: var(--brand);
@@ -723,7 +633,7 @@ export default function MatchTheFollowing({
           background: linear-gradient(160deg, #FFFFFF 0%, #E3FBF6 130%);
           box-shadow: 0 0 0 3px rgba(0,198,167,0.2), 0 6px 14px rgba(0,198,167,0.22);
         }
-        .mtf-bank-item--selected .mtf-drag-handle {
+        .mtf-bank-item--selected .mtf-tap-icon {
           color: var(--brand);
           opacity: 1;
         }
@@ -776,10 +686,10 @@ export default function MatchTheFollowing({
           color: var(--ink-muted);
           font-weight: 600;
         }
-        .mtf-drag-handle {
+        .mtf-tap-icon {
           color: var(--meaning-ink);
           opacity: 0.55;
-          font-size: 12px;
+          font-size: 13px;
         }
         .mtf-bank-empty {
           font-size: 12.5px;
@@ -861,7 +771,7 @@ export default function MatchTheFollowing({
 
         @media (prefers-reduced-motion: reduce) {
           .mtf-card, .mtf-word-row, .mtf-score-banner { animation: none !important; }
-          .mtf-btn, .mtf-bank-item { transition: none !important; }
+          .mtf-btn, .mtf-bank-item, .mtf-slot { transition: none !important; }
         }
 
         @media (max-width: 620px) {
