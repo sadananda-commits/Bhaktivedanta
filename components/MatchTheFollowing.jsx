@@ -37,7 +37,7 @@
 //     initialLocked={locked}                           // only when revisiting
 //   />
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 function shuffle(arr) {
   const a = arr.slice();
@@ -110,8 +110,66 @@ export default function MatchTheFollowing({
 
   const placedCount = Object.keys(placements).length;
 
-  function handlePointerDown(e, itemId) {
+  // Free-drag with a finger turned out to be unreliable on real phones (easy
+  // to trigger the browser's own scroll/selection instead of a drag, and
+  // dragging any real distance is awkward on a small screen even with
+  // auto-scroll). So on touch devices we swap to a tap-to-select /
+  // tap-to-place flow instead: tap a meaning to select it, then tap the
+  // word you want to put it on. Desktop keeps the original drag-and-drop
+  // untouched — this is detected via pointer capability, not screen width,
+  // so it tracks the actual input method rather than guessing from layout.
+  const [isTouchDevice, setIsTouchDevice] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia('(pointer: coarse)');
+    const update = () => setIsTouchDevice(mq.matches);
+    update();
+    mq.addEventListener('change', update);
+    return () => mq.removeEventListener('change', update);
+  }, []);
+  const [selectedMeaningId, setSelectedMeaningId] = useState(null);
+
+  // Shared by both the drag path and the tap path so they can't disagree
+  // about what happens to whichever item previously occupied the target
+  // slot: it always gets bumped back to the bank rather than silently lost.
+  function placeMeaning(leftId, itemId) {
     if (submitted) return;
+    const nextPlacements = { ...placements };
+    Object.keys(nextPlacements).forEach(k => { if (nextPlacements[k] === itemId) delete nextPlacements[k]; });
+    const bumpedItemId = nextPlacements[leftId];
+    nextPlacements[leftId] = itemId;
+
+    const nextLocations = { ...locations, [itemId]: leftId };
+    if (bumpedItemId) nextLocations[bumpedItemId] = 'bank';
+
+    setPlacements(nextPlacements);
+    setLocations(nextLocations);
+  }
+
+  function returnToBank(itemId) {
+    if (submitted) return;
+    const nextPlacements = { ...placements };
+    Object.keys(nextPlacements).forEach(k => { if (nextPlacements[k] === itemId) delete nextPlacements[k]; });
+    setPlacements(nextPlacements);
+    setLocations(prev => ({ ...prev, [itemId]: 'bank' }));
+  }
+
+  function handleTapMeaning(itemId) {
+    if (!isTouchDevice || submitted) return;
+    setSelectedMeaningId(prev => (prev === itemId ? null : itemId));
+  }
+
+  function handleTapSlot(leftId) {
+    if (!isTouchDevice || submitted) return;
+    if (selectedMeaningId) {
+      placeMeaning(leftId, selectedMeaningId);
+      setSelectedMeaningId(null);
+    } else if (placements[leftId]) {
+      returnToBank(placements[leftId]);
+    }
+  }
+
+  function handlePointerDown(e, itemId) {
+    if (isTouchDevice || submitted) return;
     e.preventDefault();
     const el = e.currentTarget;
     const rect = el.getBoundingClientRect();
@@ -184,13 +242,11 @@ export default function MatchTheFollowing({
       const slotEl = target ? target.closest('[data-slot-id]') : null;
       const leftId = slotEl ? slotEl.getAttribute('data-slot-id') : null;
 
-      setPlacements(prev => {
-        const next = { ...prev };
-        Object.keys(next).forEach(k => { if (next[k] === itemId) delete next[k]; });
-        if (leftId) next[leftId] = itemId;
-        return next;
-      });
-      setLocations(prev => ({ ...prev, [itemId]: leftId || 'bank' }));
+      if (leftId) {
+        placeMeaning(leftId, itemId);
+      } else {
+        returnToBank(itemId);
+      }
     }
     el.addEventListener('pointermove', onMove);
     el.addEventListener('pointerup', onUp);
@@ -201,6 +257,7 @@ export default function MatchTheFollowing({
     const initial = {};
     pairs.forEach(p => { initial[p.id] = 'bank'; });
     setLocations(initial);
+    setSelectedMeaningId(null);
   }
 
   function handleSubmit() {
@@ -236,7 +293,11 @@ export default function MatchTheFollowing({
         <div>
           <div className="mtf-eyebrow">Match the following</div>
           {title && <h3 className="mtf-title">{title}</h3>}
-          <div className="mtf-instructions">Drag each meaning onto the word it matches</div>
+          <div className="mtf-instructions">
+            {isTouchDevice
+              ? (selectedMeaningId ? 'Now tap the word it matches' : 'Tap a meaning, then tap the word it matches')
+              : 'Drag each meaning onto the word it matches'}
+          </div>
         </div>
         <div className="mtf-ring-wrap" aria-hidden="true">
           <svg width="44" height="44" viewBox="0 0 44 44">
@@ -268,12 +329,19 @@ export default function MatchTheFollowing({
             if (filledItem) slotClass += ' mtf-slot--filled';
             if (isCorrect) slotClass += ' mtf-slot--correct';
             if (isWrong) slotClass += ' mtf-slot--incorrect';
+            if (isTouchDevice && selectedMeaningId && !submitted) slotClass += ' mtf-slot--targetable';
             return (
               <div className="mtf-word-row" key={p.id} style={{ animationDelay: `${idx * 35}ms` }}>
                 <div className="mtf-row-main">
                   <span className="mtf-badge">{idx + 1}</span>
                   <span className="mtf-word-chip">{p.left}</span>
-                  <div className={slotClass} data-slot-id={p.id}>
+                  <div
+                    className={slotClass}
+                    data-slot-id={p.id}
+                    onClick={() => handleTapSlot(p.id)}
+                    role={isTouchDevice && !submitted ? 'button' : undefined}
+                    tabIndex={isTouchDevice && !submitted ? 0 : undefined}
+                  >
                     {isWrong ? (
                       <div className="mtf-slot-content mtf-slot-content--wrong">
                         <span className="mtf-wrong-text">
@@ -285,12 +353,14 @@ export default function MatchTheFollowing({
                       <div
                         className="mtf-slot-content"
                         onPointerDown={(e) => handlePointerDown(e, filledItem.id)}
-                        style={{ cursor: submitted ? 'default' : 'grab' }}
+                        style={{ cursor: submitted ? 'default' : (isTouchDevice ? 'pointer' : 'grab') }}
                       >
                         {filledItem.right}
                       </div>
                     ) : (
-                      <span className="mtf-slot-placeholder">Drop match here</span>
+                      <span className="mtf-slot-placeholder">
+                        {isTouchDevice ? (selectedMeaningId ? 'Tap to place here' : 'Tap a meaning first') : 'Drop match here'}
+                      </span>
                     )}
                   </div>
                 </div>
@@ -345,12 +415,13 @@ export default function MatchTheFollowing({
                 return (
                   <div
                     key={p.id}
-                    className="mtf-bank-item"
+                    className={`mtf-bank-item${selectedMeaningId === p.id ? ' mtf-bank-item--selected' : ''}`}
                     onPointerDown={(e) => handlePointerDown(e, p.id)}
-                    style={{ cursor: submitted ? 'default' : 'grab' }}
+                    onClick={() => handleTapMeaning(p.id)}
+                    style={{ cursor: submitted ? 'default' : (isTouchDevice ? 'pointer' : 'grab') }}
                   >
                     <span className="mtf-drag-handle" aria-hidden="true">
-                      <i className="fa-solid fa-grip-vertical" />
+                      <i className={`fa-solid ${isTouchDevice ? 'fa-hand-pointer' : 'fa-grip-vertical'}`} />
                   </span>
                   {p.right}
                 </div>
@@ -551,6 +622,14 @@ export default function MatchTheFollowing({
           border-color: var(--error);
           background: linear-gradient(160deg, #FFFFFF 0%, var(--error-tint) 130%);
         }
+        .mtf-slot--targetable {
+          border-style: solid;
+          border-width: 2px;
+          border-color: var(--brand);
+          background: linear-gradient(160deg, #FFFFFF 0%, #E3FBF6 130%);
+          box-shadow: 0 0 0 3px rgba(0,198,167,0.16);
+          cursor: pointer;
+        }
         .mtf-slot-content {
           font-size: 15px;
           font-weight: 700;
@@ -631,6 +710,16 @@ export default function MatchTheFollowing({
         .mtf-bank-item:hover {
           transform: translateY(-1px);
           box-shadow: 0 6px 14px rgba(194,118,12,0.18);
+        }
+        .mtf-bank-item--selected {
+          border-color: var(--brand);
+          border-width: 2px;
+          background: linear-gradient(160deg, #FFFFFF 0%, #E3FBF6 130%);
+          box-shadow: 0 0 0 3px rgba(0,198,167,0.2), 0 6px 14px rgba(0,198,167,0.22);
+        }
+        .mtf-bank-item--selected .mtf-drag-handle {
+          color: var(--brand);
+          opacity: 1;
         }
         .mtf-bank-item--placed {
           background: var(--rail);
