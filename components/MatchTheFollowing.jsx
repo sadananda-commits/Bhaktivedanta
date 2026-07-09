@@ -116,15 +116,21 @@ export default function MatchTheFollowing({
   // auto-scroll). So on touch devices we swap to a tap-to-select /
   // tap-to-place flow instead: tap a meaning to select it, then tap the
   // word you want to put it on. Desktop keeps the original drag-and-drop
-  // untouched — this is detected via pointer capability, not screen width,
-  // so it tracks the actual input method rather than guessing from layout.
+  // untouched.
+  //
+  // This used to detect touch via a `matchMedia('(pointer: coarse)')`
+  // *live* query — but some mobile browsers re-evaluate that query on
+  // orientation change and report it inconsistently, which made tapping
+  // silently stop working after rotating to landscape. Checking hardware
+  // touch support directly, once, avoids that: it's a fixed capability of
+  // the device, not something that can change when the screen rotates.
   const [isTouchDevice, setIsTouchDevice] = useState(false);
   useEffect(() => {
-    const mq = window.matchMedia('(pointer: coarse)');
-    const update = () => setIsTouchDevice(mq.matches);
-    update();
-    mq.addEventListener('change', update);
-    return () => mq.removeEventListener('change', update);
+    const touchCapable =
+      ('ontouchstart' in window) ||
+      (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0) ||
+      (typeof navigator !== 'undefined' && navigator.msMaxTouchPoints > 0);
+    setIsTouchDevice(!!touchCapable);
   }, []);
   const [selectedMeaningId, setSelectedMeaningId] = useState(null);
 
