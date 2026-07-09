@@ -135,11 +135,39 @@ export default function MatchTheFollowing({
     el.style.transform = 'scale(1.03)';
     el.style.pointerEvents = 'none';
 
+    // On phones the Words and Meanings columns stack into one tall page
+    // (see the max-width:620px media query below), so the chip you're
+    // dragging and the slot you're dragging it to are very often not both
+    // on screen at once. Without this, there's no way to reach an
+    // off-screen target — the finger just can't drag past the edge of the
+    // viewport. This mirrors what drag-and-drop libraries do: keep
+    // scrolling in a rAF loop for as long as the pointer sits near the top
+    // or bottom edge, even if the finger itself has stopped moving.
+    let lastClientY = e.clientY;
+    let scrollRAF = null;
+    const EDGE = 70; // px from the viewport edge that triggers auto-scroll
+    const MAX_SPEED = 16; // px per animation frame at the very edge
+
+    function autoScrollTick() {
+      const vh = window.innerHeight;
+      let dy = 0;
+      if (lastClientY < EDGE) {
+        dy = -MAX_SPEED * (1 - lastClientY / EDGE);
+      } else if (lastClientY > vh - EDGE) {
+        dy = MAX_SPEED * (1 - (vh - lastClientY) / EDGE);
+      }
+      if (dy) window.scrollBy(0, dy);
+      scrollRAF = requestAnimationFrame(autoScrollTick);
+    }
+    scrollRAF = requestAnimationFrame(autoScrollTick);
+
     function onMove(ev) {
+      lastClientY = ev.clientY;
       el.style.left = (ev.clientX - offsetX) + 'px';
       el.style.top = (ev.clientY - offsetY) + 'px';
     }
     function onUp(ev) {
+      cancelAnimationFrame(scrollRAF);
       el.removeEventListener('pointermove', onMove);
       el.removeEventListener('pointerup', onUp);
       el.style.position = '';
@@ -532,6 +560,10 @@ export default function MatchTheFollowing({
           text-align: center;
           overflow: hidden;
           max-height: 100%;
+          touch-action: none;
+          user-select: none;
+          -webkit-user-select: none;
+          -webkit-touch-callout: none;
         }
         .mtf-slot-content--wrong {
           display: flex;
@@ -591,6 +623,8 @@ export default function MatchTheFollowing({
           gap: 8px;
           overflow: hidden;
           user-select: none;
+          -webkit-user-select: none;
+          -webkit-touch-callout: none;
           touch-action: none;
           transition: transform 0.15s ease, box-shadow 0.15s ease;
         }
@@ -738,7 +772,7 @@ export default function MatchTheFollowing({
         @media (max-width: 620px) {
           .mtf-card { padding: 18px 16px 20px; }
           .mtf-columns { grid-template-columns: 1fr; gap: 8px; }
-          .mtf-col-label--meaning { text-align: left; margin-top: 4px; }
+          .mtf-col-label--meaning { text-align: left; margin-top: 22px; }
           .mtf-slot { width: 100%; margin-top: 8px; }
           .mtf-row-main { flex-wrap: wrap; }
           .mtf-bank-item { text-align: left; justify-content: flex-start; }
