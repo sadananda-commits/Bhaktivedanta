@@ -5,6 +5,7 @@ import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { LanguageProvider, useLanguage, LanguageToggle } from '../lib/i18n';
 import MatchTheFollowing from '../components/MatchTheFollowing';
 import GroupChat from '../components/GroupChat';
+import ChatNotifications from '../components/ChatNotifications';
 import { QUIZ_LEARNING_MODULES_DA, QUIZ_LEARNING_STEPS_DA, QUIZ_ASSIGNMENT_SUBJECTS_DA } from '../lib/quizContentDA';
 import {
   PORTAL_SETTINGS_DA, PORTAL_NAVIGATION_DA, PORTAL_DASH_STATS_DA, PORTAL_SUBJECTS_DEMO_DA,
@@ -872,6 +873,7 @@ function useTestTimer({ moduleId, profile, subject, topic, enabled = true }) {
   const pausedMs     = useRef(0);   // total ms paused this session
   const rafId        = useRef(null);
   const logged       = useRef(false);
+
 
   // Restore any previously banked elapsed time (survives page refresh)
   useEffect(() => {
@@ -1853,6 +1855,8 @@ function PortalInner() {
   // (can't read localStorage in useState initialiser because Next.js runs it
   // server-side where window doesn't exist, so the read is always skipped).
   const [profile, setProfile] = useState({ name: '', id: '', classLevel: 'Class 3' });
+  const [chatUnread, setChatUnread] = useState(0);
+  const [chatFocusGroupId, setChatFocusGroupId] = useState(null);
   const [loginErr,    setLoginErr]    = useState('');
   const [loading,     setLoading]     = useState(false);
   const [uploadName,  setUploadName]  = useState('');
@@ -3383,6 +3387,11 @@ function PortalInner() {
 
           {/* SIDEBAR */}
           <aside className={`sb${mobileNavOpen?' open':''}${sidebarPeeking&&activeModuleId?' quiz-peek':''}`}>
+<ChatNotifications
+  profile={profile}
+  onUnreadChange={setChatUnread}
+  onOpenChat={(groupId) => { setTab('chat'); setChatFocusGroupId(groupId); }}
+/>
             <div className="sb-head">
               <div className="sb-av"><i className="fa-solid fa-user-graduate" /></div>
               <div style={{flex:1,minWidth:0}}><div className="sb-name">{profile.name}</div><div className="sb-id">{profile.id}</div></div>
@@ -3394,6 +3403,7 @@ function PortalInner() {
                 <button key={navItem.ID} className={`nb${tab===navItem.ID?' active':''}`} onClick={() => { setTab(navItem.ID); setSidebarPeeking(false); }}>
                   <i className={`fa-solid ${navItem['Icon (FontAwesome solid)']}`} /> {navItem.Label}
                   {navItem.ID==='notifications' && unreadCount>0 && <span className="nb-badge">{unreadCount}</span>}
+{navItem.ID==='chat' && chatUnread>0 && <span className="nb-badge">{chatUnread}</span>}
                 </button>
               ))}
             </nav>
@@ -4536,7 +4546,7 @@ function PortalInner() {
         <div className="pg-s">Chat with your groupmates — teachers and parents can see this too</div>
       </div>
     </div>
-    <GroupChat profile={profile} t={t} />
+    <GroupChat profile={profile} t={t} focusGroupId={chatFocusGroupId} />
   </>
 )}
             {/* SCHEDULE */}
