@@ -11,12 +11,15 @@
 // the last message it has) so each poll only pulls what's new.
 //
 // USAGE:
-//   <GroupChat profile={profile} t={t} />
+//   <GroupChat profile={profile} t={t} focusGroupId={chatFocusGroupId} />
 // `profile` needs at least { id, name, classLevel }. classLevel is only
 // needed for the "start a 1:1 chat" picker — without it, that button is
-// simply hidden.
+// simply hidden. `focusGroupId`, if provided, switches to that chat
+// whenever it changes — used by ChatNotifications.jsx so a toast's "View"
+// button can jump straight to the right conversation.
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { markSeen } from '../utils/chatLastSeen';
 
 const POLL_MS = 4000;
 const MAX_LEN = 300;
@@ -42,7 +45,7 @@ function renderMessageText(text) {
   });
 }
 
-export default function GroupChat({ profile, t }) {
+export default function GroupChat({ profile, t, focusGroupId }) {
   const tr = t || (s => s);
 
   const [groups, setGroups] = useState([]);
@@ -88,6 +91,12 @@ export default function GroupChat({ profile, t }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.id]);
 
+  // ── Jump to a specific chat when told to from outside (e.g. a
+  // ChatNotifications toast's "View" button) ───────────────────────────────
+  useEffect(() => {
+    if (focusGroupId) setActiveGroupId(focusGroupId);
+  }, [focusGroupId]);
+
   // ── Fetch messages: full history on group switch, incremental after ──────
   const fetchMessages = useCallback((groupId, since) => {
     const url = `/api/student/chat-messages?groupId=${encodeURIComponent(groupId)}${since ? `&since=${encodeURIComponent(since)}` : ''}`;
@@ -102,7 +111,10 @@ export default function GroupChat({ profile, t }) {
 
     fetchMessages(activeGroupId, null).then(msgs => {
       setMessages(msgs);
-      if (msgs.length) lastTimestampRef.current = msgs[msgs.length - 1].timestamp;
+      if (msgs.length) {
+        lastTimestampRef.current = msgs[msgs.length - 1].timestamp;
+        markSeen(profile?.id, activeGroupId, lastTimestampRef.current);
+      }
       setMessagesLoading(false);
     });
 
@@ -116,6 +128,7 @@ export default function GroupChat({ profile, t }) {
           return merged;
         });
         lastTimestampRef.current = newMsgs[newMsgs.length - 1].timestamp;
+        markSeen(profile?.id, activeGroupId, lastTimestampRef.current);
       });
     }, POLL_MS);
 
@@ -148,6 +161,7 @@ export default function GroupChat({ profile, t }) {
         const mine = { messageId: data.messageId, groupId: activeGroupId, studentId: profile.id, studentName: profile.name, message: trimmed, timestamp: data.timestamp, flagged: false, hasLink: data.hasLink };
         setMessages(prev => [...prev, mine]);
         lastTimestampRef.current = data.timestamp;
+        markSeen(profile?.id, activeGroupId, data.timestamp);
       })
       .catch(() => setSendError('Could not send — try again'))
       .finally(() => setSending(false));
