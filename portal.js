@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { LanguageProvider, useLanguage, LanguageToggle } from '../lib/i18n';
 import MatchTheFollowing from '../components/MatchTheFollowing';
+import GroupChat from '../components/GroupChat';
+import ChatNotifications from '../components/ChatNotifications';
 import { QUIZ_LEARNING_MODULES_DA, QUIZ_LEARNING_STEPS_DA, QUIZ_ASSIGNMENT_SUBJECTS_DA } from '../lib/quizContentDA';
 import {
   PORTAL_SETTINGS_DA, PORTAL_NAVIGATION_DA, PORTAL_DASH_STATS_DA, PORTAL_SUBJECTS_DEMO_DA,
@@ -63,6 +65,7 @@ const FALLBACK = {
     {ID:'leaderboard',   Label:'Leaderboard',        'Icon (FontAwesome solid)':'fa-trophy',         Active:true,Order:2},
     {ID:'assignments',   Label:'Question Bank',      'Icon (FontAwesome solid)':'fa-book-open',      Active:true,Order:3},
     {ID:'myassignments', Label:'Assignments for you','Icon (FontAwesome solid)':'fa-clipboard-list',Active:true,Order:4},
+{ID:'chat', Label:'Group Chat', 'Icon (FontAwesome solid)':'fa-comments', Active:true, Order:4.5},
     {ID:'completedtopics',Label:'Completed Topics',  'Icon (FontAwesome solid)':'fa-circle-check',  Active:true,Order:5},
     {ID:'notifications', Label:'Notifications',      'Icon (FontAwesome solid)':'fa-bell',           Active:true,Order:5},
     {ID:'profile',       Label:'My Profile',         'Icon (FontAwesome solid)':'fa-user-circle',    Active:true,Order:6},
@@ -870,6 +873,7 @@ function useTestTimer({ moduleId, profile, subject, topic, enabled = true }) {
   const pausedMs     = useRef(0);   // total ms paused this session
   const rafId        = useRef(null);
   const logged       = useRef(false);
+
 
   // Restore any previously banked elapsed time (survives page refresh)
   useEffect(() => {
@@ -1851,6 +1855,8 @@ function PortalInner() {
   // (can't read localStorage in useState initialiser because Next.js runs it
   // server-side where window doesn't exist, so the read is always skipped).
   const [profile, setProfile] = useState({ name: '', id: '', classLevel: 'Class 3' });
+  const [chatUnread, setChatUnread] = useState(0);
+  const [chatFocusGroupId, setChatFocusGroupId] = useState(null);
   const [loginErr,    setLoginErr]    = useState('');
   const [loading,     setLoading]     = useState(false);
   const [uploadName,  setUploadName]  = useState('');
@@ -3381,6 +3387,11 @@ function PortalInner() {
 
           {/* SIDEBAR */}
           <aside className={`sb${mobileNavOpen?' open':''}${sidebarPeeking&&activeModuleId?' quiz-peek':''}`}>
+<ChatNotifications
+  profile={profile}
+  onUnreadChange={setChatUnread}
+  onOpenChat={(groupId) => { setTab('chat'); setChatFocusGroupId(groupId); }}
+/>
             <div className="sb-head">
               <div className="sb-av"><i className="fa-solid fa-user-graduate" /></div>
               <div style={{flex:1,minWidth:0}}><div className="sb-name">{profile.name}</div><div className="sb-id">{profile.id}</div></div>
@@ -3392,6 +3403,7 @@ function PortalInner() {
                 <button key={navItem.ID} className={`nb${tab===navItem.ID?' active':''}`} onClick={() => { setTab(navItem.ID); setSidebarPeeking(false); }}>
                   <i className={`fa-solid ${navItem['Icon (FontAwesome solid)']}`} /> {navItem.Label}
                   {navItem.ID==='notifications' && unreadCount>0 && <span className="nb-badge">{unreadCount}</span>}
+{navItem.ID==='chat' && chatUnread>0 && <span className="nb-badge">{chatUnread}</span>}
                 </button>
               ))}
             </nav>
@@ -4525,7 +4537,18 @@ function PortalInner() {
                 />
               </>
             )}
-
+{/* GROUP CHAT */}
+{tab==='chat' && (
+  <>
+    <div className="main-top">
+      <div>
+        <div className="pg-h">Group Chat</div>
+        <div className="pg-s">Chat with your groupmates — teachers and parents can see this too</div>
+      </div>
+    </div>
+    <GroupChat profile={profile} t={t} focusGroupId={chatFocusGroupId} />
+  </>
+)}
             {/* SCHEDULE */}
             {tab==='schedule' && (<>
               <div className="main-top"><div><div className="pg-h">{t('p_schedule_title')}</div><div className="pg-s">{t('p_schedule_subtitle')}</div></div></div>
@@ -4787,4 +4810,3 @@ export default function Portal() {
     </LanguageProvider>
   );
 }
-
