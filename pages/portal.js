@@ -391,9 +391,20 @@ function isRowActive(v) {
 // that doesn't have it cached locally. Keeps only the latest row per
 // (module, question) in case a question was somehow synced more than once.
 //
-// `totalStepsFor(moduleId)` lets us compute completionPct/completedAt
-// correctly (raw rows alone don't carry the module's total question count).
-function rebuildLearnProgressFromRows(rows, totalStepsFor) {
+// `stepsFor(moduleId)` returns that module's actual steps array (not just a
+// count) — needed for two things:
+//   1. completionPct/completedAt, same as before.
+//   2. Translating each row's QuestionNumber (the sheet's 'Step Number') into
+//      that question's array index. LearningModulePlayer keys its live
+//      `answers` object by array index rather than Step Number (Step Number
+//      is content-managed data and isn't guaranteed unique — see the
+//      `currentAnswer` comment in LearningModulePlayer), so a rebuild that
+//      kept using Step Number as the key would silently stop lining up with
+//      live answers, making resumed/reviewed questions look wrong or
+//      unanswered even though the sheet has the record. A row whose
+//      QuestionNumber no longer matches any current step (chapter content
+//      changed since it was answered) is skipped rather than guessed at.
+function rebuildLearnProgressFromRows(rows, stepsFor) {
   const latestByModuleQuestion = {}; // "moduleId|questionNumber" -> row
   rows.forEach(r => {
     const key = `${r.ModuleID}|${r.QuestionNumber}`;
@@ -403,24 +414,65 @@ function rebuildLearnProgressFromRows(rows, totalStepsFor) {
     }
   });
 
+  // Matches the "X/Y matched" summary recordAnswer() writes for
+  // matchTheFollowing questions (see submitMatchTheFollowing) — that's ALL
+  // the sheet ever stores for this question type; the actual word→meaning
+  // placements a student chose are never sent. So a rebuilt matchTheFollowing
+  // answer can carry the score honestly, but must never claim to know full
+  // placements — see the `rebuiltFromHistory` flag below.
+  const MATCH_SUMMARY_RE = /^(\d+)\/(\d+)\s+matched$/i;
+
   const byModule = {};
   Object.values(latestByModuleQuestion).forEach(r => {
     const moduleId = r.ModuleID;
     if (!moduleId) return;
-    if (!byModule[moduleId]) byModule[moduleId] = { answers:{}, timestamps:[] };
+    const moduleSteps = (stepsFor ? stepsFor(moduleId) : []) || [];
+    const idx = moduleSteps.findIndex(s => String(s['Step Number']) === String(r.QuestionNumber));
+    if (idx === -1) return; // question no longer exists in this module — skip rather than mis-key it
+
+    if (!byModule[moduleId]) byModule[moduleId] = { answers:{}, timestamps:[], stepCount: moduleSteps.length };
     const isCorrect = String(r.Status||'').trim().toLowerCase() === 'correct';
     // Issue 1: carry the per-question time (if the sheet has it) back into
     // the rebuilt answer record, so a fresh device's review screen and the
     // total-time rollup below both have it, not just the device that
     // originally answered the question.
     const qSecs = Number(r.TimeTakenSeconds) || 0;
-    byModule[moduleId].answers[r.QuestionNumber] = { isCorrect, selected: r.AnswerGiven, timeTakenSeconds: qSecs };
+
+    const matchSummary = MATCH_SUMMARY_RE.exec(String(r.AnswerGiven||''));
+    byModule[moduleId].answers[idx] = matchSummary
+      ? {
+          type: 'matchTheFollowing',
+          isCorrect,
+          score: Number(matchSummary[1]),
+          total: Number(matchSummary[2]),
+          stepNumber: r.QuestionNumber,
+          timeTakenSeconds: qSecs,
+          // No placements available from the sheet — rebuiltFromHistory
+          // tells LearningModulePlayer to show a lightweight "already
+          // completed" summary instead of feeding an empty placements
+          // object into MatchTheFollowing, which would otherwise grade
+          // every pair as wrong.
+          rebuiltFromHistory: true,
+        }
+      : {
+          isCorrect,
+          selected: r.AnswerGiven,
+          correctText: r.CorrectAnswer,
+          stepNumber: r.QuestionNumber,
+          timeTakenSeconds: qSecs,
+          // `selected` here is the option's display text (that's what the
+          // sheet stores), not the A/B/C/D letter the live UI uses — so the
+          // review screen can't reliably re-highlight the exact button.
+          // This flag lets it fall back to showing the text plainly instead
+          // of guessing a letter.
+          rebuiltFromHistory: true,
+        };
     if (r.Timestamp) byModule[moduleId].timestamps.push(r.Timestamp);
   });
 
   const result = {};
   Object.keys(byModule).forEach(moduleId => {
-    const { answers, timestamps } = byModule[moduleId];
+    const { answers, timestamps, stepCount } = byModule[moduleId];
     const attempted = Object.keys(answers).length;
     const correct   = Object.values(answers).filter(a=>a.isCorrect).length;
     // Issue 2: total time taken to finish the topic — summed from each
@@ -428,7 +480,7 @@ function rebuildLearnProgressFromRows(rows, totalStepsFor) {
     // sheet history on a brand-new device that never ran the live timer.
     const summedSeconds = Object.values(answers).reduce((sum, a) => sum + (a.timeTakenSeconds || 0), 0);
     timestamps.sort();
-    const total = totalStepsFor ? totalStepsFor(moduleId) : 0;
+    const total = stepCount || 0;
     const isComplete = total > 0 && attempted >= total;
     result[moduleId] = {
       startedAt: timestamps[0] || null,
@@ -1007,7 +1059,23 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
   // (forward or backward) automatically shows that step's saved answer
   // (locked, colored correct/incorrect) if one exists, or a fresh unanswered
   // question if it doesn't, with no extra bookkeeping to keep in sync.
-  const currentAnswer = answers[steps[idx]?.['Step Number']];
+  //
+  // IMPORTANT: keyed by `idx` (this question's position in `steps`), NOT by
+  // the sheet's 'Step Number' field. Step Number is content-managed data —
+  // duplicate rows, a re-ordered Learning Steps tab, or two sections that
+  // both start at 1 are all real possibilities — and if two different
+  // questions in the same module ever share a Step Number, keying answers by
+  // that value makes them collide: answering one instantly makes the other
+  // look "already answered" (with the wrong question's data), and it also
+  // undercounts Object.keys(answers).length, which is what "Continue"
+  // (see begin(attemptedCount) below) uses to resume — so a collision also
+  // makes the app resume several questions earlier than the student actually
+  // reached, on top of showing incorrect/locked data. `idx` is always unique
+  // by construction, so this class of bug can't happen regardless of what's
+  // in the sheet. Step Number itself is still recorded inside each saved
+  // answer/payload for display and sheet logging — nothing about what's
+  // shown to the student or written to the StudentProgress sheet changes.
+  const currentAnswer = answers[idx];
   const selected = currentAnswer?.selected ?? null;
   const locked   = !!currentAnswer;
 
@@ -1028,8 +1096,7 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
   useEffect(() => {
     // Only (re)start the per-question clock if this question hasn't been
     // answered yet — an already-locked question shouldn't keep ticking.
-    const stepNum = steps[idx]?.['Step Number'];
-    if (!answers[stepNum]) {
+    if (!answers[idx]) {
       questionStartRef.current = performance.now();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1079,7 +1146,7 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
     if (locked) return; // guards a stray double-call on an already-answered question
     const questionTimeSecs = Math.max(0, Math.round((performance.now() - questionStartRef.current) / 1000));
     const isCorrect = result.score === result.total;
-    const nextAnswers = { ...answers, [step['Step Number']]: {
+    const nextAnswers = { ...answers, [idx]: {
       type: 'matchTheFollowing',
       isCorrect,
       question: step.Question,
@@ -1087,6 +1154,7 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
       score: result.score,
       total: result.total,
       explanation: step.Explanation,
+      stepNumber: step['Step Number'],
       timeTakenSeconds: questionTimeSecs,
     }};
     setAnswers(nextAnswers);
@@ -1125,9 +1193,10 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
     // nearest whole second — sub-second precision isn't useful for review
     // screens / sheet logging and keeps the stored numbers tidy).
     const questionTimeSecs = Math.max(0, Math.round((performance.now() - questionStartRef.current) / 1000));
-    const nextAnswers = { ...answers, [step['Step Number']]: {
+    const nextAnswers = { ...answers, [idx]: {
       selected: letter, isCorrect, question: step.Question, correctOpt: step['Correct Option'], explanation: step.Explanation,
       options: { A:step['Option A'], B:step['Option B'], C:step['Option C'], D:step['Option D'] },
+      stepNumber: step['Step Number'],
       timeTakenSeconds: questionTimeSecs,
     }};
     setAnswers(nextAnswers);
@@ -1351,19 +1420,19 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
           {showQuestionDropdown ? (
             <select className="lp-jump-select" value={idx} onChange={e=>setIdx(Number(e.target.value))}>
               {steps.map((s,i) => {
-                const a = answers[s['Step Number']];
+                const a = answers[i];
                 const status = a ? (a.isCorrect ? '✓' : '✗') : '○';
-                return <option key={s['Step Number']} value={i}>{status} {t('p_question_of', {n: i+1, total})}</option>;
+                return <option key={i} value={i}>{status} {t('p_question_of', {n: i+1, total})}</option>;
               })}
             </select>
           ) : useDotNav ? (
             <div className="lp-dots">
               {steps.map((s,i) => {
-                const a = answers[s['Step Number']];
+                const a = answers[i];
                 let cls = 'lp-dot';
                 if (i === idx) cls += ' current';
                 else if (a) cls += a.isCorrect ? ' correct' : ' incorrect';
-                return <button key={s['Step Number']} className={cls} onClick={()=>setIdx(i)} aria-label={`Q${i+1}`} />;
+                return <button key={i} className={cls} onClick={()=>setIdx(i)} aria-label={`Q${i+1}`} />;
               })}
             </div>
           ) : null}
@@ -1405,14 +1474,32 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
 
           {isMatchStep(step) ? (
             <>
-              <MatchTheFollowing
-                key={`${step['Module ID']}-${step['Step Number']}`}
-                pairs={pairsFromStep(step)}
-                explanation={step.Explanation}
-                onSubmit={submitMatchTheFollowing}
-                initialPlacements={currentAnswer?.placements}
-                initialLocked={locked}
-              />
+              {currentAnswer?.rebuiltFromHistory ? (
+                // This question was answered in a previous session and its
+                // summary was rebuilt from the sheet, not from localStorage —
+                // the sheet only ever logs a score for matchTheFollowing
+                // (e.g. "4/5 matched"), never the actual word→meaning
+                // placements. Rendering the interactive component with an
+                // empty placements object would make every pair look wrong;
+                // showing the honest score instead avoids that false "series
+                // of errors" appearance.
+                <div className="lp-fs-history-note" style={{
+                  padding:'14px 16px', borderRadius:'10px', border:'1.5px solid var(--border)',
+                  background:'rgba(255,255,255,.03)', display:'flex', alignItems:'center', gap:'10px',
+                }}>
+                  <i className="fa-solid fa-clock-rotate-left" />
+                  <span>Already answered previously — {currentAnswer.score}/{currentAnswer.total} matched correctly. (Answered elsewhere, so the exact matches aren't shown here.)</span>
+                </div>
+              ) : (
+                <MatchTheFollowing
+                  key={`${step['Module ID']}-${idx}-${step['Step Number']}`}
+                  pairs={pairsFromStep(step)}
+                  explanation={step.Explanation}
+                  onSubmit={submitMatchTheFollowing}
+                  initialPlacements={currentAnswer?.placements}
+                  initialLocked={locked}
+                />
+              )}
               {locked && (
                 <div className={`lp-fs-feedback ${currentAnswer.isCorrect ? 'good' : 'bad'}`}>
                   <i className={`fa-solid ${currentAnswer.isCorrect ? 'fa-circle-check' : 'fa-circle-xmark'} lp-fs-fb-icon`} />
@@ -1432,39 +1519,56 @@ function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAns
             </>
           ) : (
             <>
-              <div className="lp-fs-opts">
-                {opts.map(letter => {
-                  const text = step[`Option ${letter}`];
-                  if (!text) return null;
-                  let cls = 'lp-fs-opt';
-                  if (locked && letter === step['Correct Option']) cls += ' correct';
-                  else if (locked && letter === selected)         cls += ' incorrect';
-                  return (
-                    <button key={letter} className={cls} disabled={locked} onClick={()=>choose(letter)}>
-                      <span className="lp-fs-letter">{letter}</span>
-                      <span className="lp-fs-opt-text">{text}</span>
-                    </button>
-                  );
-                })}
-              </div>
+              {/* isAnswerCorrect prefers the stored isCorrect flag (always
+                  reliable — it's set from step['Correct Option'] at answer
+                  time for a live session, or from the sheet's Status column
+                  for a rebuilt one) over comparing `selected` to the correct
+                  letter. That letter-comparison used to be the only check,
+                  which silently broke for rebuilt history rows: the sheet
+                  only stores the option's display TEXT ("The Sun"), never
+                  the A/B/C/D letter, so `selected === step['Correct Option']`
+                  was always false there — showing "Not quite" on questions
+                  the student actually got right. */}
+              {(() => {
+                const isAnswerCorrect = currentAnswer ? (currentAnswer.isCorrect ?? (selected === step['Correct Option'])) : false;
+                return (
+                  <>
+                    <div className="lp-fs-opts">
+                      {opts.map(letter => {
+                        const text = step[`Option ${letter}`];
+                        if (!text) return null;
+                        let cls = 'lp-fs-opt';
+                        if (locked && letter === step['Correct Option']) cls += ' correct';
+                        else if (locked && !isAnswerCorrect && (letter === selected || text === selected)) cls += ' incorrect';
+                        return (
+                          <button key={letter} className={cls} disabled={locked} onClick={()=>choose(letter)}>
+                            <span className="lp-fs-letter">{letter}</span>
+                            <span className="lp-fs-opt-text">{text}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
 
-              {/* ── Feedback panel (shown after answering) ── */}
-              {locked && (
-                <div className={`lp-fs-feedback ${selected===step['Correct Option']?'good':'bad'}`}>
-                  <i className={`fa-solid ${selected===step['Correct Option']?'fa-circle-check':'fa-circle-xmark'} lp-fs-fb-icon`} />
-                  <div>
-                    <strong>{selected===step['Correct Option']?t('p_correct_excl'):t('p_not_quite')}</strong>
-                    <span> {step.Explanation}</span>
-                    {step['Learn More URL'] && (
-                      <div style={{marginTop:'8px'}}>
-                        <a className="lp-learnmore" href={step['Learn More URL']} target="_blank" rel="noopener noreferrer">
-                          <i className="fa-solid fa-book-open" /> {step['Learn More Label'] || t('p_learn_more')} <i className="fa-solid fa-arrow-up-right-from-square" />
-                        </a>
+                    {/* ── Feedback panel (shown after answering) ── */}
+                    {locked && (
+                      <div className={`lp-fs-feedback ${isAnswerCorrect?'good':'bad'}`}>
+                        <i className={`fa-solid ${isAnswerCorrect?'fa-circle-check':'fa-circle-xmark'} lp-fs-fb-icon`} />
+                        <div>
+                          <strong>{isAnswerCorrect?t('p_correct_excl'):t('p_not_quite')}</strong>
+                          <span> {step.Explanation}</span>
+                          {step['Learn More URL'] && (
+                            <div style={{marginTop:'8px'}}>
+                              <a className="lp-learnmore" href={step['Learn More URL']} target="_blank" rel="noopener noreferrer">
+                                <i className="fa-solid fa-book-open" /> {step['Learn More Label'] || t('p_learn_more')} <i className="fa-solid fa-arrow-up-right-from-square" />
+                              </a>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     )}
-                  </div>
-                </div>
-              )}
+                  </>
+                );
+              })()}
             </>
           )}
         </div>
@@ -2454,7 +2558,7 @@ function PortalInner() {
       .then(r => r.json())
       .then(({ progress }) => {
         if (!Array.isArray(progress) || !progress.length) return;
-        const rebuilt = rebuildLearnProgressFromRows(progress, moduleId => stepsFor(moduleId).length);
+        const rebuilt = rebuildLearnProgressFromRows(progress, moduleId => stepsFor(moduleId));
         setLearnProgress(prev => {
           const merged = { ...rebuilt };
           Object.keys(prev).forEach(moduleId => {
@@ -4251,6 +4355,7 @@ function PortalInner() {
                     <span className="asgn-crumb-current">{ASSIGN_LMOD.find(m=>m['Module ID']===activeModuleId)?.Title}</span>
                   </div>
                   <LearningModulePlayer
+                    key={activeModuleId}
                     module={ASSIGN_LMOD.find(m=>m['Module ID']===activeModuleId)}
                     steps={stepsFor(activeModuleId)}
                     progress={learnProgress[activeModuleId]}
@@ -4318,6 +4423,7 @@ function PortalInner() {
                       <span className="asgn-crumb-current">{row.ChapterTitle || module?.Title}</span>
                     </div>
                     <LearningModulePlayer
+                      key={activeMyAssignmentId}
                       module={module}
                       steps={steps}
                       rangeFrom={Number(row.FromQuestion) || 1}
