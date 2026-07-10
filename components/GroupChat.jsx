@@ -62,6 +62,7 @@ export default function GroupChat({ profile, t }) {
   const [classmates, setClassmates] = useState([]);
   const [classmatesLoading, setClassmatesLoading] = useState(false);
   const [classmatesError, setClassmatesError] = useState('');
+  const [classmateFilter, setClassmateFilter] = useState('');
   const [startingDmFor, setStartingDmFor] = useState(null);
   const [dmError, setDmError] = useState('');
 
@@ -155,6 +156,7 @@ export default function GroupChat({ profile, t }) {
   const openPicker = () => {
     setShowPicker(prev => !prev);
     setDmError('');
+    setClassmateFilter('');
     if (classmates.length || !profile?.classLevel) return; // already loaded, or nothing to look up
     setClassmatesLoading(true);
     setClassmatesError('');
@@ -218,6 +220,10 @@ export default function GroupChat({ profile, t }) {
   // ── The "start a chat" picker — shared markup used in both the empty
   // state (no groups yet) and the normal header, so it's always styled
   // consistently by the single <style jsx> block below. ──────────────────
+  const filteredClassmates = classmateFilter.trim()
+    ? classmates.filter(c => c.studentName.toLowerCase().includes(classmateFilter.trim().toLowerCase()))
+    : classmates;
+
   const picker = showPicker && (
     <div className="gc-picker">
       <div className="gc-picker-head">
@@ -226,15 +232,36 @@ export default function GroupChat({ profile, t }) {
           <i className="fa-solid fa-xmark" />
         </button>
       </div>
+
+      {!classmatesLoading && !classmatesError && classmates.length > 0 && (
+        <div className="gc-picker-search">
+          <i className="fa-solid fa-magnifying-glass" />
+          <input
+            type="text"
+            value={classmateFilter}
+            onChange={e => setClassmateFilter(e.target.value)}
+            placeholder="Search classmates by name…"
+            autoFocus
+          />
+          {classmateFilter && (
+            <button className="gc-picker-search-clear" onClick={() => setClassmateFilter('')} aria-label="Clear search">
+              <i className="fa-solid fa-xmark" />
+            </button>
+          )}
+        </div>
+      )}
+
       {classmatesError ? (
         <div className="gc-empty-inner">{classmatesError}</div>
       ) : classmatesLoading ? (
         <div className="gc-empty-inner">Loading classmates…</div>
       ) : !classmates.length ? (
         <div className="gc-empty-inner">No classmates found to chat with yet.</div>
+      ) : !filteredClassmates.length ? (
+        <div className="gc-empty-inner">No one matches "{classmateFilter}"</div>
       ) : (
         <div className="gc-picker-list">
-          {classmates.map(c => (
+          {filteredClassmates.map(c => (
             <button
               key={c.studentId}
               className="gc-picker-item"
@@ -457,10 +484,31 @@ export default function GroupChat({ profile, t }) {
           font-size: 13px; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
         }
         .gc-picker-close:hover { color: var(--ink); }
-        .gc-picker-list {
-          max-height: 240px; overflow-y: auto; padding: 4px 10px 10px;
-          display: flex; flex-direction: column; gap: 3px;
+
+        .gc-picker-search {
+          display: flex; align-items: center; gap: 8px;
+          margin: 0 12px 8px; padding: 7px 10px;
+          background: var(--paper); border: 1.5px solid var(--border); border-radius: 999px;
         }
+        .gc-picker-search i.fa-magnifying-glass { color: var(--ink-muted); font-size: 11px; flex-shrink: 0; }
+        .gc-picker-search input {
+          flex: 1; border: none; outline: none; background: transparent;
+          font-size: 13px; font-family: inherit; color: var(--ink);
+        }
+        .gc-picker-search-clear {
+          border: none; background: none; cursor: pointer; color: var(--ink-muted);
+          font-size: 11px; flex-shrink: 0; width: 18px; height: 18px;
+          display: flex; align-items: center; justify-content: center;
+        }
+        .gc-picker-search-clear:hover { color: var(--ink); }
+
+        .gc-picker-list {
+          max-height: 260px; overflow-y: auto; padding: 4px 10px 10px;
+          display: flex; flex-direction: column; gap: 3px;
+          scrollbar-width: thin;
+        }
+        .gc-picker-list::-webkit-scrollbar { width: 6px; }
+        .gc-picker-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
         .gc-picker-item {
           display: flex; align-items: center; gap: 10px; width: 100%;
           padding: 9px 10px; border-radius: 10px; border: 1px solid transparent;
