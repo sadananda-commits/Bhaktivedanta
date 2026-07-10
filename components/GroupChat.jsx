@@ -1,17 +1,20 @@
 // components/GroupChat.jsx
 //
-// Small-group chat for students, scoped to teacher/parent-assigned groups
-// (see "Chat Groups" tab / chat-apps-script.gs). Every message is fully
-// visible to teachers/parents (they can read the "Chat Messages" sheet tab
-// directly) — there's no private-messaging mode here by design.
+// Small-group + 1:1 chat for students, scoped to teacher/parent-assigned
+// groups (see "Chat Groups" tab / chat-apps-script.gs) plus self-serve
+// 1:1 chats between classmates. Every message is fully visible to
+// teachers/parents (they can read the "Chat Messages" sheet tab directly)
+// — there's no private-messaging mode here by design, group or DM.
 //
-// Polling-based (no websockets needed): once a group is open, this fetches
+// Polling-based (no websockets needed): once a chat is open, this fetches
 // new messages every POLL_MS milliseconds, using `since` (the timestamp of
 // the last message it has) so each poll only pulls what's new.
 //
 // USAGE:
 //   <GroupChat profile={profile} t={t} />
-// `profile` needs at least { id, name }.
+// `profile` needs at least { id, name, classLevel }. classLevel is only
+// needed for the "start a 1:1 chat" picker — without it, that button is
+// simply hidden.
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 
@@ -24,11 +27,6 @@ const URL_PATTERN = /(https?:\/\/[^\s]+|www\.[^\s]+)/gi;
 // and <a> elements, never dangerouslySetInnerHTML) — this only changes what
 // gets clicked, not what gets trusted; the server already decided whether
 // the link was allowed before the message was ever saved.
-//
-// String.split() with a single-capturing-group regex interleaves the
-// captured matches into the result at odd indices (text, match, text,
-// match, text, …) — so we don't need a second, separately-stateful test
-// against the same global regex to tell URLs apart from plain text.
 function renderMessageText(text) {
   return text.split(URL_PATTERN).map((part, i) => {
     if (i % 2 === 1) {
@@ -49,6 +47,7 @@ export default function GroupChat({ profile, t }) {
 
   const [groups, setGroups] = useState([]);
   const [groupsLoading, setGroupsLoading] = useState(true);
+  const [groupsError, setGroupsError] = useState('');
   const [activeGroupId, setActiveGroupId] = useState(null);
 
   const [messages, setMessages] = useState([]);
@@ -62,7 +61,9 @@ export default function GroupChat({ profile, t }) {
   const [showPicker, setShowPicker] = useState(false);
   const [classmates, setClassmates] = useState([]);
   const [classmatesLoading, setClassmatesLoading] = useState(false);
+  const [classmatesError, setClassmatesError] = useState('');
   const [startingDmFor, setStartingDmFor] = useState(null);
+  const [dmError, setDmError] = useState('');
 
   const lastTimestampRef = useRef(null);
   const pollRef = useRef(null);
@@ -72,14 +73,16 @@ export default function GroupChat({ profile, t }) {
   useEffect(() => {
     if (!profile?.id) return;
     setGroupsLoading(true);
+    setGroupsError('');
     fetch(`/api/student/chat-groups?studentId=${encodeURIComponent(profile.id)}`)
       .then(r => r.json())
       .then(data => {
+        if (data.error) { setGroupsError(data.error); setGroups([]); return; }
         const gs = data.groups || [];
         setGroups(gs);
         if (gs.length && !activeGroupId) setActiveGroupId(gs[0].groupId);
       })
-      .catch(() => setGroups([]))
+      .catch(() => setGroupsError('Could not load your chats — try refreshing'))
       .finally(() => setGroupsLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.id]);
@@ -150,18 +153,24 @@ export default function GroupChat({ profile, t }) {
   };
 
   const openPicker = () => {
-    setShowPicker(true);
+    setShowPicker(prev => !prev);
+    setDmError('');
     if (classmates.length || !profile?.classLevel) return; // already loaded, or nothing to look up
     setClassmatesLoading(true);
+    setClassmatesError('');
     fetch(`/api/student/chat-dm?classLevel=${encodeURIComponent(profile.classLevel)}&excludeStudentId=${encodeURIComponent(profile.id)}`)
       .then(r => r.json())
-      .then(data => setClassmates(data.classmates || []))
-      .catch(() => setClassmates([]))
+      .then(data => {
+        if (data.error) { setClassmatesError(data.error); return; }
+        setClassmates(data.classmates || []);
+      })
+      .catch(() => setClassmatesError('Could not load classmates — try again'))
       .finally(() => setClassmatesLoading(false));
   };
 
   const startDm = (classmate) => {
     setStartingDmFor(classmate.studentId);
+    setDmError('');
     fetch('/api/student/chat-dm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -175,13 +184,17 @@ export default function GroupChat({ profile, t }) {
     })
       .then(r => r.json())
       .then(data => {
-        if (data.error || !data.groupId) return;
+        if (data.error || !data.groupId) {
+          setDmError(data.error || 'Could not start that chat — try again');
+          return;
+        }
         setGroups(prev => prev.some(g => g.groupId === data.groupId)
           ? prev
           : [...prev, { groupId: data.groupId, groupName: data.groupName || classmate.studentName, type: 'DM' }]);
         setActiveGroupId(data.groupId);
         setShowPicker(false);
       })
+      .catch(() => setDmError('Could not start that chat — try again'))
       .finally(() => setStartingDmFor(null));
   };
 
@@ -199,57 +212,50 @@ export default function GroupChat({ profile, t }) {
     catch { return ''; }
   };
 
+  const hasGroups = groups.length > 0;
+  const canStartDm = !!profile?.classLevel;
+
+  // ── The "start a chat" picker — shared markup used in both the empty
+  // state (no groups yet) and the normal header, so it's always styled
+  // consistently by the single <style jsx> block below. ──────────────────
+  const picker = showPicker && (
+    <div className="gc-picker">
+      <div className="gc-picker-head">
+        <span>Start a chat with a classmate</span>
+        <button className="gc-picker-close" onClick={() => setShowPicker(false)} aria-label="Close">
+          <i className="fa-solid fa-xmark" />
+        </button>
+      </div>
+      {classmatesError ? (
+        <div className="gc-empty-inner">{classmatesError}</div>
+      ) : classmatesLoading ? (
+        <div className="gc-empty-inner">Loading classmates…</div>
+      ) : !classmates.length ? (
+        <div className="gc-empty-inner">No classmates found to chat with yet.</div>
+      ) : (
+        <div className="gc-picker-list">
+          {classmates.map(c => (
+            <button
+              key={c.studentId}
+              className="gc-picker-item"
+              onClick={() => startDm(c)}
+              disabled={startingDmFor === c.studentId}
+            >
+              <span className="gc-picker-avatar"><i className="fa-solid fa-user" /></span>
+              <span className="gc-picker-name">{c.studentName}</span>
+              {startingDmFor === c.studentId
+                ? <i className="fa-solid fa-spinner fa-spin gc-picker-chevron" />
+                : <i className="fa-solid fa-chevron-right gc-picker-chevron" />}
+            </button>
+          ))}
+        </div>
+      )}
+      {dmError && <div className="gc-error" style={{ margin: '0 10px 10px' }}><i className="fa-solid fa-circle-exclamation" /> {dmError}</div>}
+    </div>
+  );
+
   if (groupsLoading) {
     return <div className="gc-card gc-empty">Loading your groups…</div>;
-  }
-
-  if (!groups.length) {
-    return (
-      <div className="gc-card gc-empty">
-        <i className="fa-solid fa-people-group" style={{ fontSize: '22px', marginBottom: '8px', display: 'block' }} />
-        You're not in a chat group yet — ask your teacher to add you to one!
-        {profile?.classLevel && (
-          <div style={{ marginTop: '14px' }}>
-            <button className="gc-start-dm-btn" onClick={openPicker}>
-              <i className="fa-solid fa-user-plus" /> Chat with a classmate instead
-            </button>
-          </div>
-        )}
-        {showPicker && (
-          <div className="gc-picker" style={{ marginTop: '12px', borderRadius: '12px', border: '1px solid var(--border, #E7E2D9)', textAlign: 'left' }}>
-            <div className="gc-picker-head">
-              <span>Start a chat with a classmate</span>
-              <button className="gc-picker-close" onClick={() => setShowPicker(false)} aria-label="Close">
-                <i className="fa-solid fa-xmark" />
-              </button>
-            </div>
-            {classmatesLoading ? (
-              <div className="gc-empty-inner">Loading classmates…</div>
-            ) : !classmates.length ? (
-              <div className="gc-empty-inner">No classmates found to chat with yet.</div>
-            ) : (
-              <div className="gc-picker-list">
-                {classmates.map(c => (
-                  <button key={c.studentId} className="gc-picker-item" onClick={() => startDm(c)} disabled={startingDmFor === c.studentId}>
-                    <i className="fa-solid fa-user" />
-                    <span>{c.studentName}</span>
-                    {startingDmFor === c.studentId && <i className="fa-solid fa-spinner fa-spin" style={{ marginLeft: 'auto' }} />}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-        <style jsx>{`
-          .gc-card{max-width:640px}
-          .gc-start-dm-btn{
-            border:none;border-radius:999px;padding:9px 16px;font-size:13px;font-weight:700;
-            background:#E8FBF6;color:#1B2130;cursor:pointer;display:inline-flex;align-items:center;gap:6px;
-          }
-          .gc-start-dm-btn:hover{background:#D7F5EC}
-        `}</style>
-      </div>
-    );
   }
 
   return (
@@ -257,15 +263,19 @@ export default function GroupChat({ profile, t }) {
       <div className="gc-header">
         <div className="gc-title">
           <i className={activeGroup?.type === 'DM' ? 'fa-solid fa-user' : 'fa-solid fa-comments'} />
-          {groups.length > 1 ? (
-            <select value={activeGroupId || ''} onChange={e => setActiveGroupId(e.target.value)} className="gc-group-select">
-              {groups.map(g => <option key={g.groupId} value={g.groupId}>{g.type === 'DM' ? '👤 ' : ''}{g.groupName}</option>)}
-            </select>
+          {hasGroups ? (
+            groups.length > 1 ? (
+              <select value={activeGroupId || ''} onChange={e => setActiveGroupId(e.target.value)} className="gc-group-select">
+                {groups.map(g => <option key={g.groupId} value={g.groupId}>{g.type === 'DM' ? '👤 ' : ''}{g.groupName}</option>)}
+              </select>
+            ) : (
+              <span>{activeGroup?.groupName}</span>
+            )
           ) : (
-            <span>{activeGroup?.groupName}</span>
+            <span>Chat</span>
           )}
-          {profile?.classLevel && (
-            <button className="gc-newchat-btn" onClick={openPicker} aria-label="Start a new 1:1 chat" title="Start a new chat">
+          {canStartDm && (
+            <button className={`gc-newchat-btn${showPicker ? ' active' : ''}`} onClick={openPicker} aria-label="Start a new 1:1 chat" title="Start a new chat">
               <i className="fa-solid fa-user-plus" />
             </button>
           )}
@@ -273,83 +283,66 @@ export default function GroupChat({ profile, t }) {
         <div className="gc-subtitle">Cheer each other on — your teacher can see this chat too 🎉</div>
       </div>
 
-      {showPicker && (
-        <div className="gc-picker">
-          <div className="gc-picker-head">
-            <span>Start a chat with a classmate</span>
-            <button className="gc-picker-close" onClick={() => setShowPicker(false)} aria-label="Close">
-              <i className="fa-solid fa-xmark" />
+      {picker}
+
+      {!hasGroups ? (
+        <div className="gc-empty-inner" style={{ padding: '28px 20px' }}>
+          <i className="fa-solid fa-people-group" style={{ fontSize: '22px', marginBottom: '8px', display: 'block' }} />
+          {groupsError
+            ? <>Couldn't load your chats: {groupsError}</>
+            : <>You're not in a chat group yet — ask your teacher to add you to one{canStartDm ? ', or start a 1:1 chat above.' : '.'}</>
+          }
+        </div>
+      ) : (
+        <>
+          <div className="gc-messages" ref={scrollRef}>
+            {messagesLoading ? (
+              <div className="gc-empty-inner">Loading messages…</div>
+            ) : messages.length === 0 ? (
+              <div className="gc-empty-inner">No messages yet — say hi and get the chat started!</div>
+            ) : (
+              messages.map(m => {
+                const isMine = m.studentId === profile.id;
+                return (
+                  <div key={m.messageId} className={`gc-msg ${isMine ? 'mine' : ''}`}>
+                    {!isMine && <div className="gc-msg-author">{m.studentName}</div>}
+                    <div className="gc-msg-bubble">
+                      {renderMessageText(m.message)}
+                      <span className="gc-msg-time">{fmtTime(m.timestamp)}</span>
+                    </div>
+                    {!isMine && (
+                      <button
+                        className="gc-report-btn"
+                        onClick={() => report(m.messageId)}
+                        disabled={reportedIds.has(m.messageId)}
+                        aria-label="Report this message"
+                      >
+                        {reportedIds.has(m.messageId) ? 'Reported' : 'Report'}
+                      </button>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {sendError && <div className="gc-error"><i className="fa-solid fa-circle-exclamation" /> {sendError}</div>}
+
+          <div className="gc-input-row">
+            <input
+              className="gc-input"
+              value={input}
+              maxLength={MAX_LEN}
+              placeholder="Write something encouraging, or share a link…"
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !sending) send(); }}
+            />
+            <button className="gc-send-btn" onClick={send} disabled={sending || !input.trim()}>
+              <i className="fa-solid fa-paper-plane" />
             </button>
           </div>
-          {classmatesLoading ? (
-            <div className="gc-empty-inner">Loading classmates…</div>
-          ) : !classmates.length ? (
-            <div className="gc-empty-inner">No classmates found to chat with yet.</div>
-          ) : (
-            <div className="gc-picker-list">
-              {classmates.map(c => (
-                <button
-                  key={c.studentId}
-                  className="gc-picker-item"
-                  onClick={() => startDm(c)}
-                  disabled={startingDmFor === c.studentId}
-                >
-                  <i className="fa-solid fa-user" />
-                  <span>{c.studentName}</span>
-                  {startingDmFor === c.studentId && <i className="fa-solid fa-spinner fa-spin" style={{ marginLeft: 'auto' }} />}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        </>
       )}
-
-      <div className="gc-messages" ref={scrollRef}>
-        {messagesLoading ? (
-          <div className="gc-empty-inner">Loading messages…</div>
-        ) : messages.length === 0 ? (
-          <div className="gc-empty-inner">No messages yet — say hi and get the group started!</div>
-        ) : (
-          messages.map(m => {
-            const isMine = m.studentId === profile.id;
-            return (
-              <div key={m.messageId} className={`gc-msg ${isMine ? 'mine' : ''}`}>
-                {!isMine && <div className="gc-msg-author">{m.studentName}</div>}
-                <div className="gc-msg-bubble">
-                  {renderMessageText(m.message)}
-                  <span className="gc-msg-time">{fmtTime(m.timestamp)}</span>
-                </div>
-                {!isMine && (
-                  <button
-                    className="gc-report-btn"
-                    onClick={() => report(m.messageId)}
-                    disabled={reportedIds.has(m.messageId)}
-                    aria-label="Report this message"
-                  >
-                    {reportedIds.has(m.messageId) ? 'Reported' : 'Report'}
-                  </button>
-                )}
-              </div>
-            );
-          })
-        )}
-      </div>
-
-      {sendError && <div className="gc-error"><i className="fa-solid fa-circle-exclamation" /> {sendError}</div>}
-
-      <div className="gc-input-row">
-        <input
-          className="gc-input"
-          value={input}
-          maxLength={MAX_LEN}
-          placeholder="Write something encouraging, or share a link…"
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && !sending) send(); }}
-        />
-        <button className="gc-send-btn" onClick={send} disabled={sending || !input.trim()}>
-          <i className="fa-solid fa-paper-plane" />
-        </button>
-      </div>
 
       <style jsx>{`
         .gc-card {
@@ -443,12 +436,12 @@ export default function GroupChat({ profile, t }) {
         .gc-report-btn:disabled { cursor: default; color: #B91C1C; text-decoration: none; }
 
         .gc-newchat-btn {
-          margin-left: auto; width: 26px; height: 26px; border-radius: 50%;
+          margin-left: auto; width: 28px; height: 28px; border-radius: 50%;
           border: none; background: var(--bubble-other); color: var(--ink);
           cursor: pointer; display: flex; align-items: center; justify-content: center;
-          font-size: 12px; flex-shrink: 0;
+          font-size: 12px; flex-shrink: 0; transition: background .15s;
         }
-        .gc-newchat-btn:hover { background: var(--border); }
+        .gc-newchat-btn:hover, .gc-newchat-btn.active { background: var(--brand); color: #fff; }
 
         .gc-picker {
           border-bottom: 1px solid var(--border);
@@ -456,19 +449,34 @@ export default function GroupChat({ profile, t }) {
         }
         .gc-picker-head {
           display: flex; align-items: center; justify-content: space-between;
-          padding: 10px 16px; font-size: 12.5px; font-weight: 700; color: var(--ink-muted);
+          padding: 10px 16px; font-size: 12px; font-weight: 700; text-transform: uppercase;
+          letter-spacing: .04em; color: var(--ink-muted);
         }
-        .gc-picker-close { border: none; background: none; cursor: pointer; color: var(--ink-muted); font-size: 13px; }
-        .gc-picker-list { max-height: 220px; overflow-y: auto; padding: 0 10px 10px; display: flex; flex-direction: column; gap: 4px; }
+        .gc-picker-close {
+          border: none; background: none; cursor: pointer; color: var(--ink-muted);
+          font-size: 13px; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
+        }
+        .gc-picker-close:hover { color: var(--ink); }
+        .gc-picker-list {
+          max-height: 240px; overflow-y: auto; padding: 4px 10px 10px;
+          display: flex; flex-direction: column; gap: 3px;
+        }
         .gc-picker-item {
-          display: flex; align-items: center; gap: 10px;
-          padding: 8px 10px; border-radius: 10px; border: none;
+          display: flex; align-items: center; gap: 10px; width: 100%;
+          padding: 9px 10px; border-radius: 10px; border: 1px solid transparent;
           background: var(--paper); cursor: pointer; text-align: left;
           font-size: 13.5px; font-family: inherit; color: var(--ink);
+          transition: background .12s, border-color .12s;
         }
-        .gc-picker-item:hover { background: var(--bubble-mine); }
+        .gc-picker-item:hover { background: var(--bubble-mine); border-color: var(--brand); }
         .gc-picker-item:disabled { opacity: 0.6; cursor: default; }
-        .gc-picker-item i.fa-user { color: var(--ink-muted); font-size: 12px; }
+        .gc-picker-avatar {
+          width: 26px; height: 26px; border-radius: 50%; background: var(--bubble-mine);
+          color: var(--brand); display: flex; align-items: center; justify-content: center;
+          font-size: 11px; flex-shrink: 0;
+        }
+        .gc-picker-name { flex: 1; font-weight: 600; }
+        .gc-picker-chevron { color: var(--ink-muted); font-size: 11px; flex-shrink: 0; }
 
         .gc-error {
           margin: 0 18px; padding: 8px 12px; border-radius: 8px;
