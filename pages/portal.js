@@ -1,8 +1,11 @@
 import Head from 'next/head';
 import Script from 'next/script';
 import Link from 'next/link';
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { LanguageProvider, useLanguage, LanguageToggle } from '../lib/i18n';
+import MatchTheFollowing from '../components/MatchTheFollowing';
+import GroupChat from '../components/GroupChat';
+import ChatNotifications from '../components/ChatNotifications';
 import { QUIZ_LEARNING_MODULES_DA, QUIZ_LEARNING_STEPS_DA, QUIZ_ASSIGNMENT_SUBJECTS_DA } from '../lib/quizContentDA';
 import {
   PORTAL_SETTINGS_DA, PORTAL_NAVIGATION_DA, PORTAL_DASH_STATS_DA, PORTAL_SUBJECTS_DEMO_DA,
@@ -15,8 +18,12 @@ import {
 // GOOGLE SHEETS LIVE FETCH (via server-side API route — no CORS issues)
 // Edit the sheet → refresh the page → changes appear instantly.
 // ─────────────────────────────────────────────────────────────────────────────
-async function fetchAllSheetData() {
-  const res = await fetch('/api/portal-config', { cache: 'no-store' });
+// Pass the student's classLevel so the server can pre-filter modules/subjects.
+// Omit classLevel (or pass '') to receive the full unfiltered dataset — used
+// during the "set your class" onboarding flow, before a class is known.
+async function fetchAllSheetData(classLevel) {
+  const params = classLevel ? `?classLevel=${encodeURIComponent(classLevel)}` : '';
+  const res = await fetch(`/api/portal-config${params}`, { cache: 'no-store' });
   if (!res.ok) throw new Error(`portal-config API returned ${res.status}`);
   return res.json();
 }
@@ -42,15 +49,26 @@ const FALLBACK = {
     DefaultClassLevel:'Class 3', AuthAPIEndpoint:'/api/student/auth',
     ConnectionErrorMsg:'Connection failed. Is the server running?',
   },
+  // ── NAV REWORK (per academy request) ────────────────────────────────────
+  // 'progress' (Academic Progress), 'attendance', and 'schedule' (Upcoming
+  // Classes) are retired — removed from the menu entirely. Their render
+  // blocks further down are now unreachable dead code (tab can never equal
+  // those IDs again) and safe to delete in a future cleanup pass; left in
+  // place here only to avoid touching unrelated code in this change.
+  // 'assignments' keeps its original ID (so none of the existing quiz-bank
+  // logic below has to change) but is now labelled "Question Bank" in the
+  // sidebar. The new 'myassignments' tab ("Assignments for you") is the
+  // chapter-specific homework a parent/teacher assigns from the Parent
+  // Portal — see the ASSIGNMENTS-FOR-YOU section further down.
   navigation:[
-    {ID:'dashboard',     Label:'Dashboard',        'Icon (FontAwesome solid)':'fa-chart-pie',      Active:true,Order:1},
-    {ID:'progress',      Label:'Academic Progress', 'Icon (FontAwesome solid)':'fa-chart-line',     Active:true,Order:2},
-    {ID:'leaderboard',   Label:'Leaderboard',       'Icon (FontAwesome solid)':'fa-trophy',         Active:true,Order:3},
-    {ID:'attendance',    Label:'Attendance',        'Icon (FontAwesome solid)':'fa-calendar-check', Active:true,Order:4},
-    {ID:'assignments',   Label:'Assignments',       'Icon (FontAwesome solid)':'fa-book-open',      Active:true,Order:5},
-    {ID:'schedule',      Label:'Upcoming Classes',  'Icon (FontAwesome solid)':'fa-clock',          Active:true,Order:6},
-    {ID:'notifications', Label:'Notifications',     'Icon (FontAwesome solid)':'fa-bell',           Active:true,Order:7},
-    {ID:'profile',       Label:'My Profile',        'Icon (FontAwesome solid)':'fa-user-circle',    Active:true,Order:8},
+    {ID:'dashboard',     Label:'Dashboard',          'Icon (FontAwesome solid)':'fa-chart-pie',      Active:true,Order:1},
+    {ID:'leaderboard',   Label:'Leaderboard',        'Icon (FontAwesome solid)':'fa-trophy',         Active:true,Order:2},
+    {ID:'assignments',   Label:'Question Bank',      'Icon (FontAwesome solid)':'fa-book-open',      Active:true,Order:3},
+    {ID:'myassignments', Label:'Assignments for you','Icon (FontAwesome solid)':'fa-clipboard-list',Active:true,Order:4},
+{ID:'chat', Label:'Group Chat', 'Icon (FontAwesome solid)':'fa-comments', Active:true, Order:4.5},
+    {ID:'completedtopics',Label:'Completed Topics',  'Icon (FontAwesome solid)':'fa-circle-check',  Active:true,Order:5},
+    {ID:'notifications', Label:'Notifications',      'Icon (FontAwesome solid)':'fa-bell',           Active:true,Order:5},
+    {ID:'profile',       Label:'My Profile',         'Icon (FontAwesome solid)':'fa-user-circle',    Active:true,Order:6},
   ],
   dashStats:[
     {'Metric Key':'attendance_pct',   Label:'Attendance',               Value:'85%','Sub-label':'This term',      'Display Order':1,Active:true},
@@ -107,6 +125,26 @@ const FALLBACK = {
     {'Field Key':'enrolled_date',Label:'Enrolled',Value:'January 2026',    'Read-Only':'Yes',Visible:true},
     {'Field Key':'email',        Label:'Email',   Value:'parent@email.com','Read-Only':'No', Visible:true},
     {'Field Key':'phone',        Label:'Phone',   Value:'+91 98765 43210', 'Read-Only':'No', Visible:true},
+  ],
+  // ── CLASS LEVELS ──────────────────────────────────────────────────────────
+  // Sheet-driven (see "Class Levels" tab in pages/api/portal-config.js docs).
+  // This array is ONLY the offline/unreachable-API fallback — kept in sync
+  // with DEFAULT_CLASS_LEVELS in portal-config.js. The live Sheet always
+  // wins once it's reachable; edit the Sheet, not this array, to manage
+  // classes day-to-day.
+  classLevels:[
+    {Class:'Class 0', Label:'Class 0 (Nursery/KG)', Age:'4-5 yrs',   'Display Order':1,  Active:true},
+    {Class:'Class 1', Label:'Class 1', Age:'5-6 yrs',   'Display Order':2,  Active:true},
+    {Class:'Class 2', Label:'Class 2', Age:'6-7 yrs',   'Display Order':3,  Active:true},
+    {Class:'Class 3', Label:'Class 3', Age:'7-8 yrs',   'Display Order':4,  Active:true},
+    {Class:'Class 4', Label:'Class 4', Age:'8-9 yrs',   'Display Order':5,  Active:true},
+    {Class:'Class 5', Label:'Class 5', Age:'9-10 yrs',  'Display Order':6,  Active:true},
+    {Class:'Class 6', Label:'Class 6', Age:'10-11 yrs', 'Display Order':7,  Active:true},
+    {Class:'Class 7', Label:'Class 7', Age:'11-12 yrs', 'Display Order':8,  Active:true},
+    {Class:'Class 8', Label:'Class 8', Age:'12-13 yrs', 'Display Order':9,  Active:true},
+    {Class:'Class 9', Label:'Class 9', Age:'13-14 yrs', 'Display Order':10, Active:true},
+    {Class:'Class 10',Label:'Class 10',Age:'14-15 yrs', 'Display Order':11, Active:true},
+    {Class:'Adult',   Label:'Adult',   Age:'18+ yrs',   'Display Order':12, Active:true},
   ],
   // ── ASSIGNMENT SUBJECTS (Step 1 of the drill-down) ───────────────────────────
   // One row per subject shown on the Assignment section's subject-picker screen.
@@ -356,9 +394,20 @@ function isRowActive(v) {
 // that doesn't have it cached locally. Keeps only the latest row per
 // (module, question) in case a question was somehow synced more than once.
 //
-// `totalStepsFor(moduleId)` lets us compute completionPct/completedAt
-// correctly (raw rows alone don't carry the module's total question count).
-function rebuildLearnProgressFromRows(rows, totalStepsFor) {
+// `stepsFor(moduleId)` returns that module's actual steps array (not just a
+// count) — needed for two things:
+//   1. completionPct/completedAt, same as before.
+//   2. Translating each row's QuestionNumber (the sheet's 'Step Number') into
+//      that question's array index. LearningModulePlayer keys its live
+//      `answers` object by array index rather than Step Number (Step Number
+//      is content-managed data and isn't guaranteed unique — see the
+//      `currentAnswer` comment in LearningModulePlayer), so a rebuild that
+//      kept using Step Number as the key would silently stop lining up with
+//      live answers, making resumed/reviewed questions look wrong or
+//      unanswered even though the sheet has the record. A row whose
+//      QuestionNumber no longer matches any current step (chapter content
+//      changed since it was answered) is skipped rather than guessed at.
+function rebuildLearnProgressFromRows(rows, stepsFor) {
   const latestByModuleQuestion = {}; // "moduleId|questionNumber" -> row
   rows.forEach(r => {
     const key = `${r.ModuleID}|${r.QuestionNumber}`;
@@ -368,29 +417,80 @@ function rebuildLearnProgressFromRows(rows, totalStepsFor) {
     }
   });
 
+  // Matches the "X/Y matched" summary recordAnswer() writes for
+  // matchTheFollowing questions (see submitMatchTheFollowing) — that's ALL
+  // the sheet ever stores for this question type; the actual word→meaning
+  // placements a student chose are never sent. So a rebuilt matchTheFollowing
+  // answer can carry the score honestly, but must never claim to know full
+  // placements — see the `rebuiltFromHistory` flag below.
+  const MATCH_SUMMARY_RE = /^(\d+)\/(\d+)\s+matched$/i;
+
   const byModule = {};
   Object.values(latestByModuleQuestion).forEach(r => {
     const moduleId = r.ModuleID;
     if (!moduleId) return;
-    if (!byModule[moduleId]) byModule[moduleId] = { answers:{}, timestamps:[] };
+    const moduleSteps = (stepsFor ? stepsFor(moduleId) : []) || [];
+    const idx = moduleSteps.findIndex(s => String(s['Step Number']) === String(r.QuestionNumber));
+    if (idx === -1) return; // question no longer exists in this module — skip rather than mis-key it
+
+    if (!byModule[moduleId]) byModule[moduleId] = { answers:{}, timestamps:[], stepCount: moduleSteps.length };
     const isCorrect = String(r.Status||'').trim().toLowerCase() === 'correct';
-    byModule[moduleId].answers[r.QuestionNumber] = { isCorrect, selected: r.AnswerGiven };
+    // Issue 1: carry the per-question time (if the sheet has it) back into
+    // the rebuilt answer record, so a fresh device's review screen and the
+    // total-time rollup below both have it, not just the device that
+    // originally answered the question.
+    const qSecs = Number(r.TimeTakenSeconds) || 0;
+
+    const matchSummary = MATCH_SUMMARY_RE.exec(String(r.AnswerGiven||''));
+    byModule[moduleId].answers[idx] = matchSummary
+      ? {
+          type: 'matchTheFollowing',
+          isCorrect,
+          score: Number(matchSummary[1]),
+          total: Number(matchSummary[2]),
+          stepNumber: r.QuestionNumber,
+          timeTakenSeconds: qSecs,
+          // No placements available from the sheet — rebuiltFromHistory
+          // tells LearningModulePlayer to show a lightweight "already
+          // completed" summary instead of feeding an empty placements
+          // object into MatchTheFollowing, which would otherwise grade
+          // every pair as wrong.
+          rebuiltFromHistory: true,
+        }
+      : {
+          isCorrect,
+          selected: r.AnswerGiven,
+          correctText: r.CorrectAnswer,
+          stepNumber: r.QuestionNumber,
+          timeTakenSeconds: qSecs,
+          // `selected` here is the option's display text (that's what the
+          // sheet stores), not the A/B/C/D letter the live UI uses — so the
+          // review screen can't reliably re-highlight the exact button.
+          // This flag lets it fall back to showing the text plainly instead
+          // of guessing a letter.
+          rebuiltFromHistory: true,
+        };
     if (r.Timestamp) byModule[moduleId].timestamps.push(r.Timestamp);
   });
 
   const result = {};
   Object.keys(byModule).forEach(moduleId => {
-    const { answers, timestamps } = byModule[moduleId];
+    const { answers, timestamps, stepCount } = byModule[moduleId];
     const attempted = Object.keys(answers).length;
     const correct   = Object.values(answers).filter(a=>a.isCorrect).length;
+    // Issue 2: total time taken to finish the topic — summed from each
+    // question's individual time, so it's accurate even when rebuilt from
+    // sheet history on a brand-new device that never ran the live timer.
+    const summedSeconds = Object.values(answers).reduce((sum, a) => sum + (a.timeTakenSeconds || 0), 0);
     timestamps.sort();
-    const total = totalStepsFor ? totalStepsFor(moduleId) : 0;
+    const total = stepCount || 0;
     const isComplete = total > 0 && attempted >= total;
     result[moduleId] = {
       startedAt: timestamps[0] || null,
       completedAt: isComplete ? (timestamps[timestamps.length-1] || null) : null,
       attempted, correct, incorrect: attempted - correct,
       completionPct: total > 0 ? Math.round((attempted/total)*100) : 0,
+      timeTakenSeconds: summedSeconds,
       answers,
     };
   });
@@ -550,25 +650,461 @@ function LearningModulesGrid({ modules, stepsFor, progressMap, onOpen, t }) {
   );
 }
 
-function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExit, backLabel, t }) {
+// ─────────────────────────────────────────────────────────────────────────────
+// SOUND ENGINE — Web Audio API, zero external deps.
+// All sounds are synthesised in-browser so they work offline and load instantly.
+// useSoundEngine() returns { playCorrect, playWrong, playStreak } which the
+// lesson view calls on every answer. Sounds are opt-in: the first user gesture
+// (answering a question) creates the AudioContext, so there are no autoplay
+// policy violations. If the browser has no Web Audio support the functions
+// are no-ops — nothing breaks.
+// ─────────────────────────────────────────────────────────────────────────────
+function useSoundEngine() {
+  const acRef = useRef(null);
+  const getAC = () => {
+    if (typeof window === 'undefined') return null;
+    if (!acRef.current) {
+      try { acRef.current = new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; }
+    }
+    // Chrome suspends AudioContext until a user gesture — resume silently.
+    if (acRef.current.state === 'suspended') acRef.current.resume().catch(() => {});
+    return acRef.current;
+  };
+
+  // Tiny tone helper: freq(Hz), duration(s), type, gainPeak
+  const tone = (ac, freq, start, dur, type='sine', peak=0.35) => {
+    const osc  = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.connect(gain); gain.connect(ac.destination);
+    osc.type = type; osc.frequency.setValueAtTime(freq, start);
+    gain.gain.setValueAtTime(0, start);
+    gain.gain.linearRampToValueAtTime(peak, start + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
+    osc.start(start); osc.stop(start + dur + 0.01);
+  };
+
+  const playCorrect = useCallback(() => {
+    const ac = getAC(); if (!ac) return;
+    const t0 = ac.currentTime;
+    // Rising two-note chime: C5 → E5
+    tone(ac, 523, t0,       0.18, 'sine', 0.30);
+    tone(ac, 659, t0 + 0.14, 0.22, 'sine', 0.28);
+  }, []);
+
+  const playWrong = useCallback(() => {
+    const ac = getAC(); if (!ac) return;
+    const t0 = ac.currentTime;
+    // Descending buzz: A3 → F3, sawtooth for a "bzzzt" texture
+    tone(ac, 220, t0,       0.14, 'sawtooth', 0.20);
+    tone(ac, 175, t0 + 0.12, 0.18, 'sawtooth', 0.15);
+  }, []);
+
+  // streak: 5 | 8 | 12 | 10(fireworks) — 10 uses a fanfare
+  const playStreak = useCallback((streak) => {
+    const ac = getAC(); if (!ac) return;
+    const t0 = ac.currentTime;
+    if (streak >= 10) {
+      // 10-in-a-row fanfare: C5 E5 G5 C6 ascending triplet
+      [[523,0],[659,.12],[784,.24],[1047,.38]].forEach(([f,dt]) => tone(ac, f, t0+dt, 0.22, 'sine', 0.32));
+    } else if (streak >= 8) {
+      // 3-note rising arpeggio
+      [[523,0],[659,.12],[784,.24]].forEach(([f,dt]) => tone(ac, f, t0+dt, 0.20, 'sine', 0.30));
+    } else {
+      // 5-in-a-row: two-tone chime, slightly brighter than a normal correct
+      tone(ac, 659, t0,       0.18, 'sine', 0.32);
+      tone(ac, 880, t0 + 0.14, 0.20, 'sine', 0.28);
+    }
+  }, []);
+
+  return { playCorrect, playWrong, playStreak };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIREWORKS CANVAS — rendered as a fixed overlay, auto-dismisses after 2.6 s.
+// Triggered when streak hits 10 (and multiples thereof).
+// Pure canvas, no libs. Particle physics: initial velocity + gravity + fade.
+// ─────────────────────────────────────────────────────────────────────────────
+function FireworksOverlay({ active, onDone }) {
+  const canvasRef = useRef(null);
+  const rafRef    = useRef(null);
+
+  useEffect(() => {
+    if (!active) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    canvas.width  = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    // 6 burst origins spread across top-third of the screen
+    const COLORS = ['#f5a623','#00c6a7','#f87171','#c084fc','#60a5fa','#4ade80','#fbbf24','#e879f9'];
+    const particles = [];
+    const makeBurst = (x, y) => {
+      for (let i = 0; i < 55; i++) {
+        const angle = (Math.PI * 2 * i) / 55;
+        const speed = 3 + Math.random() * 5;
+        particles.push({
+          x, y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          alpha: 1,
+          radius: 3 + Math.random() * 3,
+          color: COLORS[Math.floor(Math.random() * COLORS.length)],
+          decay: 0.012 + Math.random() * 0.01,
+          gravity: 0.12,
+        });
+      }
+    };
+
+    // Stagger 6 bursts over 600 ms for a multi-burst feel
+    const burstPositions = [
+      [canvas.width*0.2, canvas.height*0.3],
+      [canvas.width*0.5, canvas.height*0.15],
+      [canvas.width*0.8, canvas.height*0.28],
+      [canvas.width*0.35,canvas.height*0.22],
+      [canvas.width*0.65,canvas.height*0.35],
+      [canvas.width*0.5, canvas.height*0.42],
+    ];
+    burstPositions.forEach(([x,y],i) => setTimeout(() => makeBurst(x,y), i*110));
+
+    let start = null;
+    const DURATION = 2600;
+    const loop = (ts) => {
+      if (!start) start = ts;
+      const elapsed = ts - start;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      particles.forEach(p => {
+        p.vy += p.gravity;
+        p.x  += p.vx;
+        p.y  += p.vy;
+        p.alpha -= p.decay;
+        if (p.alpha <= 0) return;
+        ctx.save();
+        ctx.globalAlpha = p.alpha;
+        ctx.fillStyle   = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      });
+      if (elapsed < DURATION) {
+        rafRef.current = requestAnimationFrame(loop);
+      } else {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        onDone?.();
+      }
+    };
+    rafRef.current = requestAnimationFrame(loop);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [active]);
+
+  if (!active) return null;
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{
+        position:'fixed', inset:0, zIndex:9999,
+        pointerEvents:'none', // clicks pass through
+      }}
+    />
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STREAK TOAST — shown as a non-blocking banner when streak milestones are hit.
+// ─────────────────────────────────────────────────────────────────────────────
+const STREAK_MILESTONES = [
+  { at:5,  emoji:'🔥',  label:'5 in a Row!',   sub:'You\'re on fire! Keep it up!',        color:'#f97316' },
+  { at:8,  emoji:'⚡',  label:'8 Correct!',    sub:'Incredible focus — amazing streak!',   color:'#a855f7' },
+  { at:10, emoji:'🎆',  label:'10 in a Row!',  sub:'FIREWORKS! You\'re unstoppable!',      color:'#f5a623' },
+  { at:12, emoji:'👑',  label:'12 Correct!',   sub:'CROWN LEVEL! You\'re a genius!',       color:'#00c6a7' },
+];
+
+function StreakToast({ streak, onDone }) {
+  const ms = STREAK_MILESTONES.slice().reverse().find(m => streak >= m.at && streak % m.at === 0 ) ||
+             STREAK_MILESTONES.slice().reverse().find(m => streak === m.at);
+  const [visible, setVisible] = useState(true);
+  useEffect(() => { const t = setTimeout(() => { setVisible(false); onDone?.(); }, 2400); return () => clearTimeout(t); }, [streak]);
+  if (!ms || !visible) return null;
+  return (
+    <div style={{
+      position:'fixed', top:'18px', left:'50%', transform:'translateX(-50%)',
+      zIndex:10000, pointerEvents:'none',
+      background:`linear-gradient(135deg,${ms.color}22,${ms.color}44)`,
+      border:`1.5px solid ${ms.color}66`,
+      borderRadius:'18px', padding:'14px 28px', textAlign:'center',
+      backdropFilter:'blur(12px)',
+      animation:'streakPop .35s cubic-bezier(.34,1.56,.64,1) both',
+      boxShadow:`0 8px 32px ${ms.color}44`,
+    }}>
+      <div style={{fontSize:'36px',lineHeight:1,marginBottom:'4px'}}>{ms.emoji}</div>
+      <div style={{fontFamily:'var(--fd)',fontSize:'20px',fontWeight:900,color:'#fff'}}>{ms.label}</div>
+      <div style={{fontSize:'12px',color:'rgba(255,255,255,.7)',marginTop:'3px'}}>{ms.sub}</div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// useTestTimer — high-precision count-up timer for the quiz player.
+//
+// • Uses performance.now() so accuracy is maintained even if the tab is hidden.
+// • Pauses automatically after INACTIVITY_PAUSE_MS (5 min) of no mouse/touch/
+//   keyboard activity, and resumes the instant the student interacts again.
+// • On finish() it stops, calculates total elapsed seconds, and POSTs to
+//   /api/student/test-time (best-effort — localStorage is the primary store).
+// • Persists startTime + elapsed seconds in localStorage so a page refresh
+//   mid-test does not zero the clock.
+//
+// Config sheet keys (add to the "Config" tab in the Master Sheet):
+//   EnableTestTimer   TRUE / FALSE   — FALSE disables timer entirely (no UI, no log). Default TRUE.
+//   ShowTestTimer     TRUE / FALSE   — FALSE hides the clock but still logs. Default TRUE.
+// ─────────────────────────────────────────────────────────────────────────────
+const INACTIVITY_PAUSE_MS = 5 * 60 * 1000; // 5 minutes
+
+function useTestTimer({ moduleId, profile, subject, topic, enabled = true }) {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [isPaused,       setIsPaused]       = useState(false);
+
+  const baseElapsed  = useRef(0);   // seconds already banked before this browser session
+  const sessionStart = useRef(null);// performance.now() of when this session began
+  const stopped      = useRef(false);
+  const lastActivity = useRef(Date.now());
+  const pausedAt     = useRef(null);// performance.now() when inactivity pause began
+  const pausedMs     = useRef(0);   // total ms paused this session
+  const rafId        = useRef(null);
+  const logged       = useRef(false);
+
+
+  // Restore any previously banked elapsed time (survives page refresh)
+  useEffect(() => {
+    if (!enabled || !moduleId || !profile?.id) return;
+    try {
+      const raw = localStorage.getItem(`testTimer:${profile.id}:${moduleId}`);
+      if (raw) {
+        const saved = JSON.parse(raw);
+        if (saved.elapsed) baseElapsed.current = Number(saved.elapsed) || 0;
+      }
+    } catch {}
+  }, [enabled, moduleId, profile?.id]);
+
+  // Activity listeners — any interaction resets the inactivity clock
+  useEffect(() => {
+    if (!enabled) return;
+    const touch = () => { lastActivity.current = Date.now(); };
+    window.addEventListener('mousemove',  touch, { passive: true });
+    window.addEventListener('mousedown',  touch, { passive: true });
+    window.addEventListener('keydown',    touch, { passive: true });
+    window.addEventListener('touchstart', touch, { passive: true });
+    return () => {
+      window.removeEventListener('mousemove',  touch);
+      window.removeEventListener('mousedown',  touch);
+      window.removeEventListener('keydown',    touch);
+      window.removeEventListener('touchstart', touch);
+    };
+  }, [enabled]);
+
+  // RAF loop — ticks every animation frame, updates UI once per second
+  useEffect(() => {
+    if (!enabled || !moduleId) return;
+    sessionStart.current = performance.now();
+    stopped.current      = false;
+    logged.current       = false;
+    pausedAt.current     = null;
+    pausedMs.current     = 0;
+    let lastTick = -1;
+
+    const tick = () => {
+      if (stopped.current) return;
+      const now            = performance.now();
+      const sinceActivity  = Date.now() - lastActivity.current;
+
+      // Inactivity pause logic
+      if (sinceActivity >= INACTIVITY_PAUSE_MS && !pausedAt.current) {
+        pausedAt.current = now;
+        setIsPaused(true);
+      } else if (sinceActivity < INACTIVITY_PAUSE_MS && pausedAt.current) {
+        pausedMs.current += now - pausedAt.current;
+        pausedAt.current  = null;
+        setIsPaused(false);
+      }
+
+      // Net elapsed: session duration minus all paused ms
+      const activePausedMs = pausedAt.current ? (now - pausedAt.current) : 0;
+      const sessionMs      = now - sessionStart.current - pausedMs.current - activePausedMs;
+      const totalSecs      = Math.floor(baseElapsed.current + sessionMs / 1000);
+
+      if (totalSecs !== lastTick) {
+        lastTick = totalSecs;
+        setElapsedSeconds(totalSecs);
+        // Persist every tick so a refresh resumes from here
+        try {
+          localStorage.setItem(
+            `testTimer:${profile.id}:${moduleId}`,
+            JSON.stringify({ elapsed: totalSecs, ts: Date.now() })
+          );
+        } catch {}
+      }
+
+      rafId.current = requestAnimationFrame(tick);
+    };
+
+    rafId.current = requestAnimationFrame(tick);
+    return () => { if (rafId.current) cancelAnimationFrame(rafId.current); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, moduleId, profile?.id]);
+
+  // stop() — call when the student finishes the last question
+  const stop = useCallback((finalSecs) => {
+    if (!enabled || logged.current) return;
+    logged.current  = true;
+    stopped.current = true;
+    if (rafId.current) cancelAnimationFrame(rafId.current);
+
+    const totalSeconds = typeof finalSecs === 'number' ? finalSecs : elapsedSeconds;
+
+    // Clear the in-progress localStorage key
+    try { localStorage.removeItem(`testTimer:${profile.id}:${moduleId}`); } catch {}
+
+    // Stash timeTakenSeconds into learnProgress so Completed Topics tab can
+    // display it immediately without a sheet round-trip.
+    try {
+      const lpKey = `learnProgress:${profile.id}`;
+      const lp    = JSON.parse(localStorage.getItem(lpKey) || '{}');
+      if (!lp[moduleId]) lp[moduleId] = {};
+      lp[moduleId].timeTakenSeconds = totalSeconds;
+      localStorage.setItem(lpKey, JSON.stringify(lp));
+    } catch {}
+
+    // POST to the logging API — best-effort
+    fetch('/api/student/test-time', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        studentId:   profile.id,
+        studentName: profile.name       || '',
+        classLevel:  profile.classLevel || '',
+        subject:     subject  || '',
+        topic:       topic    || '',
+        moduleId,
+        totalSeconds,
+        completedAt: new Date().toISOString(),
+      }),
+    }).catch(() => {});
+  }, [enabled, elapsedSeconds, moduleId, profile, subject, topic]);
+
+  // Build display string: MM:SS when < 1 hour, HH:MM:SS otherwise
+  const h = Math.floor(elapsedSeconds / 3600);
+  const m = Math.floor((elapsedSeconds % 3600) / 60);
+  const s = elapsedSeconds % 60;
+  const displayStr = h > 0
+    ? `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+    : `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+
+  return { elapsedSeconds, displayStr, isPaused, stop };
+}
+
+function LearningModulePlayer({ module, steps: allSteps, progress, onSave, onAnswer, onExit, backLabel, soundConfig, t, rangeFrom, rangeTo, onRangeComplete, profile, timerConfig }) {
+  // ── Parent/teacher-assigned question range (Assignments for you) ────────
+  // When a student opens a chapter from the "Assignments for you" tab
+  // instead of the open Question Bank, rangeFrom/rangeTo restrict play to
+  // just the assigned question numbers (1-indexed, inclusive — matches the
+  // "From Question" / "To Question" columns the parent set in the Parent
+  // Portal builder table). Original 'Step Number' values are preserved so
+  // explanations/keys/review screens still reference the real chapter
+  // question numbers, not 1..N of the restricted slice.
+  const steps = (rangeFrom && rangeTo) ? allSteps.slice(rangeFrom - 1, rangeTo) : allSteps;
+  // ── Sound control from Config sheet ──────────────────────────────────────
+  // Keys in the Config tab (case-sensitive):
+  //   SoundOnCorrect        TRUE / FALSE   (default: TRUE)
+  //   SoundOnWrong          TRUE / FALSE   (default: TRUE)
+  //   SoundOnStreak         TRUE / FALSE   (default: TRUE)
+  //   StreakThreshold       number         (default: 5 — first milestone)
+  //   ShowQuestionDropdown  TRUE / FALSE   (default: FALSE — dropdown hidden)
+  // An absent key or any value other than the string 'FALSE' keeps sound ON.
+  const sc = soundConfig || {};
+  const soundOnCorrect       = (sc['SoundOnCorrect']       || 'TRUE').toString().toUpperCase() !== 'FALSE';
+  const soundOnWrong         = (sc['SoundOnWrong']         || 'TRUE').toString().toUpperCase() !== 'FALSE';
+  const soundOnStreak        = (sc['SoundOnStreak']        || 'TRUE').toString().toUpperCase() !== 'FALSE';
+  const streakThreshold      = Math.max(2, parseInt(sc['StreakThreshold'] || '5', 10) || 5);
+  const showQuestionDropdown = (sc['ShowQuestionDropdown'] || 'FALSE').toString().toUpperCase() === 'TRUE';
+
+  // ── Timer config (Config sheet keys) ─────────────────────────────────────
+  // EnableTestTimer  TRUE/FALSE  — set FALSE to disable entirely (default TRUE)
+  // ShowTestTimer    TRUE/FALSE  — set FALSE to hide clock but still log (default TRUE)
+  const tc          = timerConfig || {};
+  const enableTimer = (tc['EnableTestTimer'] || 'TRUE').toString().toUpperCase() !== 'FALSE';
+  const showTimerUI = (tc['ShowTestTimer']   || 'TRUE').toString().toUpperCase() !== 'FALSE';
+
+  const timer = useTestTimer({
+    moduleId: module?.['Module ID'],
+    profile:  profile || { id: 'anon', name: '', classLevel: '' },
+    subject:  module?.SubjectEN || module?.Subject || '',
+    topic:    module?.Title || '',
+    enabled:  enableTimer,
+  });
+
   const total = steps.length;
   const attemptedCount = progress?.answers ? Object.keys(progress.answers).length : 0;
   const isComplete = !!progress?.completedAt;
 
-  const [view,     setView]     = useState('intro'); // intro | lesson | complete
-  const [idx,      setIdx]      = useState(0);
-  const [answers,  setAnswers]  = useState(progress?.answers || {});
+  const [view,          setView]          = useState('intro'); // intro | lesson | complete
+  const [idx,           setIdx]           = useState(0);
+  const [answers,       setAnswers]       = useState(progress?.answers || {});
+  // streak: consecutive correct answers in this session (reset on wrong answer or retake)
+  const [streak,        setStreak]        = useState(0);
+  // toastStreak: the streak value that triggered the current toast (so re-renders don't re-show it)
+  const [toastStreak,   setToastStreak]   = useState(0);
+  const [showFireworks, setShowFireworks] = useState(false);
+
+  const { playCorrect, playWrong, playStreak } = useSoundEngine();
 
   // selected/locked are derived from answers+idx rather than tracked as their
   // own state — this is what makes Previous/Next safe: jumping to any step
   // (forward or backward) automatically shows that step's saved answer
   // (locked, colored correct/incorrect) if one exists, or a fresh unanswered
   // question if it doesn't, with no extra bookkeeping to keep in sync.
-  const currentAnswer = answers[steps[idx]?.['Step Number']];
+  //
+  // IMPORTANT: keyed by `idx` (this question's position in `steps`), NOT by
+  // the sheet's 'Step Number' field. Step Number is content-managed data —
+  // duplicate rows, a re-ordered Learning Steps tab, or two sections that
+  // both start at 1 are all real possibilities — and if two different
+  // questions in the same module ever share a Step Number, keying answers by
+  // that value makes them collide: answering one instantly makes the other
+  // look "already answered" (with the wrong question's data), and it also
+  // undercounts Object.keys(answers).length, which is what "Continue"
+  // (see begin(attemptedCount) below) uses to resume — so a collision also
+  // makes the app resume several questions earlier than the student actually
+  // reached, on top of showing incorrect/locked data. `idx` is always unique
+  // by construction, so this class of bug can't happen regardless of what's
+  // in the sheet. Step Number itself is still recorded inside each saved
+  // answer/payload for display and sheet logging — nothing about what's
+  // shown to the student or written to the StudentProgress sheet changes.
+  const currentAnswer = answers[idx];
   const selected = currentAnswer?.selected ?? null;
   const locked   = !!currentAnswer;
 
   const resolvedBackLabel = backLabel || t('p_back_to_topics');
+
+  // Whether the last answered question was a new answer (not a revisit)
+  // — used to decide whether to update the streak on this render.
+  const lastAnsweredStep = useRef(null);
+
+  // ── Issue 1: per-question time tracking ───────────────────────────────────
+  // questionStartRef marks the moment THIS question first became visible
+  // (performance.now(), so it's immune to clock changes). It resets every
+  // time idx changes to an unanswered question — including on Previous/Next
+  // navigation — so re-visiting an already-answered question never
+  // overwrites its original timeTakenSeconds. choose() reads this ref to
+  // compute how long the student spent on the question before answering.
+  const questionStartRef = useRef(performance.now());
+  useEffect(() => {
+    // Only (re)start the per-question clock if this question hasn't been
+    // answered yet — an already-locked question shouldn't keep ticking.
+    if (!answers[idx]) {
+      questionStartRef.current = performance.now();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idx]);
 
   if (!module || !total) {
     return (
@@ -589,16 +1125,83 @@ function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExi
 
   const retake = () => {
     setAnswers({});
+    setStreak(0); setToastStreak(0); setShowFireworks(false);
     onSave({ startedAt:new Date().toISOString(), completedAt:null, attempted:0, correct:0, incorrect:0, completionPct:0, answers:{} });
     begin(0);
+  };
+
+  // Reads Left 1..Left 10 / Right 1..Right 10 off a Learning Steps row into
+  // the { id, left, right } shape MatchTheFollowing expects. Skips any pair
+  // where both cells are blank, so 5/6/8/10-pair rows all work.
+  const pairsFromStep = (s) => {
+    const pairs = [];
+    for (let n = 1; n <= 10; n++) {
+      const left = (s[`Left ${n}`] || '').trim();
+      const right = (s[`Right ${n}`] || '').trim();
+      if (!left && !right) continue;
+      pairs.push({ id: String(n), left, right });
+    }
+    return pairs;
+  };
+
+  const isMatchStep = (s) => (s['Question Type'] || '').trim().toLowerCase() === 'matchthefollowing';
+
+  const submitMatchTheFollowing = (result) => {
+    if (locked) return; // guards a stray double-call on an already-answered question
+    const questionTimeSecs = Math.max(0, Math.round((performance.now() - questionStartRef.current) / 1000));
+    const isCorrect = result.score === result.total;
+    const nextAnswers = { ...answers, [idx]: {
+      type: 'matchTheFollowing',
+      isCorrect,
+      question: step.Question,
+      placements: result.placements,
+      score: result.score,
+      total: result.total,
+      explanation: step.Explanation,
+      stepNumber: step['Step Number'],
+      timeTakenSeconds: questionTimeSecs,
+    }};
+    setAnswers(nextAnswers);
+    const attempted = Object.keys(nextAnswers).length;
+    const correct   = Object.values(nextAnswers).filter(a => a.isCorrect).length;
+    onSave({ attempted, correct, incorrect: attempted - correct, completionPct: Math.round((attempted / total) * 100), answers: nextAnswers });
+    onAnswer?.({
+      moduleId: module['Module ID'], subject: module.SubjectEN || module.Subject, topic: module.Title,
+      questionNumber: step['Step Number'], answerGiven: `${result.score}/${result.total} matched`,
+      correctAnswer: `${result.total}/${result.total} matched`, isCorrect,
+      timeTakenSeconds: questionTimeSecs,
+    });
+
+    // Same sound/streak treatment as choose() — full marks counts as a streak
+    // hit, a partial match breaks it.
+    if (isCorrect) {
+      if (soundOnCorrect) playCorrect();
+      const nextStreak = streak + 1;
+      setStreak(nextStreak);
+      const isMilestone = nextStreak >= streakThreshold && nextStreak % streakThreshold === 0;
+      if (isMilestone) {
+        if (soundOnStreak) playStreak(nextStreak);
+        setToastStreak(nextStreak);
+        if (nextStreak % (streakThreshold * 2) === 0) setShowFireworks(true);
+      }
+    } else {
+      if (soundOnWrong) playWrong();
+      setStreak(0);
+    }
   };
 
   const choose = letter => {
     if (locked) return;
     const isCorrect = letter === step['Correct Option'];
-    const nextAnswers = { ...answers, [step['Step Number']]: {
+    // Issue 1: capture time spent on THIS question (seconds, rounded to the
+    // nearest whole second — sub-second precision isn't useful for review
+    // screens / sheet logging and keeps the stored numbers tidy).
+    const questionTimeSecs = Math.max(0, Math.round((performance.now() - questionStartRef.current) / 1000));
+    const nextAnswers = { ...answers, [idx]: {
       selected: letter, isCorrect, question: step.Question, correctOpt: step['Correct Option'], explanation: step.Explanation,
       options: { A:step['Option A'], B:step['Option B'], C:step['Option C'], D:step['Option D'] },
+      stepNumber: step['Step Number'],
+      timeTakenSeconds: questionTimeSecs,
     }};
     setAnswers(nextAnswers);
     const attempted = Object.keys(nextAnswers).length;
@@ -608,20 +1211,39 @@ function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExi
       moduleId: module['Module ID'], subject: module.SubjectEN || module.Subject, topic: module.Title,
       questionNumber: step['Step Number'], answerGiven: step[`Option ${letter}`] || letter,
       correctAnswer: step[`Option ${step['Correct Option']}`] || step['Correct Option'], isCorrect,
+      timeTakenSeconds: questionTimeSecs,
     });
+
+    // ── Sound + streak ──
+    if (isCorrect) {
+      if (soundOnCorrect) playCorrect();
+      const nextStreak = streak + 1;
+      setStreak(nextStreak);
+      // Milestone fires at every multiple of streakThreshold (configurable via
+      // Config sheet key "StreakThreshold", default 5). e.g. threshold=3 → 3,6,9,12…
+      const isMilestone = nextStreak >= streakThreshold && nextStreak % streakThreshold === 0;
+      if (isMilestone) {
+        if (soundOnStreak) playStreak(nextStreak);
+        setToastStreak(nextStreak);
+        if (nextStreak % (streakThreshold * 2) === 0) setShowFireworks(true);
+      }
+    } else {
+      if (soundOnWrong) playWrong();
+      setStreak(0); // break the streak
+    }
   };
 
-  // Forward to the next question, or finish if this was the last one.
-  // Jumping forward never skips an unanswered question — Next is disabled
-  // until the current one is locked (see the button below), so by the time
-  // this runs idx+1 is always either already-answered (revisited) or fresh.
   const goNext = () => { if (idx + 1 < total) setIdx(idx+1); else finish(); };
-
-  // Step back to review or re-see a previous question. Always allowed —
-  // reviewing past answers doesn't affect completion.
   const goPrev = () => { if (idx > 0) setIdx(idx-1); };
-
-  const finish = () => { onSave({ completedAt:new Date().toISOString(), completionPct:100 }); setView('complete'); };
+  const finish = () => {
+    const completedAt    = new Date().toISOString();
+    const timeTakenSecs  = timer.elapsedSeconds;
+    // Stop the timer and send to the Google Sheet
+    timer.stop(timeTakenSecs);
+    onSave({ completedAt, completionPct: 100, timeTakenSeconds: timeTakenSecs });
+    if (rangeFrom && rangeTo) onRangeComplete?.();
+    setView('complete');
+  };
 
   // ── INTRO ──
   if (view === 'intro') {
@@ -661,8 +1283,6 @@ function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExi
       : pct>=70 ? t('p_great_job')
       : pct>=50 ? t('p_nice_effort')
       : t('p_good_try');
-    // Group the concept recap by Learning Section (falls back to one flat group if a
-    // module doesn't define sections, e.g. older/simpler modules).
     const conceptGroups = [];
     steps.forEach(s => {
       const label = s['Learning Section'] || null;
@@ -676,6 +1296,15 @@ function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExi
         <div className="card">
           <div className="lp-score-ring"><span className="n">{correctCount}/{total}</span><span className="l">{pct}% {t('p_pct_correct')}</span></div>
           <p className="lp-encourage">{encourage}</p>
+          {/* Session streak summary */}
+          {streak >= 5 && (
+            <div style={{
+              textAlign:'center',padding:'10px 0 4px',
+              fontSize:'13px',color:'var(--teal)',fontWeight:700,
+            }}>
+              🔥 Best streak this session: {streak} correct in a row!
+            </div>
+          )}
           <div className="sec-divider">{t('p_concepts_learned')}</div>
           {conceptGroups.map((g,gi) => (
             <div key={gi} style={g.label?{marginBottom:'14px'}:undefined}>
@@ -689,8 +1318,14 @@ function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExi
               {mistakes.map((m,i) => (
                 <div key={i} className="lp-mistake">
                   <div className="lp-mistake-q">{m.question}</div>
-                  <div className="lp-mistake-row">{t('p_your_answer')} <span style={{color:'#f87171',fontWeight:700}}>{m.options[m.selected]}</span></div>
-                  <div className="lp-mistake-row">{t('p_correct_answer')} <span style={{color:'#4ade80',fontWeight:700}}>{m.options[m.correctOpt]}</span></div>
+                  {m.type === 'matchTheFollowing' ? (
+                    <div className="lp-mistake-row">Matched {m.score} of {m.total} correctly</div>
+                  ) : (
+                    <>
+                      <div className="lp-mistake-row">{t('p_your_answer')} <span style={{color:'#f87171',fontWeight:700}}>{m.options[m.selected]}</span></div>
+                      <div className="lp-mistake-row">{t('p_correct_answer')} <span style={{color:'#4ade80',fontWeight:700}}>{m.options[m.correctOpt]}</span></div>
+                    </>
+                  )}
                   <div className="lp-mistake-row">{m.explanation}</div>
                 </div>
               ))}
@@ -715,89 +1350,458 @@ function LearningModulePlayer({ module, steps, progress, onSave, onAnswer, onExi
   const opts = ['A','B','C','D'];
   const answeredCount = Object.keys(answers).length;
   const progressPct = total ? Math.round((answeredCount/total)*100) : 0;
-  // Dots work well as a visual progress map for shorter modules, but at 30-50
-  // questions (e.g. the Nouns module) they become too small to tap reliably
-  // on mobile and don't convey much at a glance. Past that threshold, swap
-  // to a compact "Jump to question" dropdown — same ability to revisit any
-  // previously-answered question, just a usable control at any length.
   const useDotNav = total <= 20;
+
+  // Streak indicator pill shown inside the lesson card header
+  const streakPill = streak >= 3 ? (
+    <div style={{
+      display:'inline-flex',alignItems:'center',gap:'5px',
+      padding:'3px 11px',borderRadius:'100px',
+      background: streak>=10?'rgba(245,166,35,.18)': streak>=8?'rgba(168,85,247,.18)':'rgba(249,115,22,.18)',
+      border: `1px solid ${streak>=10?'rgba(245,166,35,.4)':streak>=8?'rgba(168,85,247,.4)':'rgba(249,115,22,.35)'}`,
+      color: streak>=10?'#f5a623':streak>=8?'#c084fc':'#f97316',
+      fontSize:'12px',fontWeight:800,
+    }}>
+      🔥 {streak} in a row
+    </div>
+  ) : null;
+
   return (
-    <div className="content">
-      <button className="lp-back" onClick={onExit}><i className="fa-solid fa-arrow-left" /> {resolvedBackLabel}</button>
-      <div className="card">
-        <div className="lp-step-lbl">{step['Learning Section'] || module.Title}</div>
-        <div className="lp-qcounter-row">
-          <span className="lp-qcounter">{t('p_question_of', {n: idx+1, total})}</span>
-          <span className="lp-qpct">{t('p_progress_pct', {pct: progressPct})}</span>
+    <>
+      {/* Fireworks overlay — fixed, pointer-events:none so it never blocks interaction */}
+      <FireworksOverlay active={showFireworks} onDone={()=>setShowFireworks(false)} />
+
+      {/* Streak toast — non-blocking, auto-dismisses */}
+      {toastStreak > 0 && (
+        <StreakToast streak={toastStreak} onDone={()=>setToastStreak(0)} />
+      )}
+
+      {/* ── Full-screen mobile-first question card ── */}
+      <div className="lp-fullscreen">
+        {/* ── Header bar: back + module title + compact counter + streak pill ── */}
+        <div className="lp-fs-header">
+          <button className="lp-fs-back" onClick={onExit} aria-label={resolvedBackLabel}>
+            <i className="fa-solid fa-arrow-left" />
+          </button>
+          <div className="lp-fs-title">{step['Learning Section'] || module.Title}</div>
+          {/* Issue 1: "2 of 50" counter badge in header, small and unobtrusive */}
+          <span className="lp-fs-qcount">{idx+1} / {total}</span>
+          {streakPill}
+          {/* ── Test timer badge — visible only when enabled + showTimerUI ── */}
+          {enableTimer && showTimerUI && (
+            <span
+              className={`lp-timer-badge${timer.isPaused ? ' paused' : ''}`}
+              title={timer.isPaused ? 'Timer paused — no activity for 5 min' : 'Time elapsed on this topic'}
+            >
+              <i className={`fa-solid ${timer.isPaused ? 'fa-pause' : 'fa-stopwatch'}`}
+                 style={{ fontSize: '9px', marginRight: '3px' }} />
+              {timer.displayStr}
+              {timer.isPaused && (
+                <span style={{ marginLeft: '3px', fontSize: '9px', opacity: .65 }}>paused</span>
+              )}
+            </span>
+          )}
         </div>
-        {/* Progress reflects questions actually answered, not just how far idx has
-            moved — important now that Previous/Next can move idx around freely
-            without that meaning more questions were answered. */}
-        <div className="lp-bar-outer"><div className="lp-bar-fill" style={{width:`${progressPct}%`}} /></div>
-        {useDotNav ? (
-          <div className="lp-dots">
-            {steps.map((s,i) => {
-              const a = answers[s['Step Number']];
-              let cls = 'lp-dot';
-              if (i === idx) cls += ' current';
-              else if (a) cls += a.isCorrect ? ' correct' : ' incorrect';
-              return <button key={s['Step Number']} className={cls} onClick={()=>setIdx(i)} aria-label={`${t('p_aria_question', {n: i+1})}${a?(a.isCorrect?t('p_aria_answered_correctly'):t('p_aria_answered_incorrectly')):t('p_aria_not_yet_answered')}`} />;
-            })}
+
+        {/* ── Slim progress bar flush under header ── */}
+        <div className="lp-fs-progress-wrap">
+          <div className="lp-bar-outer lp-fs-bar">
+            <div className="lp-bar-fill" style={{width:`${progressPct}%`}} />
           </div>
-        ) : (
-          <select
-            className="lp-jump-select"
-            aria-label={t('p_jump_to_question')}
-            value={idx}
-            onChange={e => setIdx(Number(e.target.value))}
-          >
-            {steps.map((s,i) => {
-              const a = answers[s['Step Number']];
-              const status = a ? (a.isCorrect ? '✓' : '✗') : '○';
-              return <option key={s['Step Number']} value={i}>{status} {t('p_question_of', {n: i+1, total})}</option>;
-            })}
-          </select>
-        )}
-        <div className="lp-teach"><i className="fa-solid fa-lightbulb" /><p>{step.Teaching}</p></div>
-        <div className="lp-q">{step.Question}</div>
-        <div className="lp-opts">
-          {opts.map(letter => {
-            const text = step[`Option ${letter}`];
-            if (!text) return null;
-            let cls = 'lp-opt';
-            if (locked && letter === step['Correct Option']) cls += ' correct';
-            else if (locked && letter === selected) cls += ' incorrect';
-            return (
-              <button key={letter} className={cls} disabled={locked} onClick={() => choose(letter)}>
-                <span className="lp-letter">{letter}</span>{text}
-              </button>
-            );
-          })}
         </div>
-        {locked && (
-          <div className={`lp-feedback ${selected===step['Correct Option']?'good':'bad'}`}>
-            <i className={`fa-solid ${selected===step['Correct Option']?'fa-circle-check':'fa-circle-info'}`} />
-            <p><strong>{selected===step['Correct Option']?t('p_correct_excl'):t('p_not_quite')}</strong>{step.Explanation}</p>
-            {step['Learn More URL'] && (
-              <a className="lp-learnmore" href={step['Learn More URL']} target="_blank" rel="noopener noreferrer">
-                <i className="fa-solid fa-book-open" /> {step['Learn More Label'] || t('p_learn_more')} <i className="fa-solid fa-arrow-up-right-from-square" />
-              </a>
-            )}
+
+        {/* ── Scrollable body: everything between bar and bottom nav ──
+            Issue 2/3/4: .lp-fs-inner centers + caps content width on large
+            screens and uses the full available height; .lp-fs-question-wrap
+            groups the question+options so they can flex to fill any
+            leftover vertical space instead of leaving the bottom of the
+            screen empty. ── */}
+        <div className="lp-fs-body">
+        <div className="lp-fs-inner">
+
+        {/* ── Dot nav (always shown; dropdown only when ShowQuestionDropdown=TRUE) ── */}
+        <div className="lp-fs-nav-wrap">
+          {showQuestionDropdown ? (
+            <select className="lp-jump-select" value={idx} onChange={e=>setIdx(Number(e.target.value))}>
+              {steps.map((s,i) => {
+                const a = answers[i];
+                const status = a ? (a.isCorrect ? '✓' : '✗') : '○';
+                return <option key={i} value={i}>{status} {t('p_question_of', {n: i+1, total})}</option>;
+              })}
+            </select>
+          ) : useDotNav ? (
+            <div className="lp-dots">
+              {steps.map((s,i) => {
+                const a = answers[i];
+                let cls = 'lp-dot';
+                if (i === idx) cls += ' current';
+                else if (a) cls += a.isCorrect ? ' correct' : ' incorrect';
+                return <button key={i} className={cls} onClick={()=>setIdx(i)} aria-label={`Q${i+1}`} />;
+              })}
+            </div>
+          ) : null}
+        </div>
+
+        {/* ── Learning Section content box ── */}
+        {step['Learning Section Body'] && (
+          <div className="lp-fs-learn-sec">
+            <div className="lp-fs-learn-sec-hd">
+              <i className="fa-solid fa-book-open" />
+              <span>Learning Section</span>
+            </div>
+            <p>{step['Learning Section Body']}</p>
           </div>
         )}
-        <div className="lp-nav-row">
-          <button className="btn-outline" onClick={goPrev} disabled={idx===0} style={idx===0?{opacity:.4,cursor:'not-allowed'}:{}}>
+
+        {/* ── Teaching fact ── */}
+        <div className="lp-fs-teach">
+          <i className="fa-solid fa-lightbulb lp-fs-teach-icon" />
+          <p>{step.Teaching}</p>
+        </div>
+
+        {/* ── Step image — optional, shown between Teaching and the question ── */}
+        {step['Step Image URL'] && (
+          <div className="lp-fs-step-img">
+            <img
+              src={step['Step Image URL']}
+              alt="Question illustration"
+              onError={e => { e.currentTarget.parentElement.style.display='none'; }}
+            />
+          </div>
+        )}
+
+        {/* ── Question + Options — wrapped together so this block can grow
+            (flex:1) and absorb any leftover vertical space, keeping the
+            whole screen filled rather than leaving the bottom blank. ── */}
+        <div className="lp-fs-question-wrap">
+          <div className="lp-fs-question">{step.Question}</div>
+
+          {isMatchStep(step) ? (
+            <>
+              {currentAnswer?.rebuiltFromHistory ? (
+                // This question was answered in a previous session and its
+                // summary was rebuilt from the sheet, not from localStorage —
+                // the sheet only ever logs a score for matchTheFollowing
+                // (e.g. "4/5 matched"), never the actual word→meaning
+                // placements. Rendering the interactive component with an
+                // empty placements object would make every pair look wrong;
+                // showing the honest score instead avoids that false "series
+                // of errors" appearance.
+                <div className="lp-fs-history-note" style={{
+                  padding:'14px 16px', borderRadius:'10px', border:'1.5px solid var(--border)',
+                  background:'rgba(255,255,255,.03)', display:'flex', alignItems:'center', gap:'10px',
+                }}>
+                  <i className="fa-solid fa-clock-rotate-left" />
+                  <span>Already answered previously — {currentAnswer.score}/{currentAnswer.total} matched correctly. (Answered elsewhere, so the exact matches aren't shown here.)</span>
+                </div>
+              ) : (
+                <MatchTheFollowing
+                  key={`${step['Module ID']}-${idx}-${step['Step Number']}`}
+                  pairs={pairsFromStep(step)}
+                  explanation={step.Explanation}
+                  onSubmit={submitMatchTheFollowing}
+                  initialPlacements={currentAnswer?.placements}
+                  initialLocked={locked}
+                />
+              )}
+              {locked && (
+                <div className={`lp-fs-feedback ${currentAnswer.isCorrect ? 'good' : 'bad'}`}>
+                  <i className={`fa-solid ${currentAnswer.isCorrect ? 'fa-circle-check' : 'fa-circle-xmark'} lp-fs-fb-icon`} />
+                  <div>
+                    <strong>{currentAnswer.isCorrect ? t('p_correct_excl') : t('p_not_quite')}</strong>
+                    <span> {step.Explanation}</span>
+                    {step['Learn More URL'] && (
+                      <div style={{marginTop:'8px'}}>
+                        <a className="lp-learnmore" href={step['Learn More URL']} target="_blank" rel="noopener noreferrer">
+                          <i className="fa-solid fa-book-open" /> {step['Learn More Label'] || t('p_learn_more')} <i className="fa-solid fa-arrow-up-right-from-square" />
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              {/* isAnswerCorrect prefers the stored isCorrect flag (always
+                  reliable — it's set from step['Correct Option'] at answer
+                  time for a live session, or from the sheet's Status column
+                  for a rebuilt one) over comparing `selected` to the correct
+                  letter. That letter-comparison used to be the only check,
+                  which silently broke for rebuilt history rows: the sheet
+                  only stores the option's display TEXT ("The Sun"), never
+                  the A/B/C/D letter, so `selected === step['Correct Option']`
+                  was always false there — showing "Not quite" on questions
+                  the student actually got right. */}
+              {(() => {
+                const isAnswerCorrect = currentAnswer ? (currentAnswer.isCorrect ?? (selected === step['Correct Option'])) : false;
+                return (
+                  <>
+                    <div className="lp-fs-opts">
+                      {opts.map(letter => {
+                        const text = step[`Option ${letter}`];
+                        if (!text) return null;
+                        let cls = 'lp-fs-opt';
+                        if (locked && letter === step['Correct Option']) cls += ' correct';
+                        else if (locked && !isAnswerCorrect && (letter === selected || text === selected)) cls += ' incorrect';
+                        return (
+                          <button key={letter} className={cls} disabled={locked} onClick={()=>choose(letter)}>
+                            <span className="lp-fs-letter">{letter}</span>
+                            <span className="lp-fs-opt-text">{text}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* ── Feedback panel (shown after answering) ── */}
+                    {locked && (
+                      <div className={`lp-fs-feedback ${isAnswerCorrect?'good':'bad'}`}>
+                        <i className={`fa-solid ${isAnswerCorrect?'fa-circle-check':'fa-circle-xmark'} lp-fs-fb-icon`} />
+                        <div>
+                          <strong>{isAnswerCorrect?t('p_correct_excl'):t('p_not_quite')}</strong>
+                          <span> {step.Explanation}</span>
+                          {step['Learn More URL'] && (
+                            <div style={{marginTop:'8px'}}>
+                              <a className="lp-learnmore" href={step['Learn More URL']} target="_blank" rel="noopener noreferrer">
+                                <i className="fa-solid fa-book-open" /> {step['Learn More Label'] || t('p_learn_more')} <i className="fa-solid fa-arrow-up-right-from-square" />
+                              </a>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+            </>
+          )}
+        </div>
+
+        {/* ── end lp-fs-inner / lp-fs-body ── */}
+        </div>
+        </div>
+
+        {/* ── Nav row: Previous | Next / Finish — sticky at bottom, outside scroll ── */}
+        <div className="lp-nav-row lp-fs-nav-row" style={{flexShrink:0,borderTop:'1px solid var(--border)',background:'var(--navy)'}}>
+          <button className="btn-outline" onClick={goPrev} disabled={idx===0} style={idx===0?{opacity:.35,cursor:'not-allowed'}:{}}>
             <i className="fa-solid fa-arrow-left" /> {t('p_previous')}
           </button>
           {answeredCount >= total ? (
-            <button className="btn-t" onClick={finish}>{t('p_finish_topic')} <i className="fa-solid fa-flag-checkered" /></button>
+            <button className="btn-t" onClick={finish}>
+              {t('p_finish_topic')} <i className="fa-solid fa-flag-checkered" />
+            </button>
           ) : (
-            <button className="btn-t" onClick={goNext} disabled={!locked} style={!locked?{opacity:.4,cursor:'not-allowed'}:{}}>
-              {idx+1 < total ? <>{t('p_next_question')} <i className="fa-solid fa-arrow-right" /></> : <>{t('p_answer_to_continue')} <i className="fa-solid fa-arrow-right" /></>}
+            <button className="btn-t" onClick={goNext} disabled={!locked} style={!locked?{opacity:.35,cursor:'not-allowed'}:{}}>
+              {idx+1<total
+                ? <>{t('p_next_question')} <i className="fa-solid fa-arrow-right" /></>
+                : <>{t('p_answer_to_continue')} <i className="fa-solid fa-arrow-right" /></>}
             </button>
           )}
         </div>
       </div>
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CompletedTopicsTab — lists every module the student has finished, showing
+// the date completed, time taken (from timeTakenSeconds in learnProgress), and
+// their correct/attempted score. Sorted most-recently-completed first.
+// ─────────────────────────────────────────────────────────────────────────────
+// CompletedTopicsTab
+//
+// Shows every module the student has fully completed. Each card shows:
+//   • Date completed  • Time taken  • Score
+//   • "New questions added" badge when the sheet has grown since completion
+//   • Retake button — resets progress, moves topic back to Question Bank,
+//     and jumps straight into it
+//
+// Topic lifecycle:
+//   finish quiz  → completedAt set  → disappears from Question Bank
+//                                   → appears here
+//   Retake click → completedAt cleared → reappears in Question Bank
+//                                      → disappears from here
+//   Teacher adds new steps → topic reappears in Question Bank automatically
+//                          → "new questions" badge shown here until retaken
+// ─────────────────────────────────────────────────────────────────────────────
+// CompletedTopicsTab
+//
+// Shows every module the student has fully completed, ORGANIZED BY SUBJECT
+// (Issue 3 — "Sorted by Subject and the Topics should be underneath the
+// respective subject"). Each subject becomes a collapsible group header
+// (reusing the same color/icon/emoji styling as the Question Bank's subject
+// cards), with its completed topics listed underneath, most-recently
+// completed first. Each topic card shows:
+//   • Date completed  • Total time taken to finish the topic (Issue 2)
+//   • Score  • "New questions added" badge when the sheet has grown since
+//     completion  • Retake button — resets progress, moves the topic back
+//     to the Question Bank, and jumps straight into it
+//
+// Topic lifecycle:
+//   finish quiz  → completedAt set  → disappears from Question Bank
+//                                   → appears here, under its subject
+//   Retake click → completedAt cleared → reappears in Question Bank
+//                                      → disappears from here
+//   Teacher adds new steps → topic reappears in Question Bank automatically
+//                          → "new questions" badge shown here until retaken
+// ─────────────────────────────────────────────────────────────────────────────
+function CompletedTopicsTab({ learnProgress, learningModules, subjects, stepsFor, saveLearnProgress, onRetake }) {
+  const rows = useMemo(() => {
+    return learningModules
+      .filter(m => !!learnProgress[m['Module ID']]?.completedAt)
+      .map(m => {
+        const id        = m['Module ID'];
+        const p         = learnProgress[id];
+        const secs      = Number(p.timeTakenSeconds) || 0;
+        const correct   = p.correct   || 0;
+        const attempted = p.attempted || 0;
+        const h   = Math.floor(secs / 3600);
+        const min = Math.floor((secs % 3600) / 60);
+        const sec = secs % 60;
+        const timeStr = secs === 0
+          ? '—'
+          : h > 0
+            ? `${h}h ${String(min).padStart(2,'0')}m ${String(sec).padStart(2,'0')}s`
+            : `${String(min).padStart(2,'0')}m ${String(sec).padStart(2,'0')}s`;
+        const totalSteps    = stepsFor ? stepsFor(id).length : 0;
+        const answeredSteps = Object.keys(p.answers || {}).length;
+        const hasNewQ       = totalSteps > answeredSteps;
+        return {
+          moduleId:    id,
+          title:       m.Title || id,
+          subject:     m.Subject || m.SubjectEN || 'Other',
+          completedAt: p.completedAt,
+          dateStr:     new Date(p.completedAt).toLocaleDateString(undefined, { day:'numeric', month:'short', year:'numeric' }),
+          timeStr,
+          scoreStr:    attempted > 0 ? `${correct}/${attempted}` : null,
+          hasNewQ,
+          newQCount:   hasNewQ ? totalSteps - answeredSteps : 0,
+        };
+      })
+      .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
+  }, [learnProgress, learningModules, stepsFor]);
+
+  // ── Group rows by Subject (Issue 3) ───────────────────────────────────────
+  // Groups are ordered to match the subject order from the Question Bank
+  // (the `subjects` list, when supplied) so the two tabs feel consistent;
+  // any subject present in rows but missing from `subjects` (edge case —
+  // e.g. a subject later renamed/removed from the sheet) is appended at the
+  // end rather than silently dropped.
+  const groups = useMemo(() => {
+    const bySubject = {};
+    rows.forEach(row => {
+      if (!bySubject[row.subject]) bySubject[row.subject] = [];
+      bySubject[row.subject].push(row);
+    });
+
+    const orderedNames = [];
+    (subjects || []).forEach(s => { if (bySubject[s.Subject]) orderedNames.push(s.Subject); });
+    Object.keys(bySubject).forEach(name => { if (!orderedNames.includes(name)) orderedNames.push(name); });
+
+    return orderedNames.map(name => {
+      const meta = (subjects || []).find(s => s.Subject === name) || {};
+      return {
+        subject: name,
+        color:   meta['Color (Hex)'] || '#00c6a7',
+        icon:    meta['Icon (FontAwesome solid)'] || 'fa-book',
+        emoji:   meta.Emoji || '',
+        topics:  bySubject[name],
+      };
+    });
+  }, [rows, subjects]);
+
+  const handleRetake = (row) => {
+    // Clear completedAt so the topic leaves Completed Topics and re-enters
+    // the Question Bank, then navigate straight into the quiz.
+    saveLearnProgress(row.moduleId, {
+      startedAt:        new Date().toISOString(),
+      completedAt:      null,
+      attempted:        0,
+      correct:          0,
+      incorrect:        0,
+      completionPct:    0,
+      timeTakenSeconds: 0,
+      answers:          {},
+    });
+    onRetake(row.moduleId, row.subject);
+  };
+
+  if (rows.length === 0) {
+    return (
+      <div className="content">
+        <div className="card ct-empty">
+          <i className="fa-solid fa-circle-check" />
+          <div style={{ fontFamily:'var(--fqh)', fontWeight:800, fontSize:'15px', marginBottom:'6px', color:'rgba(255,255,255,.6)' }}>
+            No completed topics yet
+          </div>
+          <div style={{ fontSize:'12.5px' }}>
+            Topics you finish will appear here, grouped by subject, with the date and total time taken.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="content">
+      {groups.map(group => (
+        <div key={group.subject} className="card ct-group">
+          {/* ── Subject group header — same visual language as the Question
+              Bank's subject cards (icon/emoji + color) so students recognise
+              it as the same subject. ── */}
+          <div className="ct-group-hd" style={{ borderColor: group.color+'44' }}>
+            <div className="ct-group-icon" style={{ background:`${group.color}18`, color:group.color }}>
+              {group.emoji || <i className={`fa-solid ${group.icon}`} />}
+            </div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div className="ct-group-name">{group.subject}</div>
+              <div className="ct-group-count">{group.topics.length} topic{group.topics.length !== 1 ? 's' : ''} completed</div>
+            </div>
+          </div>
+
+          {group.topics.map(row => (
+            <div key={row.moduleId} className="ct-card">
+              <div className="ct-icon"><i className="fa-solid fa-book-open-reader" /></div>
+              <div className="ct-body">
+                <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:'10px', flexWrap:'wrap' }}>
+                  <div style={{ minWidth:0, flex:1 }}>
+                    <div className="ct-title">{row.title}</div>
+                    <div className="ct-meta">
+                      <span className="ct-pill date">
+                        <i className="fa-solid fa-calendar-check" style={{ fontSize:'9px' }} />
+                        {row.dateStr}
+                      </span>
+                      <span className="ct-pill time">
+                        <i className="fa-solid fa-stopwatch" style={{ fontSize:'9px' }} />
+                        {row.timeStr}
+                      </span>
+                      {row.scoreStr && (
+                        <span className="ct-pill score">
+                          <i className="fa-solid fa-star" style={{ fontSize:'9px' }} />
+                          {row.scoreStr} correct
+                        </span>
+                      )}
+                      {row.hasNewQ && (
+                        <span className="ct-pill newq">
+                          <i className="fa-solid fa-bolt" style={{ fontSize:'9px' }} />
+                          {row.newQCount} new question{row.newQCount !== 1 ? 's' : ''} added
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    className="btn-outline ct-retake-btn"
+                    onClick={() => handleRetake(row)}
+                    title="Reset your progress and retake this topic from the beginning"
+                  >
+                    <i className="fa-solid fa-rotate-right" /> Retake
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ))}
     </div>
   );
 }
@@ -851,16 +1855,32 @@ function PortalInner() {
   // (can't read localStorage in useState initialiser because Next.js runs it
   // server-side where window doesn't exist, so the read is always skipped).
   const [profile, setProfile] = useState({ name: '', id: '', classLevel: 'Class 3' });
+  const [chatUnread, setChatUnread] = useState(0);
+  const [chatFocusGroupId, setChatFocusGroupId] = useState(null);
   const [loginErr,    setLoginErr]    = useState('');
   const [loading,     setLoading]     = useState(false);
   const [uploadName,  setUploadName]  = useState('');
   const [uploadDone,  setUploadDone]  = useState(false);
   const [profileEdit, setProfileEdit] = useState(false);
   const [saving,      setSaving]      = useState(null); // 'profile' | 'password' | null
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [mobileNavOpen,  setMobileNavOpen]  = useState(false);
+  // ── Quiz mode sidebar: collapses when a question is active; float button
+  // re-opens it temporarily. sidebarPeeking controls the peek-open state.
+  const [sidebarPeeking, setSidebarPeeking] = useState(false);
+  // ── Announcement strip: fetched from a Google Doc URL stored in the
+  // master sheet under key "AnnouncementDocUrl" (Settings tab).
+  // Non-critical — if unavailable the strip simply stays hidden.
+  const [announcementText, setAnnouncementText] = useState('');
   const [notifs,      setNotifs]      = useState(FALLBACK.notifications.filter(n=>isRowActive(n.Active)));
   const [activeModuleId, setActiveModuleId] = useState(null);
   const [activeAssignmentSubject, setActiveAssignmentSubject] = useState(null);
+  // ── ASSIGNMENTS FOR YOU — chapter-specific homework a parent/teacher
+  // assigned from the Parent Portal builder table. Kept entirely separate
+  // from activeModuleId/activeAssignmentSubject (the open Question Bank
+  // flow above) so switching tabs never clobbers either flow's state.
+  const [myAssignments,        setMyAssignments]        = useState([]);
+  const [myAssignmentsLoading, setMyAssignmentsLoading]  = useState(false);
+  const [activeMyAssignmentId, setActiveMyAssignmentId]  = useState(null); // AssignmentID being attempted
   const [expandedSubject, setExpandedSubject] = useState(null); // age-group expandable card
   // classFilter: null = "my class only"; 'all' = every class; Set of class strings = selected classes
   // Initialised to null so the dashboard always opens showing only the student's own class.
@@ -868,11 +1888,35 @@ function PortalInner() {
   const [learnProgress,  setLearnProgress]  = useState({});
   const [leaderboard,    setLeaderboard]    = useState({ overall:[], bySubject:{} });
   const [leaderboardLoading, setLeaderboardLoading] = useState(false);
+  // Weighted leaderboard — same shape as `leaderboard`, but scoped to only
+  // the questions a student was assigned via "Assignments for you", ranked
+  // by accuracy % instead of raw attempted count. See
+  // /api/student/weighted-leaderboard for the full rules.
+  const [weightedLeaderboard,        setWeightedLeaderboard]        = useState({ overall:[], bySubject:{} });
+  const [weightedLeaderboardLoading, setWeightedLeaderboardLoading] = useState(false);
+  // Time-window filter for the leaderboard: 0 = all time, 7 = last 7 days, etc.
+  const [lbDays, setLbDays] = useState(30); // default: last 30 days
+  // Daily questions-attempted board — derived locally from learnProgress
+  // (no extra API call needed: every module's attempted count + startedAt is
+  // already in localStorage and synced from the Sheet on login).
+  // Populated once per session from /api/student/leaderboard which already
+  // returns per-student data; we also build a local "today" count from
+  // learnProgress for the current student so it's always up-to-date.
   // Real per-student data fetched post-login. null = loading/not-yet-fetched.
   // Falls back to cfg FALLBACK gracefully if the API is unreachable.
   const [realSubjects,    setRealSubjects]    = useState(null);
   const [realAssignments, setRealAssignments] = useState(null);
   const [realAttendance,  setRealAttendance]  = useState(null);
+  // ── Cross-class preview data ────────────────────────────────────────────
+  // The Assignments tab's "select another class" pills need access to
+  // OTHER classes' subjects/topics, but `cfg` only ever holds the student's
+  // OWN class (portal-config.js pre-filters server-side by profile.classLevel
+  // for performance). When a pill is selected we lazily fetch the full,
+  // unfiltered dataset (classLevel omitted = every class) ONCE and cache it
+  // here — the server itself caches that same unfiltered response for 60s,
+  // so this is cheap even across many students previewing other classes.
+  const [crossClassCfg,     setCrossClassCfg]     = useState(null);
+  const [crossClassLoading, setCrossClassLoading] = useState(false);
 
   const subjectRef = useRef(null);
   const attendRef  = useRef(null);
@@ -887,11 +1931,35 @@ function PortalInner() {
     setCfg(lang === 'da' ? danishFallback : FALLBACK);
   }, [lang]);
 
-  // ── Fetch from Google Sheets on mount / language change ──────────────────────
+  // ── Announcement strip: fetch directly on mount from the known doc URL so
+  // the ticker is always visible, even when the portal-config fetch is slow
+  // or the Config tab isn't populated yet. The main config useEffect below
+  // may also update announcementText if it resolves a URL from the sheet —
+  // last write wins, which is intentional (sheet URL takes priority).
+  useEffect(() => {
+    let cancelled = false;
+    const ANNOUNCEMENT_DOC_URL = 'https://docs.google.com/document/d/1HI17xm-7X43RoLC0rigDhUZKu1zwzhQF98wolnxcclU/edit?tab=t.0';
+    const exportUrl = ANNOUNCEMENT_DOC_URL.replace(/\/edit.*$/, '/export?format=txt');
+    fetch(`/api/proxy-doc?url=${encodeURIComponent(exportUrl)}`)
+      .then(r => r.text())
+      .then(txt => {
+        if (cancelled) return;
+        const text = txt.split('\n').map(l => l.trim()).filter(Boolean).join('  ·  ');
+        if (text) setAnnouncementText(text);
+      })
+      .catch(() => {/* non-critical */});
+    return () => { cancelled = true; };
+  }, []); // only on mount — URL is fixed in the master config
+
+  // ── Fetch from Google Sheets on mount / language change / classLevel change ──
   useEffect(() => {
     const requestLang = lang; // capture the language this fetch was started for
     let cancelled = false;
-    fetchAllSheetData()
+    // Pass the student's classLevel so the API pre-filters content.
+    // profile.classLevel is '' until login (or localStorage restore), which
+    // causes the API to return everything — that's fine because the onboarding
+    // gate below already blocks the Assignments tab until a class is set.
+    fetchAllSheetData(profile.classLevel)
       .then(data => {
         // Guard against a race: if the user switched language again while
         // this fetch was in flight, a stale response for the OLD language
@@ -927,6 +1995,7 @@ function PortalInner() {
           schedule:      data.schedule?.length        ? data.schedule        : base.schedule,
           notifications: data.notifications?.length   ? data.notifications   : base.notifications,
           profileFields: data.profileFields?.length   ? data.profileFields   : base.profileFields,
+          classLevels:   data.classLevels?.length     ? data.classLevels     : base.classLevels,
           assignmentSubjects: requestLang === 'da'
             ? danishFallback.assignmentSubjects
             : (data.assignmentSubjects?.length ? data.assignmentSubjects : base.assignmentSubjects),
@@ -936,6 +2005,9 @@ function PortalInner() {
           learningSteps: requestLang === 'da'
             ? danishFallback.learningSteps
             : (data.learningSteps?.length   ? data.learningSteps   : base.learningSteps),
+          // Config tab key-value object — passed straight through; no fallback
+          // needed (missing keys just return undefined, callers guard with ||'')
+          config: data.config || {},
         };
         setCfg(merged);
         setNotifs(merged.notifications.filter(n=>isRowActive(n.Active)));
@@ -951,6 +2023,21 @@ function PortalInner() {
           const cl = merged.profileFields.find(f => f['Field Key'] === 'class_level');
           return { ...p, classLevel: cl?.Value || '' };
         });
+        // ── Announcement strip: read Google Doc URL from the Config tab.
+        // data.config is the parsed { Key: Value } object from the master
+        // sheet's "Config" tab — completely separate from subject/class rows.
+        const docUrl = (data.config || {})['AnnouncementDocUrl'] || '';
+        if (docUrl && !cancelled) {
+          const exportUrl = docUrl.replace(/\/edit.*$/, '/export?format=txt');
+          fetch(`/api/proxy-doc?url=${encodeURIComponent(exportUrl)}`)
+            .then(r => r.text())
+            .then(txt => {
+              if (cancelled) return;
+              const text = txt.split('\n').map(l => l.trim()).filter(Boolean).join('  ·  ');
+              setAnnouncementText(text);
+            })
+            .catch(() => {/* non-critical */});
+        }
         setCfgReady(true);
       })
       .catch(err => {
@@ -959,7 +2046,36 @@ function PortalInner() {
         setCfgReady(true); // still show portal with fallback data
       });
     return () => { cancelled = true; };
-  }, [lang]);
+  }, [lang, profile.classLevel]);
+
+  // ── Fetch the cross-class dataset on demand ─────────────────────────────
+  // Runs only once classFilter becomes truthy ('all' or a Set of classes),
+  // i.e. the moment the student picks another class pill. Cached in
+  // crossClassCfg so toggling pills back and forth doesn't refetch.
+  // Sheet quiz content is English-only (see the Danish-fallback note in the
+  // main fetch above), so this preview is skipped entirely in Danish — the
+  // class pills aren't meaningful there since LMOD is always the static
+  // hand-translated set regardless of class.
+  useEffect(() => {
+    if (!classFilter) return;
+    if (lang === 'da') return;
+    if (crossClassCfg) return; // already loaded
+    let cancelled = false;
+    setCrossClassLoading(true);
+    fetchAllSheetData('') // no classLevel param = full, unfiltered dataset
+      .then(data => {
+        if (cancelled) return;
+        if (data && typeof data === 'object') setCrossClassCfg(data);
+      })
+      .catch(err => console.warn('[portal] Cross-class fetch failed:', err.message))
+      .finally(() => { if (!cancelled) setCrossClassLoading(false); });
+    return () => { cancelled = true; };
+  }, [classFilter, lang, crossClassCfg]);
+
+  // Reset the cross-class cache when language changes, since it's only ever
+  // populated in English and would otherwise leak stale English data into
+  // a Danish session if the user previewed a class, then switched language.
+  useEffect(() => { setCrossClassCfg(null); }, [lang]);
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
   const S          = cfg.settings;
@@ -997,359 +2113,190 @@ function PortalInner() {
   const SCHED      = cfg.schedule.filter(s => isRowActive(s.Active));
   const PFIELDS    = cfg.profileFields;
   const LMOD    = (cfg.learningModules||[]).filter(m=>isRowActive(m.Active)).sort((a,b)=>(Number(a['Display Order'])||0)-(Number(b['Display Order'])||0));
-  const ALLLSTEPS = (cfg.learningSteps||[]).filter(s=>isRowActive(s.Active));
-  const stepsFor = moduleId => ALLLSTEPS.filter(s=>s['Module ID']===moduleId).sort((a,b)=>(Number(a['Step Number'])||0)-(Number(b['Step Number'])||0));
 
-  // ── AGE-GROUP CURRICULUM SYSTEM ─────────────────────────────────────────────
+  // ── SHEET-DRIVEN CURRICULUM SYSTEM ──────────────────────────────────────────
   //
-  // Maps the student's existing classLevel (Class 1 – Class 5) to an age group
-  // and defines which subjects + topics exist for that age group. This is purely
-  // a display/organisation layer — all underlying progress data (learnProgress,
-  // StudentProgress sheet rows) continues to use Module IDs and original subject
-  // names, so nothing is lost. The mapping is additive: new subjects can be added
-  // here without touching any other code.
-
-  // Class level → age group label
-  const CLASS_TO_AGE = {
-    'Class 1': 'Age 5–6', 'class1': 'Age 5–6', 'KG': 'Age 5–6',
-    'Class 2': 'Age 6–7', 'class2': 'Age 6–7',
-    'Class 3': 'Age 7–8', 'class3': 'Age 7–8',
-    'Class 4': 'Age 8–9', 'class4': 'Age 8–9',
-    'Class 5': 'Age 9–10','class5': 'Age 9–10',
-  };
-  const studentAgeGroup   = CLASS_TO_AGE[profile.classLevel] || null;
-  const classLevelIsSet   = !!studentAgeGroup; // false when sheet value is blank
-
-  // Backward-compatible subject name mapping.
-  // Old module Subject values → canonical display subject names.
-  // Used when computing progress stats from learnProgress so old data
-  // (recorded before this restructure) still counts correctly.
-  const SUBJECT_ALIAS = {
-    'English Grammar': 'English',
-    'Science':         'Science / EVS',
-    'Mathematics':     'Mathematics',
-    'Social Studies':  'Social Studies',
-    'General Knowledge': 'General Knowledge',
-    // forward map (for lookup in the other direction)
-    'English':         'English Grammar',
-    'Science / EVS':   'Science',
-    'EVS':             'Science',
-  };
-
-  // Full CBSE curriculum by age group.
-  // Each subject has:
-  //   key          — canonical name used in subject cards and for filtering
-  //   aliases      — old Subject values that map to this subject (for progress lookup)
-  //   icon/emoji/color — visual identity
-  //   tagline      — subtitle on the card
-  //   topics       — topic tree for the expandable card (name + subtopics[])
-  //   comingSoon   — true if no quiz content exists yet (shows placeholder)
-  //   minAge       — only show this subject for age groups >= this (for scalability)
-  const AGE_CURRICULUM = {
-    'Age 5–6': {
-      label: 'Age 5–6 Years',
-      classEquiv: 'Class 1',
-      subjects: [
-        { key:'English', aliases:['English Grammar','English'], icon:'fa-book-open', emoji:'📖', color:'#3b82f6', tagline:'Alphabet, Phonics & Reading',
-          topics:[
-            { name:'Alphabet', subtopics:['Capital Letters','Small Letters','Letter Sounds'] },
-            { name:'Phonics',  subtopics:['Short Vowels','Blending Sounds','CVC Words']     },
-            { name:'Vowels & Consonants', subtopics:['Identifying Vowels','Consonant Sounds'] },
-            { name:'Sight Words',   subtopics:['Dolch Words Level 1','Flash Card Practice']  },
-            { name:'Reading Skills',subtopics:['Picture Reading','Simple Stories']           },
-            { name:'Simple Sentences', subtopics:['Subject & Predicate','Writing Sentences'] },
-          ]},
-        { key:'Mathematics', aliases:['Mathematics','Maths'], icon:'fa-calculator', emoji:'🔢', color:'#f97316', tagline:'Numbers, Counting & Shapes',
-          topics:[
-            { name:'Numbers 1–100', subtopics:['Counting Forward','Counting Backward','Number Names'] },
-            { name:'Counting',      subtopics:['Objects & Numbers','Skip Counting by 2s & 5s']        },
-            { name:'Addition',      subtopics:['Adding Single Digits','Adding with Pictures']          },
-            { name:'Subtraction',   subtopics:['Taking Away','Subtraction on Number Line']            },
-            { name:'Shapes',        subtopics:['2D Shapes','3D Shapes','Sorting by Shape']            },
-            { name:'Patterns',      subtopics:['AB Patterns','ABC Patterns','Shape Patterns']         },
-          ]},
-        { key:'Hindi', aliases:['Hindi'], icon:'fa-language', emoji:'🇮🇳', color:'#ef4444', tagline:'स्वर, व्यंजन और मात्राएँ', comingSoon:true,
-          topics:[
-            { name:'स्वर',    subtopics:['अ आ इ ई','उ ऊ ए ऐ','ओ औ अं अः'] },
-            { name:'व्यंजन',  subtopics:['क वर्ग','च वर्ग','ट वर्ग','त वर्ग','प वर्ग'] },
-            { name:'मात्राएँ',subtopics:['आ की मात्रा','इ ई की मात्रा','उ ऊ की मात्रा'] },
-          ]},
-        { key:'EVS', aliases:['Science','EVS','Science / EVS'], icon:'fa-leaf', emoji:'🌿', color:'#22c55e', tagline:'Myself, Family & Environment',
-          topics:[
-            { name:'Myself',  subtopics:['My Body Parts','My Senses','I am Special'] },
-            { name:'Family',  subtopics:['My Family Members','Family Relationships']  },
-            { name:'Plants',  subtopics:['Parts of a Plant','Uses of Plants']         },
-            { name:'Animals', subtopics:['Pet Animals','Wild Animals','Farm Animals'] },
-          ]},
-      ],
-    },
-    'Age 6–7': {
-      label: 'Age 6–7 Years',
-      classEquiv: 'Class 2',
-      subjects: [
-        { key:'English', aliases:['English Grammar','English'], icon:'fa-book-open', emoji:'📖', color:'#3b82f6', tagline:'Grammar, Vocabulary & Writing',
-          topics:[
-            { name:'Nouns',          subtopics:['Common Nouns','Proper Nouns','Singular & Plural'] },
-            { name:'Verbs',          subtopics:['Action Words','Doing Words in Sentences']         },
-            { name:'Adjectives',     subtopics:['Describing Words','Colours & Sizes']              },
-            { name:'Sentence Types', subtopics:['Statements','Questions','Exclamations']           },
-            { name:'Comprehension',  subtopics:['Reading Passages','Answering Questions']          },
-            { name:'Creative Writing',subtopics:['Picture Composition','Short Paragraphs']        },
-          ]},
-        { key:'Mathematics', aliases:['Mathematics','Maths'], icon:'fa-calculator', emoji:'🔢', color:'#f97316', tagline:'Numbers up to 1000, Tables & Fractions',
-          topics:[
-            { name:'Numbers up to 1000', subtopics:['Place Value','Comparing Numbers','Ordering'] },
-            { name:'Multiplication',     subtopics:['Tables 2–5','Multiplication Facts']          },
-            { name:'Division',           subtopics:['Equal Groups','Simple Division']             },
-            { name:'Fractions',          subtopics:['Half & Quarter','Equal Parts']               },
-            { name:'Measurement',        subtopics:['Length','Weight','Capacity']                 },
-            { name:'Time',               subtopics:['Hours & Minutes','Reading a Clock']          },
-          ]},
-        { key:'Hindi', aliases:['Hindi'], icon:'fa-language', emoji:'🇮🇳', color:'#ef4444', tagline:'बारहखड़ी और शब्द निर्माण', comingSoon:true,
-          topics:[
-            { name:'बारहखड़ी',    subtopics:['क से ज्ञ तक बारहखड़ी'] },
-            { name:'शब्द निर्माण',subtopics:['दो अक्षर के शब्द','तीन अक्षर के शब्द'] },
-            { name:'वाक्य',       subtopics:['छोटे वाक्य','प्रश्न वाक्य'] },
-          ]},
-        { key:'EVS', aliases:['Science','EVS','Science / EVS'], icon:'fa-leaf', emoji:'🌿', color:'#22c55e', tagline:'Our Community & Environment',
-          topics:[
-            { name:'Our Food',      subtopics:['Food Sources','Healthy Eating'] },
-            { name:'Our Clothes',   subtopics:['Seasonal Clothes','Fabrics']    },
-            { name:'Our Home',      subtopics:['Types of Houses','Rooms']       },
-            { name:'Transport',     subtopics:['Land','Water','Air Transport']  },
-          ]},
-      ],
-    },
-    'Age 7–8': {
-      label: 'Age 7–8 Years',
-      classEquiv: 'Class 3',
-      subjects: [
-        { key:'English', aliases:['English Grammar','English'], icon:'fa-book-open', emoji:'📖', color:'#3b82f6', tagline:'Grammar, Reading & Composition',
-          topics:[
-            { name:'Nouns & Pronouns',   subtopics:['Nouns Review','Personal Pronouns','Possessive Pronouns'] },
-            { name:'Verbs & Tenses',     subtopics:['Simple Present','Simple Past','Future Tense'] },
-            { name:'Adjectives & Adverbs',subtopics:['Degrees of Comparison','Adverbs of Manner'] },
-            { name:'Punctuation',        subtopics:['Full Stop','Comma','Question Mark','Apostrophe'] },
-            { name:'Reading Skills',     subtopics:['Comprehension','Finding Main Idea','Inference'] },
-            { name:'Writing Skills',     subtopics:['Letter Writing','Paragraph Writing','Diary Entry'] },
-          ]},
-        { key:'Mathematics', aliases:['Mathematics','Maths'], icon:'fa-calculator', emoji:'🔢', color:'#f97316', tagline:'Large Numbers, Fractions & Data',
-          topics:[
-            { name:'Numbers up to 10,000', subtopics:['Place Value','Roman Numerals','Rounding'] },
-            { name:'Fractions',            subtopics:['Equivalent Fractions','Comparing Fractions','Adding Fractions'] },
-            { name:'Decimals Intro',       subtopics:['Tenths','Hundredths','Comparing Decimals'] },
-            { name:'Geometry',             subtopics:['Lines & Angles','Triangles','Quadrilaterals'] },
-            { name:'Data Handling',        subtopics:['Tally Charts','Pictographs','Bar Graphs'] },
-            { name:'Multiplication & Division', subtopics:['Tables up to 12','Long Division'] },
-          ]},
-        { key:'Hindi', aliases:['Hindi'], icon:'fa-language', emoji:'🇮🇳', color:'#ef4444', tagline:'व्याकरण और रचना', comingSoon:true,
-          topics:[
-            { name:'संज्ञा',   subtopics:['व्यक्तिवाचक','जातिवाचक','भाववाचक'] },
-            { name:'सर्वनाम',  subtopics:['पुरुषवाचक','निजवाचक'] },
-            { name:'क्रिया',   subtopics:['सकर्मक','अकर्मक'] },
-            { name:'रचना',     subtopics:['अनुच्छेद','पत्र लेखन'] },
-          ]},
-        { key:'Science', aliases:['Science','Science / EVS'], icon:'fa-flask', emoji:'🔬', color:'#22c55e', tagline:'Plants, Animals & The Physical World',
-          topics:[
-            { name:'Plant Life Cycle',  subtopics:['Parts of a Plant','Seed Germination','Photosynthesis'] },
-            { name:'Animal Kingdom',    subtopics:['Classification','Adaptation','Food Chains'] },
-            { name:'Human Body',        subtopics:['Organs','Skeletal System','Digestive System'] },
-            { name:'Water',             subtopics:['Water Cycle','Uses of Water','Conservation'] },
-            { name:'Air & Atmosphere',  subtopics:['Composition of Air','Wind','Weather'] },
-            { name:'Simple Machines',   subtopics:['Lever','Pulley','Inclined Plane'] },
-          ]},
-        { key:'Computer', aliases:['Computer','ICT'], icon:'fa-laptop', emoji:'💻', color:'#6366f1', tagline:'Basics of Computing & Technology', comingSoon:true,
-          topics:[
-            { name:'Introduction to Computers', subtopics:['Parts of a Computer','Input & Output Devices'] },
-            { name:'Using a Keyboard',          subtopics:['Home Row Keys','Typing Practice'] },
-            { name:'MS Paint',                  subtopics:['Drawing Tools','Colouring','Saving a File'] },
-          ]},
-      ],
-    },
-    'Age 8–9': {
-      label: 'Age 8–9 Years',
-      classEquiv: 'Class 4',
-      subjects: [
-        { key:'English', aliases:['English Grammar','English'], icon:'fa-book-open', emoji:'📖', color:'#3b82f6', tagline:'Advanced Grammar & Literature',
-          topics:[
-            { name:'Parts of Speech Review', subtopics:['Nouns','Pronouns','Verbs','Adjectives','Adverbs','Prepositions'] },
-            { name:'Tenses',                 subtopics:['Simple','Continuous','Perfect Tenses'] },
-            { name:'Voice & Speech',         subtopics:['Active & Passive','Direct & Indirect Speech'] },
-            { name:'Comprehension',          subtopics:['Prose Passages','Poetry Appreciation'] },
-            { name:'Composition',            subtopics:['Essay Writing','Story Writing','Notice Writing'] },
-            { name:'Vocabulary',             subtopics:['Synonyms','Antonyms','Idioms','Proverbs'] },
-          ]},
-        { key:'Mathematics', aliases:['Mathematics','Maths'], icon:'fa-calculator', emoji:'🔢', color:'#f97316', tagline:'Integers, Algebra & Mensuration',
-          topics:[
-            { name:'Large Numbers',    subtopics:['Crores & Millions','Operations on Large Numbers'] },
-            { name:'Factors & Multiples', subtopics:['HCF','LCM','Prime Factorisation'] },
-            { name:'Fractions & Decimals', subtopics:['All Operations','Word Problems'] },
-            { name:'Percentage',       subtopics:['Percent Concept','Profit & Loss','Discount'] },
-            { name:'Algebra Intro',    subtopics:['Variables','Simple Equations','Substitution'] },
-            { name:'Area & Perimeter', subtopics:['Rectangle','Square','Triangle','Complex Shapes'] },
-          ]},
-        { key:'Hindi', aliases:['Hindi'], icon:'fa-language', emoji:'🇮🇳', color:'#ef4444', tagline:'उन्नत व्याकरण और साहित्य', comingSoon:true,
-          topics:[
-            { name:'विशेषण',   subtopics:['गुणवाचक','परिमाणवाचक','संख्यावाचक'] },
-            { name:'काल',      subtopics:['भूतकाल','वर्तमान काल','भविष्यकाल'] },
-            { name:'मुहावरे',  subtopics:['प्रचलित मुहावरे','वाक्य में प्रयोग'] },
-            { name:'निबंध',    subtopics:['वर्णनात्मक','विचारात्मक','कथात्मक'] },
-          ]},
-        { key:'Science', aliases:['Science','Science / EVS'], icon:'fa-flask', emoji:'🔬', color:'#22c55e', tagline:'Biology, Physics & Chemistry Basics',
-          topics:[
-            { name:'Crops & Agriculture', subtopics:['Kharif & Rabi Crops','Irrigation','Fertilisers'] },
-            { name:'Microorganisms',      subtopics:['Bacteria','Viruses','Fungi','Useful & Harmful'] },
-            { name:'Force & Pressure',    subtopics:['Contact & Non-Contact Forces','Pressure','Friction'] },
-            { name:'Light',               subtopics:['Sources','Reflection','Shadows'] },
-            { name:'Combustion',          subtopics:['Types of Combustion','Fuels','Fire Safety'] },
-            { name:'Conservation',        subtopics:['Natural Resources','Pollution','Sustainable Living'] },
-          ]},
-        { key:'Social Studies', aliases:['Social Studies','Geography','History'], icon:'fa-earth-asia', emoji:'🌍', color:'#eab308', tagline:'History, Geography & Civics',
-          topics:[
-            { name:'Our Country India',  subtopics:['Physical Features','States & Capitals','Climate'] },
-            { name:'Indian History',     subtopics:['Ancient Civilisations','Medieval India','Freedom Movement'] },
-            { name:'Government',         subtopics:['Democracy','Constitution','Rights & Duties'] },
-            { name:'Maps & Globe',       subtopics:['Latitudes & Longitudes','Map Reading','Time Zones'] },
-            { name:'Natural Resources',  subtopics:['Minerals','Forests','Water Resources'] },
-          ]},
-        { key:'Computer', aliases:['Computer','ICT'], icon:'fa-laptop', emoji:'💻', color:'#6366f1', tagline:'MS Office, Internet & Safety', comingSoon:true,
-          topics:[
-            { name:'MS Word',     subtopics:['Formatting Text','Tables','Mail Merge'] },
-            { name:'MS Excel',    subtopics:['Spreadsheet Basics','Formulas','Charts'] },
-            { name:'Internet',    subtopics:['WWW','Browsers','Email','Online Safety'] },
-          ]},
-      ],
-    },
-    'Age 9–10': {
-      label: 'Age 9–10 Years',
-      classEquiv: 'Class 5',
-      subjects: [
-        { key:'English', aliases:['English Grammar','English'], icon:'fa-book-open', emoji:'📖', color:'#3b82f6', tagline:'Literature, Grammar & Advanced Writing',
-          topics:[
-            { name:'Grammar Mastery',   subtopics:['All Parts of Speech','Clauses & Phrases','Complex Sentences'] },
-            { name:'Literature',        subtopics:['Prose Analysis','Poetry','Drama Excerpts'] },
-            { name:'Writing Skills',    subtopics:['Formal Letters','Report Writing','Creative Writing','Debate'] },
-            { name:'Reading Comprehension', subtopics:['Unseen Passages','Inference','Critical Thinking'] },
-            { name:'Vocabulary',        subtopics:['Word Roots','Prefixes & Suffixes','Advanced Idioms'] },
-            { name:'Nouns',             subtopics:['All Types of Nouns','Case of Nouns'] },
-          ]},
-        { key:'Mathematics', aliases:['Mathematics','Maths'], icon:'fa-calculator', emoji:'🔢', color:'#f97316', tagline:'Integers, Fractions, Algebra & Geometry',
-          topics:[
-            { name:'The Fish Tale',         subtopics:['Large Numbers','Estimation','Place Value'] },
-            { name:'Shapes and Angles',     subtopics:['Types of Angles','Measuring Angles','Polygons'] },
-            { name:'Parts and Wholes',      subtopics:['Fractions','Equivalent Fractions','Fraction Operations'] },
-            { name:'Factors and Multiples', subtopics:['Factors','Multiples','LCM','HCF'] },
-            { name:'Decimals',              subtopics:['Decimal Place Value','Operations','Conversion'] },
-            { name:'Area and Perimeter',    subtopics:['Rectangle','Square','Composite Shapes'] },
-            { name:'Charts and Graphs',     subtopics:['Data Collection','Bar Graphs','Pictographs'] },
-            { name:'Multiplication & Division', subtopics:['Multi-digit','Long Division','Word Problems'] },
-            { name:'Measurement',           subtopics:['Length','Weight','Capacity','Unit Conversion'] },
-          ]},
-        { key:'Hindi', aliases:['Hindi'], icon:'fa-language', emoji:'🇮🇳', color:'#ef4444', tagline:'उच्च स्तरीय हिंदी व्याकरण', comingSoon:true,
-          topics:[
-            { name:'व्याकरण',   subtopics:['समास','संधि','प्रत्यय','उपसर्ग'] },
-            { name:'काव्य',     subtopics:['कविता पाठ','भाव-विस्तार','कवि परिचय'] },
-            { name:'गद्य',      subtopics:['गद्यांश','प्रश्नोत्तर','लेखक परिचय'] },
-            { name:'रचना',      subtopics:['पत्र','निबंध','कहानी लेखन'] },
-          ]},
-        { key:'Science', aliases:['Science','Science / EVS'], icon:'fa-flask', emoji:'🔬', color:'#22c55e', tagline:'Advanced Biology, Physics & Chemistry',
-          topics:[
-            { name:'Plant Life Cycle',  subtopics:['Germination','Photosynthesis','Reproduction'] },
-            { name:'Solar System',      subtopics:['Planets','Moon Phases','Stars & Galaxies'] },
-            { name:'Water Cycle',       subtopics:['Evaporation','Condensation','Rainfall'] },
-            { name:'Human Body',        subtopics:['Organ Systems','Nutrition','Disease Prevention'] },
-            { name:'Matter & Materials',subtopics:['States of Matter','Properties','Changes'] },
-            { name:'Electricity',       subtopics:['Circuits','Conductors & Insulators','Safety'] },
-          ]},
-        { key:'Social Studies', aliases:['Social Studies','Geography','History'], icon:'fa-earth-asia', emoji:'🌍', color:'#eab308', tagline:'Advanced History, Geography & Civics',
-          topics:[
-            { name:'The Earth',           subtopics:['Layers of Earth','Landforms','Oceans'] },
-            { name:'Indian Geography',    subtopics:['Physical Divisions','Rivers','Climate Zones'] },
-            { name:'History of India',    subtopics:['Mughal Empire','British Rule','Independence'] },
-            { name:'Civics',              subtopics:['Parliament','State Government','Local Bodies'] },
-            { name:'Economic Geography',  subtopics:['Agriculture','Industries','Trade'] },
-          ]},
-        { key:'Computer', aliases:['Computer','ICT'], icon:'fa-laptop', emoji:'💻', color:'#6366f1', tagline:'Programming, Internet & Digital Literacy', comingSoon:true,
-          topics:[
-            { name:'Programming Basics', subtopics:['Scratch Introduction','Algorithms','Simple Programs'] },
-            { name:'Database Concepts',  subtopics:['What is a Database','MS Access Basics'] },
-            { name:'Networking',         subtopics:['LAN & WAN','Internet Infrastructure','Cloud Computing'] },
-            { name:'Cyber Safety',       subtopics:['Password Safety','Phishing','Digital Footprint'] },
-          ]},
-      ],
-    },
-  };
-
-  // ── Derive the current student's subject list from their age group ───────────
-  // This replaces ASGN_SUBJ (the old flat subject list from cfg.assignmentSubjects).
-  // AGE_SUBJECTS is the canonical list of subjects for THIS student's age group.
-  const currentCurriculum = AGE_CURRICULUM[studentAgeGroup || 'Age 7–8'] || AGE_CURRICULUM['Age 7–8'];
-  const AGE_SUBJECTS = currentCurriculum.subjects;
-
-  // ── Class filter helpers ──────────────────────────────────────────────────
-  // All known class levels in display order
-  const ALL_CLASSES = ['Class 1','Class 2','Class 3','Class 4','Class 5'];
-  // Map every class to its AGE_CURRICULUM entry
-  const curriculumByClass = {
-    'Class 1': AGE_CURRICULUM['Age 5–6'],
-    'Class 2': AGE_CURRICULUM['Age 6–7'],
-    'Class 3': AGE_CURRICULUM['Age 7–8'],
-    'Class 4': AGE_CURRICULUM['Age 8–9'],
-    'Class 5': AGE_CURRICULUM['Age 9–10'],
-  };
-  // Derive the active subject list based on current filter selection:
-  //   null      → student's own class only  (default)
-  //   'all'     → union of every class's subjects (deduplicated by key)
-  //   Set<str>  → union of selected classes' subjects
-  const getFilteredSubjects = () => {
-    if (!classFilter) return AGE_SUBJECTS; // default: my class
-    const classes = classFilter === 'all' ? ALL_CLASSES : [...classFilter];
+  // Subjects and topics now come entirely from the Google Sheet via
+  // portal-config.js (which already filters by classLevel server-side).
+  // AGE_CURRICULUM has been removed — no more hardcoded subject/topic lists,
+  // no more code deploys needed to add subjects or update taglines.
+  //
+  // classLevelIsSet: true once the student has a recognised class set.
+  // CLASS_LEVELS is the sheet-driven list of all class levels (Class 0-10 +
+  // Adult, by default) returned from portal-config.js as cfg.classLevels.
+  // Deduplicate by Class name — the master sheet may have the same class on
+  // multiple rows (one per subject), so we keep only the first occurrence
+  // per class name after sorting by Display Order.
+  const CLASS_LEVELS = (() => {
     const seen = new Set();
-    const merged = [];
-    classes.forEach(cls => {
-      const curr = curriculumByClass[cls];
-      if (!curr) return;
-      curr.subjects.forEach(subj => {
-        if (!seen.has(subj.key)) { seen.add(subj.key); merged.push(subj); }
-      });
-    });
-    return merged;
-  };
-  const FILTERED_SUBJECTS = getFilteredSubjects();
+    return (cfg.classLevels || [])
+      .filter(c => isRowActive(c.Active))
+      .sort((a,b) => (Number(a['Display Order'])||999) - (Number(b['Display Order'])||999))
+      .filter(c => { const k = (c.Class||'').trim(); if (!k || seen.has(k)) return false; seen.add(k); return true; });
+  })();
+  const KNOWN_CLASSES = CLASS_LEVELS.map(c => c.Class);
+  const classLevelIsSet = KNOWN_CLASSES.includes(profile.classLevel);
 
-  // Label shown in the header when a filter is active
+  // Age group label (display only — used in the filter pill header)
+  const CLASS_TO_AGE_LABEL = Object.fromEntries(CLASS_LEVELS.map(c => [c.Class, c.Age]));
+
+  const studentAgeGroup = CLASS_TO_AGE_LABEL[profile.classLevel] || null;
+
+  // classFilter state controls an *additional* client-side cross-class preview
+  // (Assignments tab only — Dashboard/SUBJ/resumeTarget below always use the
+  // student's OWN class via LMOD/ASGN_SUBJ, regardless of this filter):
+  //   null      → default: show only current-class subjects (LMOD/ASGN_SUBJ)
+  //   'all'     → show every class's subjects/topics merged together
+  //   Set<str>  → show subjects/topics for exactly these classes (own class
+  //               is always included in the Set by the pill click-handler)
+  //
+  // ASGN_SUBJ: subject cards from the sheet, own class only (already
+  // class-filtered server-side). Used by the Dashboard tab and anywhere else
+  // that must stay locked to the student's own class.
+  const ASGN_SUBJ = (cfg.assignmentSubjects||[])
+    .filter(s => isRowActive(s.Active))
+    .sort((a,b) => (Number(a['Display Order'])||0) - (Number(b['Display Order'])||0));
+
+  // ALL_CLASSES: display order for the class filter pills (sheet-driven).
+  const ALL_CLASSES = CLASS_LEVELS.map(c => c.Class);
+
+  // ── Cross-class preview resolution (Assignments tab "select another class") ──
+  // previewClasses: the exact Set of classes to show, or null for "no
+  // restriction" (the 'all' pill). crossClassActive is true whenever the
+  // pills want something other than just the student's own class.
+  const crossClassActive = classFilter === 'all' || classFilter instanceof Set;
+  const previewClasses   = classFilter instanceof Set ? classFilter : null;
+
+  // While crossClassCfg hasn't finished loading yet, fall back to the
+  // own-class data so the screen doesn't flash empty — it'll update the
+  // moment the fetch resolves.
+  const crossSourceModules  = crossClassCfg?.learningModules    || cfg.learningModules;
+  const crossSourceSubjects = crossClassCfg?.assignmentSubjects || cfg.assignmentSubjects;
+
+  // classRowVisible: true if a Sheet row's Class column should be shown
+  // under the CURRENT pill selection. Blank Class = visible to all classes
+  // (same convention as the server-side classMatches() in portal-config.js).
+  const classRowVisible = rowClass => {
+    if (!crossClassActive) return true; // default view already own-class only
+    if (!previewClasses) return true;   // 'all' pill — no restriction
+    const rc = (rowClass || '').trim();
+    if (!rc) return true;
+    return previewClasses.has(rc);
+  };
+
+  // ASSIGN_LMOD: the module list actually used by the Assignments tab (topic
+  // grids, module player, progress summary). Equals LMOD by default; once a
+  // class-preview pill is active, it's built from the unfiltered cross-class
+  // dataset and narrowed to the selected classes.
+  const ASSIGN_LMOD = crossClassActive
+    ? (crossSourceModules||[]).filter(m => isRowActive(m.Active) && classRowVisible(m.Class))
+        .sort((a,b)=>(Number(a['Display Order'])||0)-(Number(b['Display Order'])||0))
+    : LMOD;
+
+  // stepsFor: quiz steps for a module. Falls back to the cross-class step
+  // list when previewing another class, so a topic borrowed from "Class 9"
+  // still has its quiz steps available even though cfg.learningSteps only
+  // ever holds the student's own class.
+  const stepsForSource = crossClassActive ? (crossClassCfg?.learningSteps || cfg.learningSteps) : cfg.learningSteps;
+  const stepsFor = moduleId => (stepsForSource||[])
+    .filter(s => isRowActive(s.Active) && s['Module ID']===moduleId)
+    .sort((a,b)=>(Number(a['Step Number'])||0)-(Number(b['Step Number'])||0));
+
+  // ASSIGN_SUBJ: subject cards for the Assignments tab. By default this is
+  // just ASGN_SUBJ. In preview mode, rebuild it from the unfiltered subject
+  // list, keeping only subjects that actually have at least one visible
+  // topic under the current selection — so a subject only offered to Class 9
+  // doesn't show an empty card while previewing Class 3, and vice versa.
+  //
+  // Fix for issues 4 & 5 (duplicate subjects / forced Class 1):
+  // Previously the Map deduped by subject name but picked the first row it
+  // found regardless of class — so Mathematics from Class 1 would appear
+  // even when the student selected Class 5. Now we additionally require that
+  // the subject row's Class column matches one of the selected classes before
+  // treating it as the representative row for that subject.
+  const ASSIGN_SUBJ = crossClassActive
+    ? (() => {
+        const visibleNames = new Set(ASSIGN_LMOD.map(m => m.Subject));
+        const seen = new Map();
+        // Sort so own-class rows are preferred over other classes when the same
+        // subject exists across multiple classes (e.g. Mathematics in every class).
+        const subjectPool = [...(crossSourceSubjects||[])].sort((a,b) => {
+          const aOwn = a.Class === profile.classLevel ? 0 : 1;
+          const bOwn = b.Class === profile.classLevel ? 0 : 1;
+          return aOwn - bOwn;
+        });
+        subjectPool
+          .filter(s =>
+            isRowActive(s.Active) &&
+            visibleNames.has(s.Subject) &&
+            // Only include if this subject row's class is in the selected set,
+            // OR if the subject row has no Class column (global subject).
+            (!s.Class || !previewClasses || previewClasses.has(s.Class))
+          )
+          .forEach(s => { if (!seen.has(s.Subject)) seen.set(s.Subject, s); });
+        return [...seen.values()].sort((a,b) => (Number(a['Display Order'])||0) - (Number(b['Display Order'])||0));
+      })()
+    : ASGN_SUBJ;
+
+  // ── topicsForSubjectKey: match modules by Subject name (exact, no fuzzy
+  // match), scoped to ASSIGN_LMOD so it automatically respects the current
+  // class-preview selection. ──────────────────────────────────────────────
+  const topicsForSubjectKey = subjectName =>
+    ASSIGN_LMOD.filter(m => {
+      if (m.Subject !== subjectName) return false;
+      const id  = m['Module ID'];
+      const p   = learnProgress[id];
+      if (!p?.completedAt) return true;               // not yet completed → show
+      const totalSteps    = stepsFor(id).length;
+      const answeredSteps = Object.keys(p.answers || {}).length;
+      return totalSteps > answeredSteps;              // new questions added → reappear
+    });
+
+  // ── Subtopics from sheet (optional Subtopics column, comma-separated) ────────
+  // Renders the pill row inside the subject card. Falls back to an empty array
+  // if the column isn't present yet (non-breaking during migration).
+  const subtopicsFor = module => {
+    const raw = module['Subtopics'] || '';
+    return raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  };
+
+  // ── subjectStats: progress summary for one subject card ─────────────────────
+  // allTopicsForSubjectKey: every module in this subject, regardless of
+  // completion status — used purely for progress stats (% complete, X/Y
+  // topics) so the progress bar reflects true completion even though
+  // completed topics are hidden from the playable list below.
+  const allTopicsForSubjectKey = subjectName => ASSIGN_LMOD.filter(m => m.Subject === subjectName);
+
+  const ageSubjectStats = subjectName => {
+    const allTopics = allTopicsForSubjectKey(subjectName);
+    const completed = allTopics.filter(m => learnProgress[m['Module ID']]?.completedAt).length;
+    const attempted = allTopics.reduce((s,m) => s+(learnProgress[m['Module ID']]?.attempted||0),0);
+    const correct   = allTopics.reduce((s,m) => s+(learnProgress[m['Module ID']]?.correct||0),0);
+    const pct = allTopics.length ? Math.round((completed/allTopics.length)*100) : 0;
+    return { total: allTopics.length, completed, remaining: allTopics.length-completed, pct, attempted, correct };
+  };
+
+  // ── classFilter-aware subject list ──────────────────────────────────────────
+  // FILTERED_SUBJECTS is what the Assignments tab actually renders — it now
+  // correctly tracks ASSIGN_SUBJ, which already accounts for the pill
+  // selection (own class / a chosen Set of classes / 'all'). This is the
+  // fix for "selecting another class didn't load that class's subjects":
+  // previously this line was hardcoded to ASGN_SUBJ (own class only) no
+  // matter what classFilter was set to.
+  const FILTERED_SUBJECTS = ASSIGN_SUBJ;
+
+  // filterLabel: subtitle shown in the page header
   const filterLabel = (() => {
-    if (!classFilter) return `${currentCurriculum.classEquiv} · ${studentAgeGroup}`;
+    if (!classFilter) return `${profile.classLevel}${studentAgeGroup ? ' · ' + studentAgeGroup : ''}`;
     if (classFilter === 'all') return 'All Classes';
     const arr = [...classFilter].sort();
     return arr.length === 1 ? arr[0] : arr.join(', ');
   })();
 
-  // ── topicsForSubject: match modules by key + all aliases ────────────────────
-  // Backward compatible — old modules tagged Subject:'English Grammar' are
-  // matched by the English subject card's aliases list.
-  const topicsForSubjectKey = subjectKey => {
-    const subj = AGE_SUBJECTS.find(s => s.key === subjectKey);
-    if (!subj) return [];
-    const aliases = new Set([subjectKey, ...(subj.aliases || [])]);
-    return LMOD.filter(m => aliases.has(m.Subject));
-  };
-
-  // ── Age-group-aware subjectStats ────────────────────────────────────────────
-  const ageSubjectStats = subjectKey => {
-    const topics = topicsForSubjectKey(subjectKey);
-    const completed = topics.filter(m => learnProgress[m['Module ID']]?.completedAt).length;
-    const attempted = topics.reduce((s,m) => s+(learnProgress[m['Module ID']]?.attempted||0),0);
-    const correct   = topics.reduce((s,m) => s+(learnProgress[m['Module ID']]?.correct||0),0);
-    const pct = topics.length ? Math.round((completed/topics.length)*100) : 0;
-    return { total: topics.length, completed, remaining: topics.length-completed, pct, attempted, correct };
-  };
-
-  // Step 1 of the drill-down: subjects come from their own config rows, but the
+  // Step 1 subject cards — ASGN_SUBJ is already defined above (line ~1048).
   // topic COUNT and progress shown on each subject card is always computed live
   // from LMOD — so a brand-new subject just needs a row here + topic rows above,
   // no app code changes.
-  const ASGN_SUBJ = (cfg.assignmentSubjects||[]).filter(s=>isRowActive(s.Active)).sort((a,b)=>(Number(a['Display Order'])||0)-(Number(b['Display Order'])||0));
 
   // ASGN: prefer real API assignments. Compute 'Overdue' status automatically
   // (teacher sets Not Started/In Progress; client marks Overdue if past due date).
@@ -1432,18 +2379,16 @@ function PortalInner() {
   // started is already complete) — the button still works in that case, it
   // just opens the Assignments subject picker instead.
   const resumeTarget = (() => {
-    // Only find in-progress modules that belong to THIS student's age group.
-    const ageModuleIds = new Set(AGE_SUBJECTS.flatMap(s => topicsForSubjectKey(s.key).map(m=>m['Module ID'])));
+    // Only surface in-progress modules that belong to this student's current
+    // subject list (the API already filtered LMOD by class).
+    const validSubjectNames = new Set(ASGN_SUBJ.map(s => s.Subject));
     let best = null;
     LMOD.forEach(m => {
-      if (!ageModuleIds.has(m['Module ID'])) return; // not in this student's age group
+      if (!validSubjectNames.has(m.Subject)) return; // not in student's subjects
       const p = learnProgress[m['Module ID']];
       if (!p?.startedAt || p?.completedAt) return;
       const ts = p.startedAt;
-      // Map the module's Subject to the correct age-group subject key for navigation
-      const subjEntry = AGE_SUBJECTS.find(s=>s.key===m.Subject||(s.aliases||[]).includes(m.Subject));
-      const subjectName = subjEntry?.key || m.Subject;
-      if (!best || ts > best.lastTs) best = { subjectName, moduleId: m['Module ID'], lastTs: ts };
+      if (!best || ts > best.lastTs) best = { subjectName: m.Subject, moduleId: m['Module ID'], lastTs: ts };
     });
     return best;
   })();
@@ -1567,6 +2512,13 @@ function PortalInner() {
   // so the correct age group / class shows immediately — even before the auth
   // API responds. The auth re-validates credentials, but the UI doesn't have
   // to wait for that before showing the right content.
+  //
+  // Issue 4 fix: previously this restored `profile` but never called
+  // setAuthed(true), so a page refresh always fell back to the login screen
+  // even though a valid session was sitting in localStorage. Now a restored
+  // session with a real studentId is treated as authenticated immediately —
+  // the student stays logged in across refreshes, exactly like the rest of
+  // the app already assumed it worked.
   useEffect(() => {
     try {
       const saved = localStorage.getItem('vedanta_profile');
@@ -1575,6 +2527,7 @@ function PortalInner() {
         // Only restore if there's a real studentId — don't restore a half-empty state
         if (parsed?.id) {
           setProfile(parsed);
+          setAuthed(true);
         }
       }
     } catch {}
@@ -1611,7 +2564,7 @@ function PortalInner() {
       .then(r => r.json())
       .then(({ progress }) => {
         if (!Array.isArray(progress) || !progress.length) return;
-        const rebuilt = rebuildLearnProgressFromRows(progress, moduleId => stepsFor(moduleId).length);
+        const rebuilt = rebuildLearnProgressFromRows(progress, moduleId => stepsFor(moduleId));
         setLearnProgress(prev => {
           const merged = { ...rebuilt };
           Object.keys(prev).forEach(moduleId => {
@@ -1625,20 +2578,26 @@ function PortalInner() {
       })
       .catch(() => {}); // offline or sheet unreachable — localStorage already rendered above
 
-    // ── Fetch real per-student data (subjects progress, assignments, attendance)
-    // in parallel. Each is independent — if one fails the others still render.
+    // ── Fetch real per-student data (subjects progress, assignments, attendance,
+    // chapter assignments) in parallel. Each is independent — if one fails the
+    // others still render.
     const sid = encodeURIComponent(profile.id);
+    setMyAssignmentsLoading(true);
     Promise.allSettled([
       fetch(`/api/student/subjects?studentId=${sid}`).then(r=>r.json()),
       fetch(`/api/student/assignments?studentId=${sid}`).then(r=>r.json()),
       fetch(`/api/student/attendance?studentId=${sid}`).then(r=>r.json()),
-    ]).then(([subjRes, asgnRes, attRes]) => {
+      fetch(`/api/student/chapter-assignments?studentId=${sid}`).then(r=>r.json()),
+    ]).then(([subjRes, asgnRes, attRes, chAsgnRes]) => {
       if (subjRes.status === 'fulfilled' && subjRes.value.subjects?.length)
         setRealSubjects(subjRes.value.subjects);
       if (asgnRes.status === 'fulfilled' && asgnRes.value.assignments?.length)
         setRealAssignments(asgnRes.value.assignments);
       if (attRes.status === 'fulfilled' && attRes.value.records !== undefined)
         setRealAttendance(attRes.value);
+      if (chAsgnRes.status === 'fulfilled')
+        setMyAssignments(chAsgnRes.value.assignments || []);
+      setMyAssignmentsLoading(false);
     });
   }, [profile.id, cfgReady]);
 
@@ -1660,18 +2619,45 @@ function PortalInner() {
   // if the network call fails, the student's local progress (above) is
   // already saved, so nothing is lost; it just won't show up in the
   // dashboard/leaderboard on another device until the next successful sync.
-  const recordAnswer = useCallback(({ moduleId, subject, topic, questionNumber, answerGiven, correctAnswer, isCorrect }) => {
+  const recordAnswer = useCallback(({ moduleId, subject, topic, questionNumber, answerGiven, correctAnswer, isCorrect, timeTakenSeconds }) => {
     fetch('/api/student/progress', {
       method: 'POST', headers: { 'Content-Type':'application/json' },
       body: JSON.stringify({
         studentId: profile.id, studentName: profile.name, subject, topic, moduleId,
         questionNumber, answerGiven, correctAnswer, status: isCorrect ? 'Correct' : 'Incorrect',
+        timeTakenSeconds,
       }),
     }).catch(() => {});
   }, [profile.id, profile.name]);
 
   // Leaving the Assignments tab always returns to Subject selection (Step 1) next time it's opened.
   useEffect(() => { if (tab !== 'assignments') { setActiveModuleId(null); setActiveAssignmentSubject(null); } }, [tab]);
+  useEffect(() => { if (tab !== 'myassignments') { setActiveMyAssignmentId(null); } }, [tab]);
+
+  // Re-fetch this student's "Assignments for you" list — used right after
+  // the tab is opened and again after completing one, so Status flips to
+  // "Completed" without needing a full page reload.
+  const refetchMyAssignments = useCallback(() => {
+    if (!profile.id) return;
+    fetch(`/api/student/chapter-assignments?studentId=${encodeURIComponent(profile.id)}`)
+      .then(r => r.json())
+      .then(data => setMyAssignments(data.assignments || []))
+      .catch(() => {});
+  }, [profile.id]);
+
+  // Called by LearningModulePlayer's onRangeComplete when a student finishes
+  // every question in their assigned range. Optimistically flips the row to
+  // "Completed" locally, then syncs the sheet — and exits back to the table.
+  const completeMyAssignment = useCallback((assignmentId) => {
+    setMyAssignments(prev => prev.map(a =>
+      a.AssignmentID === assignmentId ? { ...a, Status: 'Completed' } : a
+    ));
+    fetch('/api/student/complete-assignment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assignmentId }),
+    }).catch(() => {});
+  }, []);
   // Selecting any nav item closes the mobile drawer (desktop sidebar is unaffected — see CSS).
   useEffect(() => { setMobileNavOpen(false); }, [tab]);
 
@@ -1689,6 +2675,20 @@ function PortalInner() {
       .finally(() => setLeaderboardLoading(false));
   }, [tab, authed]);
 
+  // Weighted leaderboard fetched the same way — lazily, once the Leaderboard
+  // tab is opened. Kept as a separate request/cache from the regular
+  // leaderboard since it's a different aggregate (assignment-scoped,
+  // accuracy-ranked, min-50-attempts gated).
+  useEffect(() => {
+    if (tab !== 'leaderboard' || !authed) return;
+    setWeightedLeaderboardLoading(true);
+    fetch('/api/student/weighted-leaderboard')
+      .then(r => r.json())
+      .then(data => setWeightedLeaderboard({ overall: data.overall||[], bySubject: data.bySubject||{} }))
+      .catch(() => {})
+      .finally(() => setWeightedLeaderboardLoading(false));
+  }, [tab, authed]);
+
   const notifStyle = type => ({
     bg: type==='assignment'?'rgba(59,130,246,.15)':type==='result'?'rgba(34,197,94,.15)':type==='reminder'?'rgba(245,166,35,.15)':type==='schedule'?'rgba(239,68,68,.15)':'rgba(168,85,247,.15)',
     cl: type==='assignment'?'#60a5fa':type==='result'?'#4ade80':type==='reminder'?'#f5a623':type==='schedule'?'#f87171':'#c084fc',
@@ -1703,7 +2703,14 @@ function PortalInner() {
   const CSS = `
     @keyframes skpulse{0%,100%{opacity:1}50%{opacity:.35}}
     *{box-sizing:border-box;margin:0;padding:0;}
-    :root{--navy:#0a0f2c;--navy-mid:#121a3e;--surf:#161d3f;--surf2:#1e2850;--teal:#00c6a7;--accent:#f5a623;--text:#e2e8f0;--muted:#64748b;--border:rgba(255,255,255,.08);--r:14px;--fd:'Playfair Display',Georgia,serif;--fb:'DM Sans',system-ui,sans-serif;}
+    :root{--navy:#0a0f2c;--navy-mid:#121a3e;--surf:#161d3f;--surf2:#1e2850;--teal:#00c6a7;--accent:#f5a623;--text:#e2e8f0;--muted:#64748b;--border:rgba(255,255,255,.08);--r:14px;--fd:'Playfair Display',Georgia,serif;--fb:'DM Sans',system-ui,sans-serif;--fm:'Inter',system-ui,sans-serif;
+      /* Issue 1 — clean, simple, highly-readable quiz typography (separate
+         from the site's decorative --fd serif so question text never
+         renders in a fallback serif font). --fq = quiz body copy,
+         --fqh = quiz headings/labels. */
+      --fq:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+      --fqh:'Poppins','Inter',-apple-system,sans-serif;
+    }
     html,body{height:100%;font-family:var(--fb);background:var(--navy);color:var(--text);-webkit-font-smoothing:antialiased;}
     .lw{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--navy);position:relative;overflow:hidden;}
     .lbg{position:absolute;inset:0;background:radial-gradient(ellipse 55% 55% at 70% 30%,rgba(0,198,167,.12) 0%,transparent 60%),radial-gradient(ellipse 40% 40% at 20% 70%,rgba(245,166,35,.08) 0%,transparent 60%);}
@@ -1871,6 +2878,14 @@ function PortalInner() {
     @media(max-width:640px){.card-t-row{flex-direction:column;align-items:stretch;}.card-t-row .btn-t-sm{width:100%;justify-content:center;}}
     .btn-outline{background:transparent;border:1px solid rgba(255,255,255,.15);border-radius:10px;padding:11px 22px;color:rgba(255,255,255,.7);font-family:var(--fb);font-size:13px;font-weight:600;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;gap:7px;}
     .btn-outline:hover{border-color:var(--teal);color:var(--teal);}
+    /* ANNOUNCEMENT STRIP */
+    .ann-strip{background:linear-gradient(90deg,var(--teal) 0%,#0099cc 100%);color:#fff;font-size:12px;font-weight:600;overflow:hidden;white-space:nowrap;height:34px;display:flex;align-items:center;border-bottom:1px solid rgba(255,255,255,.1);}
+    .ann-strip-inner{display:inline-flex;align-items:center;animation:ann-scroll 35s linear infinite;}
+    .ann-strip-inner:hover{animation-play-state:paused;}
+    .ann-strip-seg{padding:0 48px;display:inline-flex;align-items:center;gap:9px;white-space:nowrap;}
+    .ann-strip-seg i{font-size:10px;opacity:.8;}
+    @keyframes ann-scroll{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+
     .wbanner{background:linear-gradient(135deg,rgba(0,198,167,.15),rgba(0,153,204,.1));border:1px solid rgba(0,198,167,.2);border-radius:var(--r);padding:22px 26px;margin-bottom:22px;display:flex;align-items:center;justify-content:space-between;gap:16px;}
     .wbanner h2{font-family:var(--fd);font-size:20px;font-weight:900;color:#fff;margin-bottom:4px;}
     .wbanner p{font-size:13px;color:rgba(255,255,255,.6);}
@@ -1995,6 +3010,291 @@ function PortalInner() {
     .lp-mistake-row{font-size:12.5px;color:rgba(255,255,255,.6);margin-bottom:3px;}
     .lp-actions{display:flex;gap:12px;justify-content:center;margin-top:24px;flex-wrap:wrap;}
     @media(max-width:640px){.lm-grid{grid-template-columns:1fr;}.asgn-subj-grid{grid-template-columns:1fr;}.lp-opts{grid-template-columns:1fr;}.lp-hero{padding:28px 18px;}.lp-nav-row{flex-wrap:wrap;}.lp-nav-row button{flex:1;justify-content:center;min-width:130px;}}
+    /* ── Streak toast pop animation ── */
+    @keyframes streakPop{from{opacity:0;transform:translateX(-50%) scale(.7) translateY(-12px)}to{opacity:1;transform:translateX(-50%) scale(1) translateY(0)}}
+    /* ── Full-screen mobile-first question layout ── */
+    /* FIX: this used to be a normal in-flow box (height:100vh) inside .main,
+       which is itself scrollable. On mobile, .mnav-bar renders ABOVE it in
+       that same scroll container, so mnav-bar-height + 100vh > the actual
+       viewport height — pushing the bottom Previous/Next row below the
+       fold and forcing a scroll to reach it. Making this a fixed, full-
+       viewport overlay removes it from that flow entirely so it always
+       fills the real screen and the nav row is always visible without
+       scrolling, on any device. */
+    .lp-fullscreen{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;height:100vh;height:100dvh;padding:0;background:var(--navy);overflow:hidden;}
+    /* Header: back + title + counter + streak + timer */
+    .lp-fs-header{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--navy);z-index:10;flex-shrink:0;}
+    .lp-fs-back{width:36px;height:36px;border-radius:9px;border:1px solid var(--border);background:rgba(255,255,255,.04);color:rgba(255,255,255,.7);font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s;}
+    .lp-fs-back:hover{background:rgba(255,255,255,.1);color:#fff;}
+    .lp-fs-title{flex:1;font-family:var(--fqh);font-size:14px;font-weight:700;color:rgba(255,255,255,.82);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .lp-fs-qcount{flex-shrink:0;font-family:var(--fm);font-size:12px;font-weight:700;color:var(--muted);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:100px;padding:4px 11px;white-space:nowrap;}
+    .lp-timer-badge{flex-shrink:0;display:inline-flex;align-items:center;gap:2px;font-family:var(--fm);font-size:12px;font-weight:800;color:#f97316;background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.3);border-radius:100px;padding:4px 11px;white-space:nowrap;transition:color .3s,background .3s,border-color .3s;}
+    .lp-timer-badge.paused{color:var(--muted);background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.1);}
+
+    /* ── Slim progress bar flush under header ── */
+    .lp-fs-progress-wrap{padding:0;flex-shrink:0;}
+    .lp-fs-bar{margin:0;height:4px;border-radius:0;}
+    .lp-fs-bar .lp-bar-outer{border-radius:0;height:4px;}
+    .lp-fs-counter{display:none;}
+
+    /* ════════════════════════════════════════════════════════════════════
+       ISSUE 2 & 3 — Full-viewport, dynamically-scaling quiz body.
+       ────────────────────────────────────────────────────────────────────
+       .lp-fs-body is now a CSS Grid container that fills 100% of the
+       remaining viewport height (flex:1 inside the fixed .lp-fullscreen
+       column). Content no longer sits top-aligned with empty space below;
+       instead the grid distributes rows so the question + options block
+       expands to use the available height, while Learning Section /
+       Teaching boxes get a fair, capped share rather than a fixed small
+       max-height. All type uses clamp() so it scales fluidly between a
+       sensible mobile minimum and a generous desktop maximum, instead of
+       fixed small px values — this directly answers "make the fonts and
+       boxes bigger and aligned to full screen use."
+
+       Breakpoint strategy (Issue 4 — device coverage):
+         < 480px   → phones (portrait)              1-col options, compact
+         480-767px → large phones / small tablets    1-col options, roomier
+         768-1023px→ tablets (portrait) / small laptop 2-col options
+         1024-1439px→ laptops/desktops                2-col options, wide canvas
+         ≥1440px   → large desktops                   2-col options, capped
+                      max-width so lines don't sprawl edge-to-edge, centered
+       ════════════════════════════════════════════════════════════════════ */
+    .lp-fs-body{
+      flex:1;
+      overflow-y:auto;
+      display:flex;
+      flex-direction:column;
+      padding-bottom:env(safe-area-inset-bottom,0px);
+    }
+    .lp-fs-body::-webkit-scrollbar{width:6px;}
+    .lp-fs-body::-webkit-scrollbar-track{background:transparent;}
+    .lp-fs-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:99px;}
+
+    /* Inner content column — centers and caps width on very large screens
+       so text never stretches into unreadable full-width lines, while still
+       using the full available height. */
+    .lp-fs-inner{
+      width:100%;
+      max-width:1180px;
+      margin:0 auto;
+      padding:clamp(10px,2vw,20px) clamp(16px,4vw,40px) clamp(16px,3vw,32px);
+      box-sizing:border-box;
+      flex:1;
+      display:flex;
+      flex-direction:column;
+      gap:clamp(10px,1.6vh,18px);
+    }
+
+    /* Nav wrap (dots / dropdown) */
+    .lp-fs-nav-wrap{padding:0;flex-shrink:0;}
+
+    /* Learning Section + Teaching boxes — bigger, more generous, fluid type */
+    .lp-fs-learn-sec,.lp-fs-teach{
+      background:rgba(99,179,237,.07);
+      border:1px solid rgba(99,179,237,.2);
+      border-radius:14px;
+      padding:clamp(14px,2vw,20px) clamp(16px,2.4vw,24px);
+      margin:0;
+      max-height:min(32vh,320px);
+      overflow-y:auto;
+      flex-shrink:0;
+    }
+    .lp-fs-teach{background:rgba(0,198,167,.07);border-color:rgba(0,198,167,.18);display:flex;gap:12px;align-items:flex-start;}
+    .lp-fs-learn-sec::-webkit-scrollbar,.lp-fs-teach::-webkit-scrollbar{width:5px;}
+    .lp-fs-learn-sec::-webkit-scrollbar-track,.lp-fs-teach::-webkit-scrollbar-track{background:transparent;}
+    .lp-fs-learn-sec::-webkit-scrollbar-thumb{background:rgba(99,179,237,.3);border-radius:99px;}
+    .lp-fs-teach::-webkit-scrollbar-thumb{background:rgba(0,198,167,.3);border-radius:99px;}
+    .lp-fs-teach-icon{color:var(--teal);font-size:clamp(14px,1.6vw,18px);margin-top:3px;flex-shrink:0;}
+    .lp-fs-teach p{font-family:var(--fq);font-size:clamp(13px,1.3vw,16px);color:rgba(255,255,255,.92);line-height:1.65;margin:0;}
+    .lp-fs-learn-sec-hd{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
+    .lp-fs-learn-sec-hd i{color:#63b3ed;font-size:clamp(13px,1.4vw,16px);flex-shrink:0;}
+    .lp-fs-learn-sec-hd span{font-family:var(--fqh);font-size:clamp(10.5px,1vw,12px);font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:#63b3ed;}
+    .lp-fs-learn-sec p{font-family:var(--fq);font-size:clamp(13px,1.3vw,16px);color:rgba(255,255,255,.92);line-height:1.65;margin:0;}
+
+    /* Step image */
+    .lp-fs-step-img{border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,.08);max-height:min(36vh,340px);display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.03);flex-shrink:0;}
+    .lp-fs-step-img img{width:100%;max-height:min(36vh,340px);object-fit:contain;display:block;}
+
+    /* ── Question block — this is the visual anchor of the screen, so it
+       gets the largest, clearest, most generous type and grows to fill
+       leftover vertical space via flex:1 on its wrapping row below. ── */
+    .lp-fs-question-wrap{flex:1;display:flex;flex-direction:column;justify-content:center;min-height:0;gap:clamp(14px,2.2vh,28px);}
+    .lp-fs-question{
+      font-family:var(--fqh);
+      font-size:clamp(19px,2.6vw,34px);
+      font-weight:800;
+      color:#fff;
+      line-height:1.4;
+      margin:0;
+      box-sizing:border-box;
+      width:100%;
+      letter-spacing:-.01em;
+    }
+
+    /* ── Options — fluid grid: 1 col on phones, 2 cols from tablet up.
+       Each option scales its padding/min-height/font with clamp() so
+       larger screens get noticeably larger, easier-to-read tap targets
+       instead of the same cramped 13px row regardless of screen size. ── */
+    .lp-fs-opts{
+      display:grid;
+      grid-template-columns:1fr;
+      gap:clamp(10px,1.4vw,16px);
+      box-sizing:border-box;
+    }
+    .lp-fs-opt{
+      background:var(--surf2);
+      border:1.5px solid var(--border);
+      border-radius:14px;
+      padding:clamp(14px,1.6vw,20px) clamp(16px,1.8vw,22px);
+      text-align:left;
+      font-family:var(--fq);
+      font-size:clamp(14.5px,1.5vw,18px);
+      font-weight:600;
+      color:rgba(255,255,255,.88);
+      cursor:pointer;
+      transition:all .15s;
+      display:flex;
+      align-items:flex-start;
+      gap:clamp(10px,1.2vw,14px);
+      min-height:clamp(54px,7vh,76px);
+      box-sizing:border-box;
+    }
+    .lp-fs-opt:hover:not(:disabled){border-color:rgba(0,198,167,.45);background:rgba(0,198,167,.06);transform:translateY(-1px);}
+    .lp-fs-opt:disabled{cursor:default;}
+    .lp-fs-letter{width:clamp(26px,2.4vw,32px);height:clamp(26px,2.4vw,32px);border-radius:8px;background:rgba(255,255,255,.09);display:flex;align-items:center;justify-content:center;font-family:var(--fqh);font-size:clamp(12px,1.1vw,14px);font-weight:800;flex-shrink:0;margin-top:1px;}
+    .lp-fs-opt-text{flex:1;line-height:1.5;font-size:clamp(14.5px,1.5vw,18px);}
+    .lp-fs-opt.correct{border-color:rgba(34,197,94,.55);background:rgba(34,197,94,.1);color:#4ade80;}
+    .lp-fs-opt.correct .lp-fs-letter{background:#22c55e;color:#fff;}
+    .lp-fs-opt.incorrect{border-color:rgba(239,68,68,.55);background:rgba(239,68,68,.1);color:#f87171;}
+    .lp-fs-opt.incorrect .lp-fs-letter{background:#ef4444;color:#fff;}
+
+    /* Feedback panel */
+    .lp-fs-feedback{
+      border-radius:14px;
+      padding:clamp(14px,1.6vw,20px);
+      margin:0;
+      display:flex;
+      gap:12px;
+      align-items:flex-start;
+      font-family:var(--fq);
+      font-size:clamp(13px,1.3vw,16px);
+      line-height:1.65;
+      color:rgba(255,255,255,.9);
+      flex-shrink:0;
+    }
+    .lp-fs-feedback.good{background:rgba(34,197,94,.09);border:1px solid rgba(34,197,94,.28);}
+    .lp-fs-feedback.bad{background:rgba(239,68,68,.09);border:1px solid rgba(239,68,68,.28);}
+    .lp-fs-fb-icon{font-size:clamp(18px,2vw,24px);margin-top:2px;flex-shrink:0;}
+    .lp-fs-feedback.good .lp-fs-fb-icon{color:#4ade80;}
+    .lp-fs-feedback.bad  .lp-fs-fb-icon{color:#f87171;}
+
+    /* Bottom nav row */
+    .lp-fs-nav-row{padding:14px 16px calc(14px + env(safe-area-inset-bottom,0px));gap:12px;flex-shrink:0;}
+    .lp-fs-nav-row button{flex:1;font-family:var(--fqh);font-size:clamp(13px,1.2vw,15px);min-height:clamp(46px,5.5vh,54px);}
+
+    /* ════════════════════════════════════════════════════════════════════
+       RESPONSIVE BREAKPOINTS — Issue 4: desktop / laptop / tablet / mobile
+       ════════════════════════════════════════════════════════════════════ */
+
+    /* Tablet portrait and up (≥600px): options move to 2 columns */
+    @media(min-width:600px){
+      .lp-fs-opts{grid-template-columns:1fr 1fr;}
+    }
+
+    /* Tablet landscape / small laptop (≥768px): roomier inner padding,
+       Learning Section + Teaching sit side-by-side if both present to
+       reclaim vertical space for the question. */
+    @media(min-width:768px){
+      .lp-fs-header{padding:12px 24px;}
+      .lp-fs-nav-wrap{padding:0;}
+    }
+
+    /* Laptop / desktop (≥1024px): wider inner column, larger question type
+       already handled by clamp() max end; add extra breathing room. */
+    @media(min-width:1024px){
+      .lp-fs-inner{padding-top:24px;padding-bottom:28px;}
+      .lp-fs-question-wrap{gap:28px;}
+    }
+
+    /* Large desktop (≥1440px): cap inner width a bit wider, since there's
+       more room, but still centered so lines stay readable. */
+    @media(min-width:1440px){
+      .lp-fs-inner{max-width:1320px;}
+    }
+
+    /* Phones (≤599px): single column options, tighter spacing, safe-area
+       aware header/footer padding, slightly smaller (but still fluid) type
+       floor so text never gets too small to read on a small screen. */
+    @media(max-width:599px){
+      .lp-fs-header{padding:calc(8px + env(safe-area-inset-top,0px)) 14px 8px;gap:8px;}
+      .lp-fs-back{width:38px;height:38px;}
+      .lp-fs-title{font-size:12.5px;}
+      .lp-fs-qcount,.lp-timer-badge{font-size:11px;padding:3px 9px;}
+      .lp-fs-inner{padding:10px 16px 18px;gap:12px;}
+      .lp-fs-question{font-size:clamp(18px,5.2vw,22px);line-height:1.38;}
+      .lp-fs-opt{min-height:52px;padding:13px 14px;}
+      .lp-fs-opt-text{font-size:clamp(14px,3.8vw,15.5px);}
+      .lp-fs-learn-sec,.lp-fs-teach{max-height:34vh;padding:13px 14px;}
+      .lp-fs-nav-row{padding:10px 14px calc(12px + env(safe-area-inset-bottom,0px));gap:8px;}
+      .lp-fs-nav-row button{min-height:48px;font-size:13px;}
+    }
+
+    /* Very short viewports (landscape phones, small laptops with browser
+       chrome) — shrink the optional Learning Section/Teaching boxes
+       further so the question + options remain visible without forcing a
+       scroll past the fold. */
+    @media(max-height:560px){
+      .lp-fs-learn-sec,.lp-fs-teach{max-height:18vh;}
+      .lp-fs-question-wrap{gap:10px;}
+      .lp-fs-question{font-size:clamp(16px,3vw,20px);}
+    }
+
+    /* ── Completed Topics tab ── */
+    .ct-group{margin-bottom:18px;}
+    .ct-group:last-child{margin-bottom:0;}
+    .ct-group-hd{display:flex;align-items:center;gap:12px;padding-bottom:12px;margin-bottom:6px;border-bottom:2px solid;}
+    .ct-group-icon{width:36px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:16px;}
+    .ct-group-name{font-family:var(--fqh);font-size:15px;font-weight:800;color:#fff;}
+    .ct-group-count{font-size:11.5px;color:var(--muted);margin-top:1px;}
+    .ct-card{display:flex;align-items:flex-start;gap:14px;padding:14px 0;border-bottom:1px solid var(--border);}
+    .ct-card:last-child{border-bottom:none;}
+    .ct-icon{width:38px;height:38px;border-radius:10px;background:rgba(0,198,167,.1);border:1px solid rgba(0,198,167,.2);display:flex;align-items:center;justify-content:center;flex-shrink:0;color:var(--teal);font-size:15px;}
+    .ct-body{flex:1;min-width:0;}
+    .ct-title{font-family:var(--fqh);font-size:13.5px;font-weight:800;color:#fff;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .ct-meta{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
+    .ct-pill{display:inline-flex;align-items:center;gap:4px;border-radius:100px;padding:2px 9px;font-size:10.5px;font-weight:700;white-space:nowrap;}
+    .ct-pill.time{color:#f97316;background:rgba(249,115,22,.08);border:1px solid rgba(249,115,22,.25);}
+    .ct-pill.date{color:#60a5fa;background:rgba(96,165,250,.08);border:1px solid rgba(96,165,250,.25);}
+    .ct-pill.score{color:#4ade80;background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.25);}
+    .ct-pill.newq{color:#a78bfa;background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.3);animation:ct-pulse 2s ease-in-out infinite;}
+    @keyframes ct-pulse{0%,100%{opacity:1;}50%{opacity:.65;}}
+    .ct-retake-btn{flex-shrink:0;font-size:12px;padding:5px 12px;white-space:nowrap;}
+    .ct-subj{font-size:11px;color:rgba(255,255,255,.4);font-weight:600;}
+    .ct-empty{text-align:center;color:var(--muted);padding:48px 20px;}
+    .ct-empty i{font-size:30px;margin-bottom:12px;display:block;opacity:.35;}
+    /* ── Sidebar auto-collapse when question is open (issue 6) ── */
+    .dash.quiz-mode .sb{width:0;min-width:0;overflow:hidden;border-right:none;transition:width .25s ease;}
+    .dash.quiz-mode .main{flex:1;}
+    /* Floating sidebar reveal button — only visible in quiz mode */
+    .sb-float-btn{display:none;position:fixed;top:12px;left:12px;z-index:300;width:36px;height:36px;border-radius:9px;border:1px solid rgba(255,255,255,.15);background:rgba(15,20,40,.9);backdrop-filter:blur(8px);color:rgba(255,255,255,.7);font-size:14px;cursor:pointer;align-items:center;justify-content:center;transition:all .18s;}
+    .sb-float-btn:hover{background:rgba(0,198,167,.2);color:var(--teal);border-color:rgba(0,198,167,.4);}
+    .dash.quiz-mode .sb-float-btn{display:flex;}
+    /* When sidebar is temporarily re-opened in quiz mode */
+    .dash.quiz-mode .sb.quiz-peek{width:240px;box-shadow:4px 0 24px rgba(0,0,0,.5);position:fixed;left:0;top:0;height:100vh;z-index:295;}
+    /* ── Daily board ── */
+    .daily-row{display:flex;align-items:center;gap:14px;padding:10px 14px;border-radius:11px;background:var(--surf2);border:1px solid transparent;transition:all .15s;margin-bottom:8px;}
+    .daily-row.me{border-color:rgba(245,166,35,.4);background:rgba(245,166,35,.07);}
+    .daily-rank{width:28px;height:28px;border-radius:50%;background:rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:rgba(255,255,255,.55);flex-shrink:0;}
+    .daily-rank.top1{background:rgba(245,166,35,.18);color:#f5a623;}
+    .daily-rank.top2{background:rgba(203,213,225,.18);color:#cbd5e1;}
+    .daily-rank.top3{background:rgba(217,119,6,.18);color:#d97706;}
+    .daily-name{flex:1;font-size:13px;font-weight:700;color:#fff;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .daily-stats{display:flex;gap:12px;font-size:11.5px;color:var(--muted);flex-shrink:0;}
+    /* ── Leaderboard time-filter pills ── */
+    .lb-filter-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;}
+    .lb-pill{padding:5px 14px;border-radius:100px;font-family:var(--fb);font-size:12px;font-weight:700;cursor:pointer;transition:all .15s;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);color:rgba(255,255,255,.55);}
+    .lb-pill.active{background:var(--teal);color:#0a0f2c;border-color:var(--teal);}
+    .lb-pill:hover:not(.active){background:rgba(255,255,255,.1);color:rgba(255,255,255,.85);}
   `;
 
   const mergedProfile = [
@@ -2023,6 +3323,15 @@ function PortalInner() {
     <>
       <Head>
         <title>{`${S.SiteName} | ${S.AcademyName}`}</title>
+        {/* Clean, highly-legible type for quiz content (Issue 1: simple,
+            clear, readable fonts). Inter is used for the question/options/
+            learning-section body copy; Poppins for headings/titles. Both
+            load with font-display:swap so there's no FOUT-related layout
+            shift, and both fall back gracefully to system fonts if the
+            network request fails. */}
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Poppins:wght@600;700;800;900&display=swap" rel="stylesheet" />
         <style>{CSS}</style>
       </Head>
       <Script src="https://cdn.jsdelivr.net/npm/chart.js" strategy="afterInteractive" />
@@ -2053,13 +3362,36 @@ function PortalInner() {
           </div>
         </div>
       ) : (
-        <div className="dash">
+        <div className={`dash${activeModuleId ? ' quiz-mode' : ''}`}>
+
+          {/* Floating sidebar button — only visible in quiz mode (issue 6) */}
+          <button
+            className="sb-float-btn"
+            onClick={()=>setSidebarPeeking(p=>!p)}
+            aria-label="Open navigation"
+            title="Open menu"
+          >
+            <i className={`fa-solid ${sidebarPeeking ? 'fa-xmark' : 'fa-bars'}`} />
+          </button>
+
+          {/* Tap-outside backdrop — closes peeking sidebar in quiz mode */}
+          {sidebarPeeking && activeModuleId && (
+            <div
+              style={{position:'fixed',inset:0,zIndex:294,background:'rgba(0,0,0,.45)'}}
+              onClick={()=>setSidebarPeeking(false)}
+            />
+          )}
 
           {/* Tap-outside backdrop — mobile only (hidden via CSS on desktop) */}
           <div className={`mnav-backdrop${mobileNavOpen?' open':''}`} onClick={()=>setMobileNavOpen(false)} />
 
           {/* SIDEBAR */}
-          <aside className={`sb${mobileNavOpen?' open':''}`}>
+          <aside className={`sb${mobileNavOpen?' open':''}${sidebarPeeking&&activeModuleId?' quiz-peek':''}`}>
+<ChatNotifications
+  profile={profile}
+  onUnreadChange={setChatUnread}
+  onOpenChat={(groupId) => { setTab('chat'); setChatFocusGroupId(groupId); }}
+/>
             <div className="sb-head">
               <div className="sb-av"><i className="fa-solid fa-user-graduate" /></div>
               <div style={{flex:1,minWidth:0}}><div className="sb-name">{profile.name}</div><div className="sb-id">{profile.id}</div></div>
@@ -2068,9 +3400,10 @@ function PortalInner() {
             <p className="sb-sec">{S.SidebarSectionLabel}</p>
             <nav className="sb-nav">
               {NAV.map(navItem => (
-                <button key={navItem.ID} className={`nb${tab===navItem.ID?' active':''}`} onClick={() => setTab(navItem.ID)}>
+                <button key={navItem.ID} className={`nb${tab===navItem.ID?' active':''}`} onClick={() => { setTab(navItem.ID); setSidebarPeeking(false); }}>
                   <i className={`fa-solid ${navItem['Icon (FontAwesome solid)']}`} /> {navItem.Label}
                   {navItem.ID==='notifications' && unreadCount>0 && <span className="nb-badge">{unreadCount}</span>}
+{navItem.ID==='chat' && chatUnread>0 && <span className="nb-badge">{chatUnread}</span>}
                 </button>
               ))}
             </nav>
@@ -2082,6 +3415,20 @@ function PortalInner() {
 
           {/* MAIN */}
           <main className="main">
+
+            {/* ── ANNOUNCEMENT STRIP ── shown at the top of every tab when text is available */}
+            {announcementText && (
+              <div className="ann-strip" role="marquee" aria-label="Announcement">
+                <div className="ann-strip-inner">
+                  {[0, 1].map(k => (
+                    <span key={k} className="ann-strip-seg">
+                      <i className="fa-solid fa-bullhorn"></i>
+                      {announcementText}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Mobile-only top bar: hamburger to open the drawer. Hidden on
                 desktop via CSS (.mnav-toggle has display:none until 640px). */}
@@ -2203,69 +3550,260 @@ function PortalInner() {
             {tab==='leaderboard' && (<>
               <div className="main-top"><div><div className="pg-h">{t('p_leaderboard_title')}</div><div className="pg-s">{t('p_leaderboard_subtitle')}</div></div></div>
               <div className="content">
-                <div className="card" style={{marginBottom:'22px'}}>
-                  <div className="card-t"><i className="fa-solid fa-trophy" /> {t('p_overall_ranking')}</div>
-                  {leaderboardLoading ? (
-                    <>{[1,2,3].map(i=><div key={i} style={{marginBottom:'10px'}}><SK h="44px" /></div>)}</>
-                  ) : !leaderboard.overall.length ? (
-                    <div style={{textAlign:'center',color:'var(--muted)',fontSize:'13px',padding:'20px 0'}}>{t('p_no_leaderboard')}</div>
-                  ) : (
-                    <div className="lb-list">
-                      {leaderboard.overall.slice(0,20).map((row,i)=>{
-                        const rank = i+1;
-                        const isMe = row.studentId === profile.id;
-                        return (
-                          <div key={row.studentId} className={`lb-row${isMe?' me':''}`}>
-                            <div className={`lb-rank${rank<=3?` top${rank}`:''}`}>{rank<=3 ? <i className="fa-solid fa-trophy" /> : rank}</div>
-                            <div className="lb-name">{row.studentName}{isMe && <span className="lb-you">{t('p_you_suffix')}</span>}</div>
-                            <div className="lb-stats"><span className="lb-correct">{row.correct} {t('p_correct')}</span><span className="lb-acc">{row.accuracy}% {t('p_accuracy')}</span></div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
 
-                <div className="sec-divider" style={{marginTop:0}}>{t('p_subject_champions')}</div>
-                {leaderboardLoading ? (
-                  <div className="card"><SK h="80px" /></div>
-                ) : !Object.keys(leaderboard.bySubject).length ? (
-                  <div className="card" style={{textAlign:'center',color:'var(--muted)',fontSize:'13px'}}>{t('p_no_subject_rankings')}</div>
-                ) : (
-                  <div className="lb-subj-grid">
-                    {Object.entries(leaderboard.bySubject).map(([subject, rows]) => {
-                      const champ = rows[0];
-                      // `subject` here is whatever the backend recorded — always the canonical
-                      // English name now (see LearningModulePlayer's onAnswer call), regardless
-                      // of which language the student answered in. Match against SubjectEN so
-                      // the icon/color resolve correctly, but fall back to matching Subject
-                      // directly for any older records that might predate this fix.
-                      const subjMeta = ASGN_SUBJ.find(s=>s.SubjectEN===subject) || ASGN_SUBJ.find(s=>s.Subject===subject);
-                      const subjectDisplay = subjMeta?.Subject || subject;
-                      return (
-                        <div key={subject} className="card lb-subj-card">
-                          <div className="card-t"><i className={`fa-solid ${subjMeta?.['Icon (FontAwesome solid)']||'fa-medal'}`} style={{color:subjMeta?.['Color (Hex)']}} /> {subjectDisplay} {t('p_champion')}</div>
-                          {champ ? (
-                            <>
-                              <div className="lb-champ-name">{champ.studentName}</div>
-                              <div className="lb-champ-stats">{champ.correct} {t('p_correct')} · {champ.accuracy}% {t('p_accuracy')}</div>
-                              {rows.length>1 && (
-                                <div className="lb-runner-ups">
-                                  {rows.slice(1,4).map((r,i)=>(
-                                    <div key={r.studentId} className="lb-runner-row">
-                                      <span>{i+2}. {r.studentName}{r.studentId===profile.id?t('p_you_suffix'):''}</span>
-                                      <span>{r.correct} {t('p_correct')}</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                            </>
-                          ) : <div style={{color:'var(--muted)',fontSize:'13px'}}>{t('p_no_attempts_yet')}</div>}
+                {/* ── TIME FILTER PILLS ───────────────────────────────────── */}
+                {(() => {
+                  const opts = [
+                    { days:1,   label:'Today'    },
+                    { days:7,   label:'7 Days'   },
+                    { days:30,  label:'30 Days'  },
+                    { days:90,  label:'3 Months' },
+                    { days:0,   label:'All Time' },
+                  ];
+                  // Filter a leaderboard row array to only those whose
+                  // lastActivity falls within [now - days*86400000, now].
+                  // If days===0, no filter is applied.
+                  const cutoff = lbDays > 0 ? Date.now() - lbDays * 86400000 : 0;
+                  const filterRows = rows => lbDays === 0 ? rows
+                    : rows.filter(r => {
+                        if (!r.lastActivity) return false;
+                        return new Date(r.lastActivity).getTime() >= cutoff;
+                      });
+
+                  const filteredOverall  = filterRows(leaderboard.overall);
+                  const filteredBySubject = Object.fromEntries(
+                    Object.entries(leaderboard.bySubject).map(([s,rows]) => [s, filterRows(rows)])
+                  );
+
+                  // ── DAILY QUESTIONS-ATTEMPTED BOARD ───────────────────────
+                  // Build from leaderboard.overall where lastActivity is today,
+                  // keyed by questions attempted that day. Falls back gracefully
+                  // if the API doesn't return lastActivity (older script versions).
+                  const todayStr = new Date().toISOString().slice(0,10);
+                  const todayCutoff = new Date(todayStr).getTime();
+                  const dailyRows = leaderboard.overall
+                    .filter(r => r.lastActivity && new Date(r.lastActivity).getTime() >= todayCutoff)
+                    .map(r => ({ ...r, todayAttempted: r.todayAttempted ?? r.attempted ?? 0 }))
+                    .sort((a,b) => b.todayAttempted - a.todayAttempted)
+                    .slice(0, 20);
+
+                  return (
+                    <>
+                      {/* Time filter pills */}
+                      <div className="lb-filter-row" style={{marginBottom:'20px'}}>
+                        <span style={{fontSize:'11px',fontWeight:700,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--muted)',alignSelf:'center',marginRight:'4px'}}>Period:</span>
+                        {opts.map(o => (
+                          <button key={o.days} className={`lb-pill${lbDays===o.days?' active':''}`} onClick={()=>setLbDays(o.days)}>
+                            {o.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      {/* ── DAILY QUESTIONS-ATTEMPTED BOARD ── */}
+                      <div className="card" style={{marginBottom:'22px'}}>
+                        <div className="card-t">
+                          <i className="fa-solid fa-bolt" style={{color:'#f5a623'}} /> Today's Activity — Questions Attempted
+                          <span style={{marginLeft:'auto',fontSize:'11px',fontWeight:400,color:'var(--muted)'}}>{todayStr}</span>
                         </div>
-                      );
-                    })}
-                  </div>
-                )}
+                        {leaderboardLoading ? (
+                          <>{[1,2,3].map(i=><div key={i} style={{marginBottom:'8px'}}><SK h="40px" /></div>)}</>
+                        ) : !dailyRows.length ? (
+                          <div style={{textAlign:'center',color:'var(--muted)',fontSize:'13px',padding:'18px 0'}}>
+                            No activity recorded today yet — be the first! 🚀
+                          </div>
+                        ) : (
+                          <>
+                            {dailyRows.slice(0,10).map((row,i) => {
+                              const rank = i+1;
+                              const isMe = row.studentId === profile.id;
+                              return (
+                                <div key={row.studentId} className={`daily-row${isMe?' me':''}`}>
+                                  <div className={`daily-rank${rank<=3?` top${rank}`:''}`}>
+                                    {rank<=3 ? <i className="fa-solid fa-bolt" /> : rank}
+                                  </div>
+                                  <div className="daily-name">
+                                    {row.studentName}
+                                    {isMe && <span style={{color:'var(--accent)',fontWeight:800,marginLeft:'6px'}}>(You)</span>}
+                                  </div>
+                                  <div className="daily-stats">
+                                    <span style={{fontWeight:700,color:isMe?'var(--accent)':'rgba(255,255,255,.75)'}}>
+                                      {row.todayAttempted} attempted
+                                    </span>
+                                    <span style={{color:'var(--teal)',fontWeight:700}}>
+                                      {row.accuracy}% acc
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            {/* Current student's own today count from live learnProgress */}
+                            {(() => {
+                              const myToday = Object.values(learnProgress).reduce((s,p) => {
+                                if (!p?.startedAt) return s;
+                                return new Date(p.startedAt).getTime() >= todayCutoff ? s + (p.attempted||0) : s;
+                              }, 0);
+                              if (!myToday || dailyRows.find(r=>r.studentId===profile.id)) return null;
+                              return (
+                                <div className="daily-row me" style={{marginTop:'8px',borderTop:'1px solid var(--border)',paddingTop:'10px'}}>
+                                  <div className="daily-rank">—</div>
+                                  <div className="daily-name">{profile.name} <span style={{color:'var(--accent)',fontWeight:800}}>(You)</span></div>
+                                  <div className="daily-stats">
+                                    <span style={{fontWeight:700,color:'var(--accent)'}}>{myToday} attempted</span>
+                                    <span style={{color:'var(--muted)',fontSize:'11px'}}>local</span>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </>
+                        )}
+                      </div>
+
+                      {/* ── OVERALL RANKING (time-filtered) ── */}
+                      <div className="card" style={{marginBottom:'22px'}}>
+                        <div className="card-t">
+                          <i className="fa-solid fa-trophy" /> {t('p_overall_ranking')}
+                          <span style={{marginLeft:'auto',fontSize:'11px',fontWeight:400,color:'var(--muted)'}}>
+                            {lbDays===0?'All time':lbDays===1?'Today':`Last ${lbDays} days`}
+                          </span>
+                        </div>
+                        {leaderboardLoading ? (
+                          <>{[1,2,3].map(i=><div key={i} style={{marginBottom:'10px'}}><SK h="44px" /></div>)}</>
+                        ) : !filteredOverall.length ? (
+                          <div style={{textAlign:'center',color:'var(--muted)',fontSize:'13px',padding:'20px 0'}}>
+                            No activity in this period. Try "All Time" to see all rankings.
+                          </div>
+                        ) : (
+                          <div className="lb-list">
+                            {filteredOverall.slice(0,20).map((row,i)=>{
+                              const rank = i+1;
+                              const isMe = row.studentId === profile.id;
+                              return (
+                                <div key={row.studentId} className={`lb-row${isMe?' me':''}`}>
+                                  <div className={`lb-rank${rank<=3?` top${rank}`:''}`}>{rank<=3 ? <i className="fa-solid fa-trophy" /> : rank}</div>
+                                  <div className="lb-name">{row.studentName}{isMe && <span className="lb-you">{t('p_you_suffix')}</span>}</div>
+                                  <div className="lb-stats">
+                                    <span className="lb-correct">{row.correct} {t('p_correct')}</span>
+                                    <span className="lb-acc">{row.accuracy}% {t('p_accuracy')}</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* ── SUBJECT CHAMPIONS (time-filtered) ── */}
+                      <div className="sec-divider" style={{marginTop:0}}>
+                        {t('p_subject_champions')}
+                        <span style={{marginLeft:'8px',fontWeight:400,fontSize:'10px',color:'var(--muted)'}}>
+                          {lbDays===0?'All time':lbDays===1?'Today':`Last ${lbDays} days`}
+                        </span>
+                      </div>
+                      {leaderboardLoading ? (
+                        <div className="card"><SK h="80px" /></div>
+                      ) : !Object.keys(filteredBySubject).length ? (
+                        <div className="card" style={{textAlign:'center',color:'var(--muted)',fontSize:'13px'}}>{t('p_no_subject_rankings')}</div>
+                      ) : (
+                        <div className="lb-subj-grid">
+                          {Object.entries(filteredBySubject).map(([subject, rows]) => {
+                            const champ = rows[0];
+                            const subjMeta = ASGN_SUBJ.find(s=>s.SubjectEN===subject) || ASGN_SUBJ.find(s=>s.Subject===subject);
+                            const subjectDisplay = subjMeta?.Subject || subject;
+                            return (
+                              <div key={subject} className="card lb-subj-card">
+                                <div className="card-t"><i className={`fa-solid ${subjMeta?.['Icon (FontAwesome solid)']||'fa-medal'}`} style={{color:subjMeta?.['Color (Hex)']}} /> {subjectDisplay} {t('p_champion')}</div>
+                                {champ ? (
+                                  <>
+                                    <div className="lb-champ-name">{champ.studentName}</div>
+                                    <div className="lb-champ-stats">{champ.correct} {t('p_correct')} · {champ.accuracy}% {t('p_accuracy')}</div>
+                                    {rows.length>1 && (
+                                      <div className="lb-runner-ups">
+                                        {rows.slice(1,4).map((r,ri)=>(
+                                          <div key={r.studentId} className="lb-runner-row">
+                                            <span>{ri+2}. {r.studentName}{r.studentId===profile.id?t('p_you_suffix'):''}</span>
+                                            <span>{r.correct} {t('p_correct')}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </>
+                                ) : (
+                                  <div style={{color:'var(--muted)',fontSize:'13px'}}>
+                                    {lbDays > 0 ? `No activity in the last ${lbDays} day${lbDays===1?'':'s'}` : t('p_no_attempts_yet')}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* ── WEIGHTED LEADERBOARD (assignment-scoped, accuracy-ranked) ── */}
+                      <div className="sec-divider">
+                        Weighted Leaderboard
+                        <span style={{marginLeft:'8px',fontWeight:400,fontSize:'10px',color:'var(--muted)'}}>
+                          Assigned questions only · min. 50 attempted · ranked by accuracy
+                        </span>
+                      </div>
+                      <div className="card" style={{marginBottom:'22px'}}>
+                        <div className="card-t">
+                          <i className="fa-solid fa-star" style={{color:'#f5a623'}} /> Weighted Ranking
+                        </div>
+                        {weightedLeaderboardLoading ? (
+                          <>{[1,2,3].map(i=><div key={i} style={{marginBottom:'10px'}}><SK h="44px" /></div>)}</>
+                        ) : !weightedLeaderboard.overall.length ? (
+                          <div style={{textAlign:'center',color:'var(--muted)',fontSize:'13px',padding:'20px 0'}}>
+                            No students have answered at least 50 assigned questions yet.
+                          </div>
+                        ) : (
+                          <div className="lb-list">
+                            {weightedLeaderboard.overall.slice(0,20).map((row,i)=>{
+                              const rank = i+1;
+                              const isMe = row.studentId === profile.id;
+                              return (
+                                <div key={row.studentId} className={`lb-row${isMe?' me':''}`}>
+                                  <div className={`lb-rank${rank<=3?` top${rank}`:''}`}>{rank<=3 ? <i className="fa-solid fa-star" /> : rank}</div>
+                                  <div className="lb-name">{row.studentName}{isMe && <span className="lb-you">{t('p_you_suffix')}</span>}</div>
+                                  <div className="lb-stats">
+                                    <span className="lb-correct">{row.attempted} assigned attempted</span>
+                                    <span className="lb-acc">{row.accuracy}% {t('p_accuracy')}</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      {!weightedLeaderboardLoading && Object.keys(weightedLeaderboard.bySubject).length > 0 && (
+                        <div className="lb-subj-grid">
+                          {Object.entries(weightedLeaderboard.bySubject).map(([subject, rows]) => {
+                            const champ = rows[0];
+                            const subjMeta = ASGN_SUBJ.find(s=>s.SubjectEN===subject) || ASGN_SUBJ.find(s=>s.Subject===subject);
+                            const subjectDisplay = subjMeta?.Subject || subject;
+                            return (
+                              <div key={subject} className="card lb-subj-card">
+                                <div className="card-t"><i className={`fa-solid ${subjMeta?.['Icon (FontAwesome solid)']||'fa-star'}`} style={{color:subjMeta?.['Color (Hex)']}} /> {subjectDisplay} — Weighted Champion</div>
+                                <div className="lb-champ-name">{champ.studentName}</div>
+                                <div className="lb-champ-stats">{champ.accuracy}% {t('p_accuracy')} · {champ.attempted} assigned attempted</div>
+                                {rows.length>1 && (
+                                  <div className="lb-runner-ups">
+                                    {rows.slice(1,4).map((r,ri)=>(
+                                      <div key={r.studentId} className="lb-runner-row">
+                                        <span>{ri+2}. {r.studentName}{r.studentId===profile.id?t('p_you_suffix'):''}</span>
+                                        <span>{r.accuracy}%</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             </>)}
 
@@ -2344,33 +3882,26 @@ function PortalInner() {
                     <div style={{marginTop:'28px',padding:'16px',background:'rgba(255,255,255,.04)',borderRadius:'12px',textAlign:'left'}}>
                       <div style={{fontSize:'12px',fontWeight:700,color:'var(--muted)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:'10px'}}>Quick Set</div>
                       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:'8px'}}>
-                        {[
-                          ['Class 1','Age 5–6'],['Class 2','Age 6–7'],['Class 3','Age 7–8'],
-                          ['Class 4','Age 8–9'],['Class 5','Age 9–10'],
-                        ].map(([cls, age]) => (
+                        {CLASS_LEVELS.map(c => (
                           <button
-                            key={cls}
+                            key={c.Class}
                             onClick={async () => {
                               // Save immediately to the sheet AND update local state
                               const r = await fetch('/api/student/profile', {
                                 method: 'POST',
                                 headers: {'Content-Type':'application/json'},
-                                body: JSON.stringify({ studentId: profile.id, classLevel: cls }),
+                                body: JSON.stringify({ studentId: profile.id, classLevel: c.Class }),
                               });
-                              const data = await r.json();
-                              if (data.success) {
-                                setProfile(p => {
-                                  const updated = { ...p, classLevel: cls };
-                                  try { localStorage.setItem('vedanta_profile', JSON.stringify(updated)); } catch {}
-                                  return updated;
-                                });
-                              } else {
-                                // Even if the API fails, update local state so the UI works
-                                setProfile(p => {
-                                  const updated = { ...p, classLevel: cls };
-                                  try { localStorage.setItem('vedanta_profile', JSON.stringify(updated)); } catch {}
-                                  return updated;
-                                });
+                              const data = await r.json().catch(() => ({}));
+                              // Even if the API call fails, update local state so the UI
+                              // still works — the server-side save can be retried later.
+                              setProfile(p => {
+                                const updated = { ...p, classLevel: c.Class };
+                                try { localStorage.setItem('vedanta_profile', JSON.stringify(updated)); } catch {}
+                                return updated;
+                              });
+                              if (!data.success) {
+                                console.warn('[portal] Class level save failed, kept locally:', data.message);
                               }
                             }}
                             style={{padding:'10px 14px',borderRadius:'10px',border:'1px solid rgba(255,255,255,.12)',
@@ -2379,8 +3910,8 @@ function PortalInner() {
                             onMouseOver={e=>e.currentTarget.style.background='rgba(0,198,167,.12)'}
                             onMouseOut={e=>e.currentTarget.style.background='rgba(255,255,255,.04)'}
                           >
-                            <div>{cls}</div>
-                            <div style={{fontSize:'11px',color:'var(--muted)',fontWeight:400}}>{age}</div>
+                            <div>{c.Label || c.Class}</div>
+                            <div style={{fontSize:'11px',color:'var(--muted)',fontWeight:400}}>{c.Age}</div>
                           </button>
                         ))}
                       </div>
@@ -2449,15 +3980,18 @@ function PortalInner() {
                           <button
                             key={cls}
                             onClick={()=>{
-                              if (!classFilter || classFilter==='all') {
-                                // Start a new Set with this class + own class
+                              if (classFilter === 'all') {
+                                // Coming from "All" — start a fresh Set with just this class
+                                setClassFilter(new Set([cls]));
+                              } else if (!classFilter) {
+                                // Coming from "My Class" default — add this class alongside own
                                 setClassFilter(new Set([profile.classLevel, cls]));
                               } else {
                                 const next = new Set(classFilter);
                                 if (isSet) {
                                   next.delete(cls);
-                                  // If only own class left, go back to default (null)
-                                  if (next.size<=1 && next.has(profile.classLevel)) setClassFilter(null);
+                                  // If set is now empty or only own class remains, go back to default
+                                  if (next.size === 0 || (next.size === 1 && next.has(profile.classLevel))) setClassFilter(null);
                                   else setClassFilter(next);
                                 } else {
                                   next.add(cls);
@@ -2512,8 +4046,8 @@ function PortalInner() {
 
                     {/* ── PROGRESS SUMMARY STRIP ─────────────────────────────── */}
                     {(() => {
-                      const totalTopics     = FILTERED_SUBJECTS.reduce((s,subj)=>s+topicsForSubjectKey(subj.key).length,0);
-                      const completedTopics = FILTERED_SUBJECTS.reduce((s,subj)=>s+ageSubjectStats(subj.key).completed,0);
+                      const totalTopics     = FILTERED_SUBJECTS.reduce((s,subj)=>s+allTopicsForSubjectKey(subj.Subject).length,0);
+                      const completedTopics = FILTERED_SUBJECTS.reduce((s,subj)=>s+ageSubjectStats(subj.Subject).completed,0);
                       const pendingAsgns    = ASGN.filter(a=>['Not Started','In Progress','Overdue'].includes(a.Status)).length;
                       const overdueCnt      = ASGN.filter(a=>a.Status==='Overdue').length;
                       return (
@@ -2540,8 +4074,8 @@ function PortalInner() {
 
                     {/* ── RECOMMENDED FOCUS AREAS (only for own class) ─────── */}
                     {!classFilter && (() => {
-                      const weakSubjects = AGE_SUBJECTS.filter(subj => {
-                        const stats = ageSubjectStats(subj.key);
+                      const weakSubjects = ASGN_SUBJ.filter(subj => {
+                        const stats = ageSubjectStats(subj.Subject);
                         return stats.attempted >= 5 && (stats.correct/stats.attempted) < 0.65;
                       });
                       if (!weakSubjects.length) return null;
@@ -2554,21 +4088,21 @@ function PortalInner() {
                             Based on your quiz performance, extra practice is recommended in:
                           </p>
                           {weakSubjects.map(subj => {
-                            const stats = ageSubjectStats(subj.key);
+                            const stats = ageSubjectStats(subj.Subject);
                             const acc = stats.attempted ? Math.round((stats.correct/stats.attempted)*100) : 0;
                             return (
-                              <div key={subj.key} style={{display:'flex',alignItems:'center',gap:'12px',padding:'11px 0',borderBottom:'1px solid rgba(255,255,255,.06)'}}>
-                                <div style={{width:'34px',height:'34px',borderRadius:'9px',background:`${subj.color}22`,color:subj.color,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'14px',flexShrink:0}}>
-                                  <i className={`fa-solid ${subj.icon}`} />
+                              <div key={subj.Subject} style={{display:'flex',alignItems:'center',gap:'12px',padding:'11px 0',borderBottom:'1px solid rgba(255,255,255,.06)'}}>
+                                <div style={{width:'34px',height:'34px',borderRadius:'9px',background:`${subj['Color (Hex)']}22`,color:subj['Color (Hex)'],display:'flex',alignItems:'center',justifyContent:'center',fontSize:'14px',flexShrink:0}}>
+                                  {subj.Emoji || <i className={`fa-solid ${subj['Icon (FontAwesome solid)']||'fa-book'}`} />}
                                 </div>
                                 <div style={{flex:1}}>
-                                  <div style={{fontWeight:700,color:'#fff',fontSize:'14px'}}>{subj.key}</div>
+                                  <div style={{fontWeight:700,color:'#fff',fontSize:'14px'}}>{subj.Subject}</div>
                                   <div style={{fontSize:'12px',color:'rgba(255,255,255,.5)'}}>{stats.attempted} questions · {acc}% accuracy</div>
                                 </div>
                                 <button
                                   className="btn-t"
                                   style={{padding:'6px 12px',fontSize:'12px'}}
-                                  onClick={()=>{setActiveAssignmentSubject(subj.key);setExpandedSubject(null);}}
+                                  onClick={()=>{setActiveAssignmentSubject(subj.Subject);setExpandedSubject(null);}}
                                 >
                                   Practice
                                 </button>
@@ -2585,52 +4119,56 @@ function PortalInner() {
                     </div>
 
                     {FILTERED_SUBJECTS.map((subj) => {
-                      const stats     = ageSubjectStats(subj.key);
-                      const isExpanded = expandedSubject === subj.key;
-                      const quizTopics = topicsForSubjectKey(subj.key);
+                      const subjectName = subj.Subject;
+                      const color       = subj['Color (Hex)'] || '#00c6a7';
+                      const icon        = subj['Icon (FontAwesome solid)'] || 'fa-book';
+                      const emoji       = subj.Emoji || '';
+                      const stats       = ageSubjectStats(subjectName);
+                      const isExpanded  = expandedSubject === subjectName;
+                      const quizTopics  = topicsForSubjectKey(subjectName);
 
                       return (
-                        <div key={subj.key} className="age-subj-card" style={{borderColor: isExpanded ? subj.color+'44' : 'var(--border)'}}>
+                        <div key={subjectName} className="age-subj-card" style={{borderColor: isExpanded ? color+'44' : 'var(--border)'}}>
                           {/* Card header — always visible, click to expand */}
                           <div
                             className="age-subj-header"
-                            onClick={() => setExpandedSubject(isExpanded ? null : subj.key)}
+                            onClick={() => setExpandedSubject(isExpanded ? null : subjectName)}
                             role="button" tabIndex={0}
-                            onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setExpandedSubject(isExpanded?null:subj.key);}}}
+                            onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setExpandedSubject(isExpanded?null:subjectName);}}}
                           >
                             <div style={{display:'flex',alignItems:'center',gap:'14px',flex:1,minWidth:0}}>
-                              <div className="age-subj-icon" style={{background:`${subj.color}18`,color:subj.color,flexShrink:0}}>
-                                {subj.emoji || <i className={`fa-solid ${subj.icon}`} />}
+                              <div className="age-subj-icon" style={{background:`${color}18`,color,flexShrink:0}}>
+                                {emoji || <i className={`fa-solid ${icon}`} />}
                               </div>
                               <div style={{flex:1,minWidth:0}}>
                                 <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
-                                  <span className="age-subj-name">{subj.key}</span>
-                                  {subj.comingSoon && <span className="age-coming-soon">Coming Soon</span>}
-                                  {/* Class badge when showing multiple classes */}
-                                  {classFilter && (
+                                  <span className="age-subj-name">{subjectName}</span>
+                                  {/* Class badge when the sheet has tagged this subject for a specific class */}
+                                  {subj.Class && (
                                     <span style={{fontSize:'10px',fontWeight:700,padding:'2px 8px',borderRadius:'100px',
                                       background:'rgba(255,255,255,.06)',color:'var(--muted)',border:'1px solid rgba(255,255,255,.08)'}}>
-                                      {Object.entries(curriculumByClass).find(([,c])=>c.subjects.some(s=>s.key===subj.key))?.[0]}
+                                      {subj.Class}
                                     </span>
                                   )}
                                 </div>
-                                <div style={{fontSize:'12px',color:'var(--muted)',marginTop:'2px'}}>{subj.tagline}</div>
+                                <div style={{fontSize:'12px',color:'var(--muted)',marginTop:'2px'}}>{subj.Tagline}</div>
                               </div>
                             </div>
                             {/* Progress summary */}
                             <div style={{display:'flex',alignItems:'center',gap:'16px',flexShrink:0}}>
-                              {!subj.comingSoon && (
+                              {stats.total > 0 && (
                                 <div style={{textAlign:'right'}}>
                                   <div style={{fontSize:'18px',fontWeight:900,color:stats.pct>=75?'#22c55e':stats.pct>=40?'var(--accent)':'rgba(255,255,255,.6)',fontFamily:'var(--fd)'}}>{stats.pct}%</div>
                                   <div style={{fontSize:'11px',color:'var(--muted)'}}>{stats.completed}/{stats.total} topics</div>
                                 </div>
                               )}
-                              {/* Quick-open button (shown when collapsed) */}
-                              {!isExpanded && !subj.comingSoon && quizTopics.length > 0 && (
+                              {/* Quick-open button (shown when collapsed) — only if there's
+                                  at least one playable (not-yet-completed) topic. */}
+                              {!isExpanded && quizTopics.length > 0 && (
                                 <button
                                   className="btn-t"
                                   style={{padding:'6px 12px',fontSize:'12px',flexShrink:0}}
-                                  onClick={e=>{e.stopPropagation();setActiveAssignmentSubject(subj.key);setExpandedSubject(null);}}
+                                  onClick={e=>{e.stopPropagation();setActiveAssignmentSubject(subjectName);setExpandedSubject(null);}}
                                 >
                                   Start <i className="fa-solid fa-arrow-right" style={{fontSize:'11px',marginLeft:'4px'}} />
                                 </button>
@@ -2639,11 +4177,13 @@ function PortalInner() {
                             </div>
                           </div>
 
-                          {/* Progress bar (always visible) */}
-                          {!subj.comingSoon && (
+                          {/* Progress bar — visible whenever this subject has any topics at
+                              all (including fully completed ones), so a 100%-complete subject
+                              still shows its progress rather than disappearing. */}
+                          {stats.total > 0 && (
                             <div style={{padding:'0 20px 12px'}}>
                               <div style={{height:'5px',background:'rgba(255,255,255,.07)',borderRadius:'100px',overflow:'hidden'}}>
-                                <div style={{height:'100%',width:`${stats.pct}%`,background:stats.pct>=75?'#22c55e':stats.pct>=40?'var(--accent)':subj.color,borderRadius:'100px',transition:'width .6s ease'}} />
+                                <div style={{height:'100%',width:`${stats.pct}%`,background:stats.pct>=75?'#22c55e':stats.pct>=40?'var(--accent)':color,borderRadius:'100px',transition:'width .6s ease'}} />
                               </div>
                               <div style={{display:'flex',justifyContent:'space-between',marginTop:'4px',fontSize:'11px',color:'var(--muted)'}}>
                                 <span>✓ {stats.completed} Completed</span>
@@ -2657,79 +4197,63 @@ function PortalInner() {
                             <div className="age-subj-expanded">
                               <div style={{padding:'0 20px 6px',borderTop:'1px solid rgba(255,255,255,.06)',marginTop:'4px'}}>
 
-                                {subj.comingSoon ? (
-                                  <div style={{textAlign:'center',padding:'24px 0'}}>
-                                    <div style={{fontSize:'32px',marginBottom:'10px'}}>🚧</div>
-                                    <div style={{fontWeight:700,color:'#fff',marginBottom:'6px'}}>Content Coming Soon</div>
-                                    <div style={{fontSize:'13px',color:'var(--muted)',lineHeight:1.7}}>
-                                      Your teacher will add {subj.key} topics shortly.<br/>The topics are planned — just waiting for content.
-                                    </div>
-                                    <div style={{marginTop:'18px',textAlign:'left'}}>
-                                      <div style={{fontSize:'11px',fontWeight:700,textTransform:'uppercase',letterSpacing:'.06em',color:'var(--muted)',marginBottom:'10px'}}>Topics Planned</div>
-                                      {subj.topics.map((topic,ti) => (
-                                        <div key={ti} style={{marginBottom:'8px',padding:'10px 12px',background:'rgba(255,255,255,.03)',borderRadius:'8px',border:'1px solid rgba(255,255,255,.05)'}}>
-                                          <div style={{fontWeight:700,color:'rgba(255,255,255,.7)',fontSize:'13px',marginBottom:'4px'}}>
-                                            <i className="fa-solid fa-folder-open" style={{color:subj.color,marginRight:'7px',fontSize:'11px'}} />{topic.name}
-                                          </div>
-                                          <div style={{display:'flex',flexWrap:'wrap',gap:'5px'}}>
-                                            {topic.subtopics.map((st,sti)=>(
-                                              <span key={sti} style={{fontSize:'11px',padding:'2px 8px',background:'rgba(255,255,255,.05)',borderRadius:'100px',color:'var(--muted)'}}>{st}</span>
-                                            ))}
-                                          </div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                ) : quizTopics.length === 0 ? (
-                                  <div style={{padding:'16px 0'}}>
-                                    <div style={{textAlign:'center',marginBottom:'16px'}}>
-                                      <div style={{fontSize:'13px',color:'var(--muted)',marginBottom:'4px'}}>No interactive lessons yet — your teacher will add them shortly.</div>
-                                      <button
-                                        className="btn-t"
-                                        style={{marginTop:'8px',fontSize:'12px',padding:'8px 16px'}}
-                                        onClick={()=>{setActiveAssignmentSubject(subj.key);setExpandedSubject(null);}}
-                                      >
-                                        <i className="fa-solid fa-plus" /> Browse Topics Anyway
-                                      </button>
-                                    </div>
-                                    {subj.topics.map((topic,ti)=>(
-                                      <div key={ti} style={{marginBottom:'6px',padding:'9px 12px',background:'rgba(255,255,255,.03)',borderRadius:'8px',border:'1px solid rgba(255,255,255,.05)'}}>
-                                        <div style={{fontWeight:700,color:'rgba(255,255,255,.6)',fontSize:'13px'}}>
-                                          <i className="fa-solid fa-chevron-right" style={{color:subj.color,marginRight:'7px',fontSize:'10px'}} />{topic.name}
-                                        </div>
+                                {quizTopics.length === 0 ? (
+                                  stats.total > 0 ? (
+                                    // Issue 3: all topics in this subject are completed (and no new
+                                    // questions have been added since) — direct the student to the
+                                    // Completed Topics tab rather than implying there's no content.
+                                    <div style={{textAlign:'center',padding:'24px 0'}}>
+                                      <div style={{fontSize:'32px',marginBottom:'10px'}}>🎉</div>
+                                      <div style={{fontWeight:700,color:'#fff',marginBottom:'6px'}}>All {subjectName} topics completed!</div>
+                                      <div style={{fontSize:'13px',color:'var(--muted)',lineHeight:1.7}}>
+                                        Great work — find your finished topics, scores, and time taken in the <strong>Completed Topics</strong> tab. New topics will appear here as soon as your teacher adds them.
                                       </div>
-                                    ))}
-                                  </div>
+                                    </div>
+                                  ) : (
+                                    <div style={{textAlign:'center',padding:'24px 0'}}>
+                                      <div style={{fontSize:'32px',marginBottom:'10px'}}>🚧</div>
+                                      <div style={{fontWeight:700,color:'#fff',marginBottom:'6px'}}>Content Coming Soon</div>
+                                      <div style={{fontSize:'13px',color:'var(--muted)',lineHeight:1.7}}>
+                                        Your teacher will add {subjectName} topics shortly.
+                                      </div>
+                                    </div>
+                                  )
                                 ) : (
                                   <>
+                                    {/* Topic list — each row is one Learning Module from the sheet */}
                                     <div style={{marginTop:'14px'}}>
-                                      <div style={{fontSize:'11px',fontWeight:700,textTransform:'uppercase',letterSpacing:'.06em',color:'var(--muted)',marginBottom:'10px'}}>Topics</div>
-                                      {subj.topics.map((topic,ti) => {
-                                        const topicModules = quizTopics.filter(m =>
-                                          m.Title.toLowerCase().includes(topic.name.toLowerCase().split(' ')[0])
-                                        );
-                                        const topicDone = topicModules.filter(m=>learnProgress[m['Module ID']]?.completedAt).length;
+                                      <div style={{fontSize:'11px',fontWeight:700,textTransform:'uppercase',letterSpacing:'.06em',color:'var(--muted)',marginBottom:'10px'}}>
+                                        Topics ({quizTopics.length})
+                                      </div>
+                                      {quizTopics.map((module) => {
+                                        const mid       = module['Module ID'];
+                                        const modDone   = !!learnProgress[mid]?.completedAt;
+                                        const stepsCount = stepsFor(mid).length;
+                                        const subs = subtopicsFor(module);
                                         return (
-                                          <div key={ti} style={{marginBottom:'8px',borderRadius:'10px',border:'1px solid rgba(255,255,255,.06)',overflow:'hidden'}}>
+                                          <div key={mid} style={{marginBottom:'8px',borderRadius:'10px',border:'1px solid rgba(255,255,255,.06)',overflow:'hidden'}}>
                                             <div
-                                              style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 14px',background:'rgba(255,255,255,.03)',cursor: topicModules.length?'pointer':'default'}}
-                                              onClick={()=>{ if(topicModules.length===1){setActiveAssignmentSubject(subj.key);setActiveModuleId(topicModules[0]['Module ID']);setExpandedSubject(null);} else if(topicModules.length>1){setActiveAssignmentSubject(subj.key);setExpandedSubject(null);}}}
+                                              style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 14px',background:'rgba(255,255,255,.03)',cursor:'pointer'}}
+                                              onClick={()=>{ setActiveAssignmentSubject(subjectName); setActiveModuleId(mid); setExpandedSubject(null); }}
                                             >
                                               <div style={{display:'flex',alignItems:'center',gap:'9px'}}>
-                                                <i className="fa-solid fa-folder-open" style={{color:subj.color,fontSize:'12px'}} />
-                                                <span style={{fontWeight:700,color:'rgba(255,255,255,.85)',fontSize:'13px'}}>{topic.name}</span>
-                                                {topicModules.length>0 && <span style={{fontSize:'10px',padding:'1px 7px',borderRadius:'100px',background:`${subj.color}22`,color:subj.color,fontWeight:700}}>{topicModules.length} lesson{topicModules.length!==1?'s':''}</span>}
+                                                <i className="fa-solid fa-folder-open" style={{color,fontSize:'12px'}} />
+                                                <span style={{fontWeight:700,color:'rgba(255,255,255,.85)',fontSize:'13px'}}>{module.Title}</span>
+                                                {stepsCount > 0 && <span style={{fontSize:'10px',padding:'1px 7px',borderRadius:'100px',background:`${color}22`,color,fontWeight:700}}>{stepsCount} step{stepsCount!==1?'s':''}</span>}
                                               </div>
                                               <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
-                                                {topicModules.length>0 && <span style={{fontSize:'11px',color:topicDone===topicModules.length&&topicDone>0?'#22c55e':'var(--muted)'}}>{topicDone}/{topicModules.length} done</span>}
-                                                {topicModules.length>0 && <i className="fa-solid fa-chevron-right" style={{color:'var(--muted)',fontSize:'10px'}} />}
+                                                {modDone && <i className="fa-solid fa-circle-check" style={{color:'#22c55e',fontSize:'13px'}} />}
+                                                <i className="fa-solid fa-chevron-right" style={{color:'var(--muted)',fontSize:'10px'}} />
                                               </div>
                                             </div>
-                                            <div style={{display:'flex',flexWrap:'wrap',gap:'5px',padding:'8px 14px 10px'}}>
-                                              {topic.subtopics.map((st,sti)=>(
-                                                <span key={sti} style={{fontSize:'11px',padding:'2px 9px',background:'rgba(255,255,255,.04)',borderRadius:'100px',color:'var(--muted)',border:'1px solid rgba(255,255,255,.06)'}}>{st}</span>
-                                              ))}
-                                            </div>
+                                            {/* Subtopics pills (from Subtopics column in sheet) */}
+                                            {subs.length > 0 && (
+                                              <div style={{display:'flex',flexWrap:'wrap',gap:'5px',padding:'8px 14px 10px'}}>
+                                                {subs.map((st,sti)=>(
+                                                  <span key={sti} style={{fontSize:'11px',padding:'2px 9px',background:'rgba(255,255,255,.04)',borderRadius:'100px',color:'var(--muted)',border:'1px solid rgba(255,255,255,.06)'}}>{st}</span>
+                                                ))}
+                                              </div>
+                                            )}
                                           </div>
                                         );
                                       })}
@@ -2739,10 +4263,10 @@ function PortalInner() {
                                       <button
                                         className="btn-t"
                                         style={{fontSize:'13px',padding:'9px 20px'}}
-                                        onClick={()=>{setActiveAssignmentSubject(subj.key);setExpandedSubject(null);}}
+                                        onClick={()=>{setActiveAssignmentSubject(subjectName);setExpandedSubject(null);}}
                                       >
                                         <i className="fa-solid fa-book-open" style={{marginRight:'6px'}} />
-                                        Open All {subj.key} Lessons
+                                        Open All {subjectName} Lessons
                                       </button>
                                     </div>
                                   </>
@@ -2840,16 +4364,20 @@ function PortalInner() {
                     <i className="fa-solid fa-chevron-right asgn-crumb-sep" />
                     <span className="asgn-crumb" onClick={()=>setActiveModuleId(null)}>{activeAssignmentSubject}</span>
                     <i className="fa-solid fa-chevron-right asgn-crumb-sep" />
-                    <span className="asgn-crumb-current">{LMOD.find(m=>m['Module ID']===activeModuleId)?.Title}</span>
+                    <span className="asgn-crumb-current">{ASSIGN_LMOD.find(m=>m['Module ID']===activeModuleId)?.Title}</span>
                   </div>
                   <LearningModulePlayer
-                    module={LMOD.find(m=>m['Module ID']===activeModuleId)}
+                    key={activeModuleId}
+                    module={ASSIGN_LMOD.find(m=>m['Module ID']===activeModuleId)}
                     steps={stepsFor(activeModuleId)}
                     progress={learnProgress[activeModuleId]}
                     onSave={patch=>saveLearnProgress(activeModuleId, patch)}
                     onAnswer={recordAnswer}
                     onExit={()=>setActiveModuleId(null)}
                     backLabel={`${t('p_back_to')} ${activeAssignmentSubject} ${t('p_topics_suffix')}`}
+                    soundConfig={cfg.config || {}}
+                    timerConfig={cfg.config || {}}
+                    profile={profile}
                     t={t}
                   />
                 </>
@@ -2858,6 +4386,169 @@ function PortalInner() {
 
 
 
+            {/* ── ASSIGNMENTS FOR YOU ─────────────────────────────────────
+                Chapter-specific homework a parent/teacher assigned from the
+                Parent Portal builder table (My Students → Assignments tab).
+                One row per chapter; "Start Quiz" opens the exact assigned
+                question range and marks the row Completed automatically on
+                finishing the last assigned question. */}
+            {tab==='myassignments' && (
+              activeMyAssignmentId ? (() => {
+                const row = myAssignments.find(a => a.AssignmentID === activeMyAssignmentId);
+                if (!row) { setActiveMyAssignmentId(null); return null; }
+                const module = LMOD.find(m => m['Module ID'] === row.ModuleID);
+                const steps  = stepsFor(row.ModuleID);
+
+                // Self-diagnosing guard: rather than diving into the quiz player
+                // and hitting its generic "no steps yet" message, explain exactly
+                // what's missing so the student/teacher knows what to fix.
+                if (!module || steps.length === 0) {
+                  return (
+                    <>
+                      <div className="asgn-breadcrumb">
+                        <span className="asgn-crumb" onClick={()=>setActiveMyAssignmentId(null)}>Assignments for you</span>
+                        <i className="fa-solid fa-chevron-right asgn-crumb-sep" />
+                        <span className="asgn-crumb-current">{row.ChapterTitle || row.ModuleID}</span>
+                      </div>
+                      <div className="content">
+                        <div className="card" style={{textAlign:'center',borderColor:'rgba(239,68,68,.25)'}}>
+                          <i className="fa-solid fa-triangle-exclamation" style={{fontSize:'24px',color:'#f87171',marginBottom:'10px',display:'block'}} />
+                          {!module ? (
+                            <>This chapter ("{row.ChapterTitle || row.ModuleID}") couldn't be found for your class. Ask your teacher to double-check it was assigned to the right class.</>
+                          ) : (
+                            <>"{module.Title}" doesn't have any questions added yet on your class's sheet, so it can't be opened right now. Let your teacher know — once questions are added to its Learning Steps tab, this will open normally.</>
+                          )}
+                          <div style={{marginTop:'16px'}}>
+                            <button className="lp-back" onClick={()=>setActiveMyAssignmentId(null)}><i className="fa-solid fa-arrow-left" /> Back to Assignments for you</button>
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  );
+                }
+
+                return (
+                  <>
+                    <div className="asgn-breadcrumb">
+                      <span className="asgn-crumb" onClick={()=>setActiveMyAssignmentId(null)}>Assignments for you</span>
+                      <i className="fa-solid fa-chevron-right asgn-crumb-sep" />
+                      <span className="asgn-crumb-current">{row.ChapterTitle || module?.Title}</span>
+                    </div>
+                    <LearningModulePlayer
+                      key={activeMyAssignmentId}
+                      module={module}
+                      steps={steps}
+                      rangeFrom={Number(row.FromQuestion) || 1}
+                      rangeTo={Number(row.ToQuestion) || steps.length}
+                      progress={learnProgress[row.ModuleID]}
+                      onSave={patch=>saveLearnProgress(row.ModuleID, patch)}
+                      onAnswer={recordAnswer}
+                      onExit={()=>setActiveMyAssignmentId(null)}
+                      onRangeComplete={()=>completeMyAssignment(row.AssignmentID)}
+                      backLabel="Back to Assignments for you"
+                      soundConfig={cfg.config || {}}
+                      timerConfig={cfg.config || {}}
+                      profile={profile}
+                      t={t}
+                    />
+                  </>
+                );
+              })() : (
+                <>
+                  <div className="main-top"><div><div className="pg-h">Assignments for you</div><div className="pg-s">Chapters your teacher or parent has assigned, with the exact questions to answer</div></div></div>
+                  <div className="content">
+                    {myAssignmentsLoading && myAssignments.length === 0 ? (
+                      <div className="card" style={{textAlign:'center',color:'var(--muted)'}}><i className="fa-solid fa-circle-notch fa-spin" /> Loading your assignments…</div>
+                    ) : myAssignments.length === 0 ? (
+                      <div className="card" style={{textAlign:'center',color:'var(--muted)'}}>
+                        <i className="fa-solid fa-clipboard-list" style={{fontSize:'26px',marginBottom:'10px',display:'block',opacity:.5}} />
+                        No assignments yet — your teacher or parent hasn't assigned any chapters.
+                      </div>
+                    ) : (
+                      <div className="card">
+                        <div className="card-t"><i className="fa-solid fa-clipboard-list" /> Your Assigned Chapters ({myAssignments.length})</div>
+                        {myAssignments
+                          .slice()
+                          .sort((a,b)=> (a.Status==='Completed'?1:0) - (b.Status==='Completed'?1:0))
+                          .map(a => {
+                            const isDone = a.Status === 'Completed';
+                            const total  = Number(a.TotalQuestions) || (Number(a.ToQuestion)-Number(a.FromQuestion)+1) || 0;
+                            return (
+                              <div key={a.AssignmentID} className="asgn-item asgn-item-v2">
+                                <div className="asgn-dot" style={{background:isDone?'#22c55e':'var(--accent)'}} />
+                                <div className="asgn-body" style={{flex:1}}>
+                                  <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:'10px',flexWrap:'wrap'}}>
+                                    <div>
+                                      <div className="asgn-title">{a.ChapterTitle || a.ModuleID}</div>
+                                      <div className="asgn-meta">
+                                        {a.Subject}{a.ClassLevel ? ` · ${a.ClassLevel}` : ''} · Q{a.FromQuestion}–{a.ToQuestion} of {total}
+                                        {a.AssignedDate && <> · Assigned {String(a.AssignedDate).slice(0,10)}</>}
+                                      </div>
+                                      {a.Comments && (
+                                        <div style={{fontSize:'11px',color:'rgba(0,198,167,.75)',marginTop:'4px',fontStyle:'italic'}}>
+                                          <i className="fa-solid fa-comment-dots" style={{marginRight:'4px'}} />{a.Comments}
+                                        </div>
+                                      )}
+                                    </div>
+                                    <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:'8px'}}>
+                                      <span className={`asgn-badge ${isDone?'graded':'pending'}`}>{isDone?'✓ Completed':a.Status||'Task assigned'}</span>
+                                      {!isDone && (
+                                        <button className="btn-t btn-t-sm" onClick={()=>setActiveMyAssignmentId(a.AssignmentID)}>
+                                          <i className="fa-solid fa-play" /> Start Quiz
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )
+            )}
+
+
+
+            {/* ── COMPLETED TOPICS ──────────────────────────────────────────
+                Lists every module the student has finished, the date it was
+                completed, and the time taken (from the timer or sheet log). */}
+            {tab==='completedtopics' && (
+              <>
+                <div className="main-top">
+                  <div>
+                    <div className="pg-h">Completed Topics</div>
+                    <div className="pg-s">Topics you have finished — when you completed them and how long it took</div>
+                  </div>
+                </div>
+                <CompletedTopicsTab
+                  learnProgress={learnProgress}
+                  learningModules={LMOD}
+                  subjects={ASSIGN_SUBJ}
+                  stepsFor={stepsFor}
+                  saveLearnProgress={saveLearnProgress}
+                  onRetake={(moduleId, subjectName) => {
+                    setActiveAssignmentSubject(subjectName);
+                    setActiveModuleId(moduleId);
+                    setTab('assignments');
+                  }}
+                />
+              </>
+            )}
+{/* GROUP CHAT */}
+{tab==='chat' && (
+  <>
+    <div className="main-top">
+      <div>
+        <div className="pg-h">Group Chat</div>
+        <div className="pg-s">Chat with your groupmates — teachers and parents can see this too</div>
+      </div>
+    </div>
+    <GroupChat profile={profile} t={t} focusGroupId={chatFocusGroupId} />
+  </>
+)}
             {/* SCHEDULE */}
             {tab==='schedule' && (<>
               <div className="main-top"><div><div className="pg-h">{t('p_schedule_title')}</div><div className="pg-s">{t('p_schedule_subtitle')}</div></div></div>
@@ -2938,17 +4629,17 @@ function PortalInner() {
                         {/* Class Level dropdown */}
                         <div className="prof-field">
                           <span className="prof-label">Class Level</span>
-                          <select
-                            id="pf-ClassLevel"
-                            defaultValue={profile.classLevel}
-                            className="prof-inp"
-                          >
-                            <option value="Class 1">Class 1 (Age 5–6)</option>
-                            <option value="Class 2">Class 2 (Age 6–7)</option>
-                            <option value="Class 3">Class 3 (Age 7–8)</option>
-                            <option value="Class 4">Class 4 (Age 8–9)</option>
-                            <option value="Class 5">Class 5 (Age 9–10)</option>
-                          </select>
+                         <select
+  id="pf-ClassLevel"
+  defaultValue={profile.classLevel}
+  className="prof-inp"
+>
+  {CLASS_LEVELS.map(c => (
+    <option key={c.Class} value={c.Class}>
+      {c.Label || c.Class}{c.Age ? ` (${c.Age})` : ''}
+    </option>
+  ))}
+</select>
                         </div>
                         {/* Email */}
                         <div className="prof-field">
@@ -3119,4 +4810,3 @@ export default function Portal() {
     </LanguageProvider>
   );
 }
-
