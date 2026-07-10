@@ -33,7 +33,7 @@ export default async function handler(req, res) {
 
       const classmates = (data.accounts || [])
         .filter(a => String(a.Active).toString().toUpperCase() !== 'FALSE')
-        .filter(a => String(a.ClassLevel || a.Class || '').trim() === String(classLevel).trim())
+        .filter(a => String(a.ClassLevel || a.Class || '').trim().toLowerCase() === String(classLevel).trim().toLowerCase())
         .filter(a => String(a.StudentID || '') !== String(excludeStudentId || ''))
         .map(a => ({
           studentId:   a.StudentID || '',
