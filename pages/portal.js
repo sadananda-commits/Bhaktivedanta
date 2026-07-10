@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { LanguageProvider, useLanguage, LanguageToggle } from '../lib/i18n';
 import MatchTheFollowing from '../components/MatchTheFollowing';
+import GroupChat from '../components/GroupChat';
 import { QUIZ_LEARNING_MODULES_DA, QUIZ_LEARNING_STEPS_DA, QUIZ_ASSIGNMENT_SUBJECTS_DA } from '../lib/quizContentDA';
 import {
   PORTAL_SETTINGS_DA, PORTAL_NAVIGATION_DA, PORTAL_DASH_STATS_DA, PORTAL_SUBJECTS_DEMO_DA,
@@ -63,6 +64,7 @@ const FALLBACK = {
     {ID:'leaderboard',   Label:'Leaderboard',        'Icon (FontAwesome solid)':'fa-trophy',         Active:true,Order:2},
     {ID:'assignments',   Label:'Question Bank',      'Icon (FontAwesome solid)':'fa-book-open',      Active:true,Order:3},
     {ID:'myassignments', Label:'Assignments for you','Icon (FontAwesome solid)':'fa-clipboard-list',Active:true,Order:4},
+{ID:'chat', Label:'Group Chat', 'Icon (FontAwesome solid)':'fa-comments', Active:true, Order:4.5},
     {ID:'completedtopics',Label:'Completed Topics',  'Icon (FontAwesome solid)':'fa-circle-check',  Active:true,Order:5},
     {ID:'notifications', Label:'Notifications',      'Icon (FontAwesome solid)':'fa-bell',           Active:true,Order:5},
     {ID:'profile',       Label:'My Profile',         'Icon (FontAwesome solid)':'fa-user-circle',    Active:true,Order:6},
@@ -4525,7 +4527,18 @@ function PortalInner() {
                 />
               </>
             )}
-
+{/* GROUP CHAT */}
+{tab==='chat' && (
+  <>
+    <div className="main-top">
+      <div>
+        <div className="pg-h">Group Chat</div>
+        <div className="pg-s">Chat with your groupmates — teachers and parents can see this too</div>
+      </div>
+    </div>
+    <GroupChat profile={profile} t={t} />
+  </>
+)}
             {/* SCHEDULE */}
             {tab==='schedule' && (<>
               <div className="main-top"><div><div className="pg-h">{t('p_schedule_title')}</div><div className="pg-s">{t('p_schedule_subtitle')}</div></div></div>
@@ -4787,4 +4800,3 @@ export default function Portal() {
     </LanguageProvider>
   );
 }
-
