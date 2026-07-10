@@ -47,7 +47,7 @@ const FALLBACK = {
     { Id: 'T02', Name: 'Mr. Pradeep Nair',   Qualification: 'M.A. English Literature · B.Ed', Experience: '7 Years', Subjects: 'English & History',     Bio: 'Award-winning educator whose storytelling approach brings history and language to life in every session.' },
   ],
   faqs: [
-    { Question: 'What age groups do you teach?',           Answer: 'We cover Kindergarten (age 4–5) through Class 5 (age 9–10), following the CBSE curriculum framework.' },
+    { Question: 'What age groups do you teach?',           Answer: 'We cover Kindergarten (age 4–5) through Class 5 (age 9–10) with fun, interactive lessons designed for each age group.' },
     { Question: 'How many students are in each batch?',    Answer: 'We strictly limit batches to a maximum of 5 students to guarantee individual attention and a personalised learning experience.' },
     { Question: 'Do you offer online classes?',            Answer: 'Yes. We offer Physical, Online (via Google Meet / Zoom), and Hybrid formats. You choose your preferred mode during enrollment.' },
     { Question: 'What happens after I submit the form?',   Answer: 'Your Student ID, username, and temporary password are generated instantly. You can log in to the Student Portal immediately.' },
@@ -57,9 +57,9 @@ const FALLBACK = {
   about: [
     { Icon: 'fa-users-between-lines', IconBg: 'rgba(0,198,167,.1)',   IconColor: 'var(--teal)',  Heading: 'Micro-Batch Teaching',           Body: 'Strictly limited to 5 students per batch — every child receives undivided attention and a truly personalised learning path.' },
     { Icon: 'fa-chart-line',          IconBg: 'rgba(245,166,35,.1)',  IconColor: 'var(--accent)', Heading: 'Live Progress Dashboards',        Body: 'Parents and students access real-time academic logs — homework completion, attendance, quiz scores, and growth metrics updated daily.' },
-    { Icon: 'fa-map-pin',             IconBg: 'rgba(99,102,241,.1)',  IconColor: '#818cf8',      Heading: 'CBSE Blueprint Mapping',          Body: 'Every lesson plan is meticulously mapped to current CBSE standards, ensuring students are always ahead of classroom expectations.' },
+    { Icon: 'fa-map-pin',             IconBg: 'rgba(99,102,241,.1)',  IconColor: '#818cf8',      Heading: 'Structured Learning Path',        Body: 'Every lesson is carefully sequenced and age-appropriate, so children build knowledge step by step at a pace that suits them.' },
     { Icon: 'fa-laptop-code',         IconBg: 'rgba(239,68,68,.1)',   IconColor: '#f87171',      Heading: 'Physical, Online & Hybrid',       Body: 'Choose the format that works best for your family. Switch modes anytime through the student portal — no questions asked.' },
-    { Icon: 'fa-medal',               IconBg: 'rgba(168,85,247,.1)',  IconColor: '#a855f7',      Heading: 'Proven Results',                  Body: 'Our students consistently rank in the top 15% of their school exams within three months of joining — measurable, visible improvement.' },
+    { Icon: 'fa-medal',               IconBg: 'rgba(168,85,247,.1)',  IconColor: '#a855f7',      Heading: 'Proven Results',                  Body: 'Children build lasting confidence and genuine understanding — parents see real growth in curiosity, engagement, and skill within weeks of joining.' },
     { Icon: 'fa-shield-halved',       IconBg: 'rgba(34,197,94,.1)',   IconColor: '#22c55e',      Heading: 'Background-Verified Teachers',    Body: 'All teachers are degree-qualified, B.Ed certified, DBS checked, and trained in child-centred primary developmental learning.' },
   ],
   contact: {
@@ -69,11 +69,11 @@ const FALLBACK = {
     address:        'Sector 15, Block C, New Delhi',
   },
   hero: {
-    badge:      'CBSE Certified · KG to Class 5',
+    badge:      'Interactive Learning · KG to Class 5',
     headline:   "Where every child's potential is unlocked",
     headlineLine1: "Where every child's",
     headlineLine2: 'potential is unlocked',
-    subheadline:'Premium, personalised CBSE home tuition with expert mentors, micro-batches of 5, and a real-time student portal to track every step of your child\'s growth.',
+    subheadline:'Learn as you play – helping children learn through fun, interactive experiences, with expert mentors, micro-batches of 5, and a real-time portal to track every step of your child\'s growth.',
     btn1Text:   'Enroll Now — Free',
     btn1Link:   '#enroll',
     btn2Text:   'Student Login',
@@ -85,7 +85,7 @@ const FALLBACK = {
     feat1: 'Live attendance & homework tracking',
     feat2: 'Personalised progress dashboards',
     feat3: 'Physical, Online & Hybrid options',
-    feat4: 'CBSE blueprint-aligned content',
+    feat4: 'Fun, interactive learning experiences',
   },
 };
 
@@ -116,6 +116,12 @@ function HomeInner() {
   // below 900px with no way to reach Classes/Subjects/Schedule/etc. on a
   // phone. Same off-canvas-drawer fix as the Student Portal's sidebar.
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  // ── Announcement strip: text fetched from a Google Doc whose URL is stored
+  // in the master config sheet under the key "AnnouncementDocUrl".
+  // The /api/content route already reads that sheet; we piggy-back on the same
+  // cms fetch and just look for cms.announcement (a plain string).
+  // The strip is hidden when the value is empty / whitespace.
+  const [announcementText, setAnnouncementText] = useState('');
 
   // Whenever the language changes, immediately reset cms to that language's
   // fallback so the UI never shows a mix of English Sheet data and Danish
@@ -123,6 +129,26 @@ function HomeInner() {
   useEffect(() => {
     setCms(lang === 'da' ? LANDING_FALLBACK_DA : FALLBACK);
   }, [lang]);
+
+  // ── Announcement strip: fetch directly on mount using the known doc URL.
+  // This runs independently of /api/content so the ticker is always visible
+  // even when the CMS fetch is slow or the sheet doesn't forward the URL yet.
+  // The /api/content fetch below may also update announcementText if it returns
+  // a different URL — last write wins, which is fine.
+  useEffect(() => {
+    let cancelled = false;
+    const ANNOUNCEMENT_DOC_URL = 'https://docs.google.com/document/d/1HI17xm-7X43RoLC0rigDhUZKu1zwzhQF98wolnxcclU/edit?tab=t.0';
+    const exportUrl = ANNOUNCEMENT_DOC_URL.replace(/\/edit.*$/, '/export?format=txt');
+    fetch(`/api/proxy-doc?url=${encodeURIComponent(exportUrl)}`)
+      .then(r => r.text())
+      .then(txt => {
+        if (cancelled) return;
+        const text = txt.split('\n').map(l => l.trim()).filter(Boolean).join('  ·  ');
+        if (text) setAnnouncementText(text);
+      })
+      .catch(() => {/* non-critical */});
+    return () => { cancelled = true; };
+  }, []); // only on mount — the URL is fixed in the master config
 
   // ── Fetch live data from Google Sheet via /api/content ──────────────────
   // Only fetched/applied in English — see note above.
@@ -153,6 +179,28 @@ function HomeInner() {
           faqs:         data.faqs?.length                      ? data.faqs         : FALLBACK.faqs,
           contact:      Object.keys(data.contact || {}).length ? data.contact      : FALLBACK.contact,
         });
+        // ── Announcement strip: check if the sheet returned an AnnouncementDocUrl
+        // either under data.announcement (legacy /api/content shape) or
+        // data.config (portal-config shape). As an additional safety net, fall
+        // back to the known doc URL that is also stored in the master config
+        // sheet under key "AnnouncementDocUrl" in the "Config" tab — so the
+        // ticker always shows even if /api/content doesn't forward it yet.
+        const docUrl =
+          data.announcement?.AnnouncementDocUrl ||
+          data.announcement?.announcementDocUrl ||
+          (data.config || {})['AnnouncementDocUrl'] ||
+          'https://docs.google.com/document/d/1HI17xm-7X43RoLC0rigDhUZKu1zwzhQF98wolnxcclU/edit?tab=t.0';
+        if (docUrl && !cancelled) {
+          const exportUrl = docUrl.replace(/\/edit.*$/, '/export?format=txt');
+          fetch(`/api/proxy-doc?url=${encodeURIComponent(exportUrl)}`)
+            .then(r => r.text())
+            .then(txt => {
+              if (cancelled) return;
+              const text = txt.split('\n').map(l => l.trim()).filter(Boolean).join('  ·  ');
+              setAnnouncementText(text);
+            })
+            .catch(() => {/* non-critical — strip stays hidden */});
+        }
       })
       .catch(err => { if (!cancelled) console.warn('[cms] Fetch error, using fallback:', err.message); });
     return () => { cancelled = true; };
@@ -310,7 +358,27 @@ function HomeInner() {
     <>
       <Head>
         <title>{t('page_title')}</title>
+        {/* Primary description — the i18n key (page_meta_description) is the
+            live value; the content attr below is the canonical default used by
+            OG / Twitter and as the fallback if the translation is missing. */}
+        <meta name="description" content="Learn as you play – helping children learn through fun, interactive experiences." />
         <meta name="description" content={t('page_meta_description')} />
+
+        {/* Open Graph */}
+        <meta property="og:type"        content="website" />
+        <meta property="og:site_name"   content="Vedanta Academy" />
+        <meta property="og:title"       content={t('page_title')} />
+        <meta property="og:description" content="Learn as you play – helping children learn through fun, interactive experiences." />
+        <meta property="og:url"         content="https://vedantaacademy.com" />
+
+        {/* Twitter / X Card */}
+        <meta name="twitter:card"        content="summary" />
+        <meta name="twitter:title"       content={t('page_title')} />
+        <meta name="twitter:description" content="Learn as you play – helping children learn through fun, interactive experiences." />
+
+        {/* Indexing */}
+        <meta name="robots"   content="index, follow" />
+        <link rel="canonical" href="https://vedantaacademy.com" />
         <style>{`
           *{box-sizing:border-box;margin:0;padding:0;}
           :root{
@@ -322,6 +390,14 @@ function HomeInner() {
           }
           html{scroll-behavior:smooth;}
           body{font-family:var(--font-b);color:var(--text);background:var(--surface-alt);-webkit-font-smoothing:antialiased;}
+
+          /* ANNOUNCEMENT STRIP */
+          .ann-strip{background:linear-gradient(90deg,var(--teal) 0%,#0099cc 100%);color:#fff;font-size:13px;font-weight:600;overflow:hidden;white-space:nowrap;height:36px;display:flex;align-items:center;position:relative;z-index:201;}
+          .ann-strip-inner{display:inline-flex;align-items:center;gap:0;animation:ann-scroll 35s linear infinite;}
+          .ann-strip-inner:hover{animation-play-state:paused;}
+          .ann-strip-seg{padding:0 60px;display:inline-flex;align-items:center;gap:10px;white-space:nowrap;}
+          .ann-strip-seg i{font-size:11px;opacity:.8;}
+          @keyframes ann-scroll{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
 
           /* NAV */
           .nav{position:sticky;top:0;z-index:200;background:rgba(10,15,44,.97);backdrop-filter:blur(14px);border-bottom:1px solid rgba(255,255,255,.07);}
@@ -619,6 +695,21 @@ function HomeInner() {
           @media(max-width:560px){.footer-in{grid-template-columns:1fr;}}
         `}</style>
       </Head>
+
+      {/* ── ANNOUNCEMENT STRIP ── */}
+      {announcementText && (
+        <div className="ann-strip" role="marquee" aria-label="Announcement">
+          {/* Duplicate the content so the scroll loop is seamless */}
+          <div className="ann-strip-inner">
+            {[0, 1].map(k => (
+              <span key={k} className="ann-strip-seg">
+                <i className="fa-solid fa-bullhorn"></i>
+                {announcementText}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── NAV ── */}
       <nav className="nav">

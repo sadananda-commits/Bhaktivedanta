@@ -167,6 +167,372 @@ const SUBJECT_COLORS = {
 };
 const subjectColor = s => SUBJECT_COLORS[s] || '#00c6a7';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CHAPTER ASSIGNMENT BUILDER
+// The "Select a subject, select a class, select a chapter, From/To questions
+// (Total auto-filled), date, comments" row-creation form for the My Students
+// → Assignments tab. One submit = one row = one chapter assigned, defaulted
+// to Status "Task assigned". Subject/Class/Chapter/question-count options
+// all come live from the same Google Sheet the Student Portal reads
+// (/api/portal-config) — editing that sheet is the only "admin" needed.
+// ─────────────────────────────────────────────────────────────────────────────
+function ChapterAssignmentBuilder({ student, chapterConfig, chapterConfigLoading, createdBy, onCreated, editingAssignment, onUpdated, onCancelEdit }) {
+  // De-duplicate classLevels defensively — some sheets end up with repeat
+  // rows (e.g. pasted once per subject by mistake); the dropdown should
+  // only ever show each class once regardless of sheet hygiene.
+  // NOTE: classLevels is the only thing still sourced from the global,
+  // unfiltered `chapterConfig` fetch — the "Class Levels" tab isn't tied to
+  // a per-class Sheet ID, so it isn't affected by the collapse bug below.
+  const classLevels = useMemo(() => {
+    const seen = new Map();
+    (chapterConfig?.classLevels || []).forEach(c => { if (c.Class && !seen.has(c.Class)) seen.set(c.Class, c); });
+    return [...seen.values()];
+  }, [chapterConfig]);
+
+  const [selClass,    setSelClass]    = useState(student?.classLevel || '');
+  const [selSubject,  setSelSubject]  = useState('');
+  const [selModuleId, setSelModuleId] = useState('');
+  const [fromQ,        setFromQ]      = useState(1);
+  const [toQ,           setToQ]       = useState(1);
+  const [assignedDate, setAssignedDate] = useState(new Date().toISOString().slice(0,10));
+  const [comments,     setComments]   = useState('');
+  const [submitting,   setSubmitting] = useState(false);
+  const [msg,          setMsg]        = useState(null); // { ok:bool, text }
+
+  // Keep the class dropdown in sync if the parent switches students.
+  useEffect(() => { setSelClass(student?.classLevel || ''); }, [student?.studentId]);
+
+  // ── Per-class subject/chapter config ──────────────────────────────────
+  // Each class now has its own Google Sheet ID per subject (separate Drive
+  // folders per class). Fetching /api/portal-config WITHOUT a classLevel
+  // (the old approach) merges every class's rows together server-side, and
+  // that merge keeps only the FIRST Sheet ID it sees for a given subject
+  // name — so every class after the first one to expose "Mathematics" (etc.)
+  // silently loses its modules. That's exactly why only Class 1 populated.
+  //
+  // The Student Portal never hits this because it always calls
+  // /api/portal-config?classLevel=X for the student's own class, which
+  // resolves the correct per-class Sheet ID server-side. We do the same
+  // here: fetch a fresh, class-scoped config the moment a class is picked,
+  // and read subjects/chapters/questions only from that response — never
+  // from the global unfiltered `chapterConfig`.
+  const [classConfig,        setClassConfig]        = useState(null);
+  const [classConfigLoading, setClassConfigLoading]  = useState(false);
+  const [classConfigError,   setClassConfigError]    = useState(false);
+  const classConfigCache = useRef({}); // { [classLevel]: data } — avoid refetching when toggling back and forth
+
+  useEffect(() => {
+    if (!selClass) { setClassConfig(null); setClassConfigError(false); return; }
+
+    const cached = classConfigCache.current[selClass];
+    if (cached) { setClassConfig(cached); setClassConfigError(false); return; }
+
+    let cancelled = false;
+    setClassConfigLoading(true);
+    setClassConfigError(false);
+    fetch(`/api/portal-config?classLevel=${encodeURIComponent(selClass)}`, { cache: 'no-store' })
+      .then(r => r.json())
+      .then(data => {
+        if (cancelled) return;
+        classConfigCache.current[selClass] = data;
+        setClassConfig(data);
+      })
+      .catch(() => { if (!cancelled) setClassConfigError(true); })
+      .finally(() => { if (!cancelled) setClassConfigLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [selClass]);
+
+  const allModules = classConfig?.learningModules || [];
+  const allSteps    = classConfig?.learningSteps   || [];
+
+  // Subjects available for the chosen class. The server has already scoped
+  // this to selClass (via ?classLevel=), so no further class filtering is
+  // strictly needed — but we keep a defensive check for any row tagged with
+  // a different/blank Class (e.g. a genuinely shared "All classes" subject).
+  const subjectNames = useMemo(() => {
+    const seen = new Set();
+    allModules
+      .filter(m => !m.Class || m.Class === selClass)
+      .forEach(m => m.Subject && seen.add(m.Subject));
+    return [...seen].sort();
+  }, [allModules, selClass]);
+
+  // Chapters (Learning Modules) for the chosen subject + class
+  const chapters = useMemo(() => {
+    return allModules
+      .filter(m => m.Subject === selSubject && (!m.Class || m.Class === selClass))
+      .sort((a,b) => (Number(a['Display Order'])||0) - (Number(b['Display Order'])||0));
+  }, [allModules, selSubject, selClass]);
+
+  // Question count per chapter — computed once for the whole list so the
+  // dropdown can show "(no questions yet)" and disable those chapters
+  // instead of letting a teacher assign a chapter the student can't
+  // actually attempt (this was the "no steps yet" report — fixed at the
+  // source by never letting an empty chapter become assignable).
+  const stepCountByModule = useMemo(() => {
+    const map = {};
+    allSteps.forEach(s => { const id = s['Module ID']; if (id) map[id] = (map[id]||0) + 1; });
+    return map;
+  }, [allSteps]);
+
+  const selModule = chapters.find(m => m['Module ID'] === selModuleId) || null;
+  const totalQuestions = selModuleId ? (stepCountByModule[selModuleId] || 0) : 0;
+
+  // ── Edit-mode hydration ────────────────────────────────────────────────
+  // When `editingAssignment` is set (parent clicked "Edit" on a row), we
+  // need to pre-fill this same cascading form with that row's values. The
+  // tricky part: selecting a class triggers an async class-scoped config
+  // fetch, and the three "reset downstream" effects right below this block
+  // normally clear subject/module/question-range the moment selClass or
+  // selSubject changes — which would immediately wipe out the values we're
+  // trying to hydrate. `hydratingEditRef` suppresses those resets only
+  // while we're actively populating the form from an assignment being
+  // edited, and clears itself once every field has been set.
+  const hydratingEditRef = useRef(false);
+  const lastHydratedIdRef = useRef(null);
+
+  useEffect(() => {
+    if (!editingAssignment || lastHydratedIdRef.current === editingAssignment.AssignmentID) return;
+    lastHydratedIdRef.current = editingAssignment.AssignmentID;
+    hydratingEditRef.current = true;
+    setSelClass(editingAssignment.ClassLevel || student?.classLevel || '');
+    setAssignedDate(String(editingAssignment.AssignedDate || '').slice(0, 10) || new Date().toISOString().slice(0, 10));
+    setComments(editingAssignment.Comments || '');
+  }, [editingAssignment]);
+
+  // Once the class-scoped config has loaded and contains this assignment's
+  // subject, select it (guarded so it only fires while hydrating).
+  useEffect(() => {
+    if (!hydratingEditRef.current || !editingAssignment) return;
+    if (subjectNames.includes(editingAssignment.Subject)) {
+      setSelSubject(editingAssignment.Subject);
+    }
+  }, [editingAssignment, subjectNames]);
+
+  // Once chapters for that subject have loaded and contain this
+  // assignment's module, select it.
+  useEffect(() => {
+    if (!hydratingEditRef.current || !editingAssignment) return;
+    if (chapters.some(c => c['Module ID'] === editingAssignment.ModuleID)) {
+      setSelModuleId(editingAssignment.ModuleID);
+    }
+  }, [editingAssignment, chapters]);
+
+  // Once the module (and its question count) is actually selected, restore
+  // the original From/To question range and release the hydration guard —
+  // from this point on the form behaves exactly as it does when creating a
+  // brand new assignment.
+  useEffect(() => {
+    if (!hydratingEditRef.current || !editingAssignment) return;
+    if (selModuleId === editingAssignment.ModuleID && totalQuestions > 0) {
+      setFromQ(Number(editingAssignment.FromQuestion) || 1);
+      setToQ(Number(editingAssignment.ToQuestion) || totalQuestions);
+      hydratingEditRef.current = false;
+    }
+  }, [editingAssignment, selModuleId, totalQuestions]);
+
+  // Reset downstream selections whenever an upstream one changes — except
+  // while we're mid-hydration for an edit (see above).
+  useEffect(() => { if (hydratingEditRef.current) return; setSelSubject(''); setSelModuleId(''); }, [selClass]);
+  useEffect(() => { if (hydratingEditRef.current) return; setSelModuleId(''); }, [selSubject]);
+  useEffect(() => {
+    if (hydratingEditRef.current) return;
+    setFromQ(1);
+    setToQ(totalQuestions || 1);
+  }, [selModuleId, totalQuestions]);
+
+  const isEditing = !!editingAssignment;
+  const canSubmit = student && selClass && selSubject && selModuleId && totalQuestions > 0 && fromQ >= 1 && toQ >= fromQ && !submitting;
+
+  function handleCancelEdit() {
+    lastHydratedIdRef.current = null;
+    hydratingEditRef.current = false;
+    setSelSubject(''); setSelModuleId(''); setComments('');
+    setMsg(null);
+    onCancelEdit?.();
+  }
+
+  async function handleAssign() {
+    if (!canSubmit) return;
+    setSubmitting(true); setMsg(null);
+    try {
+      const endpoint = isEditing ? '/api/parent/update-assignment' : '/api/parent/create-assignment';
+      const body = {
+        studentId:      student.studentId,
+        studentName:    student.studentName,
+        classLevel:     selClass,
+        subject:        selSubject,
+        moduleId:       selModuleId,
+        chapterTitle:   selModule?.Title || selModuleId,
+        fromQuestion:   fromQ,
+        toQuestion:     toQ,
+        totalQuestions: totalQuestions || (toQ - fromQ + 1),
+        assignedDate,
+        comments,
+        createdBy,
+      };
+      if (isEditing) {
+        body.assignmentId = editingAssignment.AssignmentID;
+        body.updatedBy = createdBy;
+      }
+      const res = await fetch(endpoint, {
+        method: isEditing ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      // The API route itself always replies with JSON (even on its own
+      // errors) — a non-JSON response here means the request never reached
+      // it: most often a 404 because pages/api/parent/create-assignment.js
+      // hasn't been deployed yet, or the Apps Script side isn't wired in.
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        setMsg({ ok:false, text: res.status === 404
+          ? `${isEditing ? 'Update' : 'Assign'} endpoint not found (404). Make sure ${isEditing ? 'update-assignment.js' : 'create-assignment.js'} has been deployed to pages/api/parent/.`
+          : `Unexpected server response (HTTP ${res.status}). Check the Apps Script deployment.` });
+        return;
+      }
+
+      const data = await res.json();
+      if (data.success) {
+        if (isEditing) {
+          onUpdated?.(data.assignment);
+          setMsg({ ok:true, text:`Updated "${selModule?.Title || selModuleId}" (Q${fromQ}–${toQ}) for ${student.studentName}.` });
+        } else {
+          onCreated?.(data.assignment);
+          setMsg({ ok:true, text:`Assigned "${selModule?.Title || selModuleId}" (Q${fromQ}–${toQ}) to ${student.studentName}.` });
+          setSelModuleId('');
+          setComments('');
+        }
+      } else {
+        setMsg({ ok:false, text: data.message || `Could not ${isEditing ? 'update' : 'save'} the assignment.` });
+      }
+    } catch (err) {
+      setMsg({ ok:false, text:`Connection failed: ${err.message}. Check that the dev server picked up the new API route and that the Apps Script deployment includes the chapter-assignment actions.` });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="pt-card" style={{marginBottom:'20px', border: isEditing ? '1px solid var(--accent, #00c6a7)' : undefined}}>
+      <div className="pt-card-t" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <span><i className={`fa-solid ${isEditing ? 'fa-pen' : 'fa-square-plus'}`} /> {isEditing ? `Edit Chapter Assignment — ${student?.studentName || ''}` : 'Assign a New Chapter'}</span>
+        {isEditing && (
+          <button onClick={handleCancelEdit} style={{background:'none',border:'none',color:'rgba(255,255,255,.5)',cursor:'pointer',fontSize:'13px'}}>
+            <i className="fa-solid fa-xmark" /> Cancel
+          </button>
+        )}
+      </div>
+      {chapterConfigLoading && !chapterConfig ? (
+        <div className="pt-empty">Loading subjects &amp; chapters…</div>
+      ) : (
+        <>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:'12px',marginBottom:'14px'}}>
+            <div>
+              <label className="pt-field-l">Student</label>
+              <input className="pt-input" value={student?.studentName || ''} disabled />
+            </div>
+            <div>
+              <label className="pt-field-l">Class</label>
+              <select className="pt-input" value={selClass} onChange={e=>setSelClass(e.target.value)}>
+                <option value="">Select class…</option>
+                {classLevels.map(c => <option key={c.Class} value={c.Class}>{c.Label || c.Class}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="pt-field-l">Subject</label>
+              <select className="pt-input" value={selSubject} onChange={e=>setSelSubject(e.target.value)} disabled={!selClass || classConfigLoading}>
+                <option value="">{classConfigLoading ? 'Loading subjects…' : 'Select subject…'}</option>
+                {subjectNames.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+              {selClass && !classConfigLoading && !classConfigError && subjectNames.length === 0 && (
+                <div style={{fontSize:'11px',color:'#f87171',marginTop:'4px'}}>
+                  No subjects found for {selClass}. Check the Class Subject Map tab has an active row mapping this class's subjects to a Sheet ID.
+                </div>
+              )}
+              {classConfigError && (
+                <div style={{fontSize:'11px',color:'#f87171',marginTop:'4px'}}>
+                  Couldn't load subjects for {selClass}. Please try selecting the class again.
+                </div>
+              )}
+            </div>
+            <div style={{gridColumn:'1 / -1'}}>
+              <label className="pt-field-l">Chapter</label>
+              <select className="pt-input" value={selModuleId} onChange={e=>setSelModuleId(e.target.value)} disabled={!selSubject}>
+                <option value="">Select chapter…</option>
+                {chapters.map(m => {
+                  const n = stepCountByModule[m['Module ID']] || 0;
+                  return (
+                    <option key={m['Module ID']} value={m['Module ID']} disabled={n===0}>
+                      {m.Title} {n>0 ? `(${n} questions)` : '(no questions yet)'}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+            <div>
+              <label className="pt-field-l">From Question #</label>
+              <input className="pt-input" type="number" min={1} max={totalQuestions||1}
+                value={fromQ} disabled={!selModuleId}
+                onChange={e=>setFromQ(Math.max(1, Math.min(Number(e.target.value)||1, toQ)))} />
+            </div>
+            <div>
+              <label className="pt-field-l">To Question #</label>
+              <input className="pt-input" type="number" min={fromQ} max={totalQuestions||1}
+                value={toQ} disabled={!selModuleId}
+                onChange={e=>setToQ(Math.max(fromQ, Math.min(Number(e.target.value)||fromQ, totalQuestions||fromQ)))} />
+            </div>
+            <div>
+              <label className="pt-field-l">Total Questions in Chapter</label>
+              <input className="pt-input" value={selModuleId ? totalQuestions : '—'} disabled />
+            </div>
+            <div>
+              <label className="pt-field-l">Date</label>
+              <input className="pt-input" type="date" value={assignedDate} onChange={e=>setAssignedDate(e.target.value)} />
+            </div>
+            <div style={{gridColumn:'1 / -1'}}>
+              <label className="pt-field-l">Comments (optional)</label>
+              <textarea className="pt-input" rows={2} value={comments} onChange={e=>setComments(e.target.value)}
+                placeholder="e.g. Focus on the word-problem questions, take your time…" />
+            </div>
+          </div>
+          {selModuleId && totalQuestions > 0 && (
+            <div style={{fontSize:'12px',color:COLORS.teal,marginBottom:'12px'}}>
+              <i className="fa-solid fa-circle-info" style={{marginRight:'5px'}} />
+              Assigning {toQ - fromQ + 1} of {totalQuestions} questions from "{selModule?.Title}".
+            </div>
+          )}
+          {selModuleId && totalQuestions === 0 && (
+            <div style={{fontSize:'12px',color:'#f87171',marginBottom:'12px'}}>
+              <i className="fa-solid fa-triangle-exclamation" style={{marginRight:'5px'}} />
+              "{selModule?.Title}" has no questions added to the sheet yet, so it can't be assigned. Add questions to its Learning Steps tab first, or pick a different chapter.
+            </div>
+          )}
+          <div style={{display:'flex',gap:'10px',alignItems:'center'}}>
+            <button className="ptbtn" style={{width:'auto',padding:'10px 22px'}} disabled={!canSubmit} onClick={handleAssign}>
+              {submitting
+                ? <><i className="fa-solid fa-circle-notch fa-spin" /> {isEditing ? 'Saving…' : 'Assigning…'}</>
+                : <><i className={`fa-solid ${isEditing ? 'fa-floppy-disk' : 'fa-paper-plane'}`} /> {isEditing ? 'Save Changes' : 'Assign Chapter'}</>}
+            </button>
+            {isEditing && (
+              <button onClick={handleCancelEdit} style={{padding:'10px 18px',borderRadius:'8px',border:'1px solid rgba(255,255,255,.15)',background:'transparent',color:'rgba(255,255,255,.7)',cursor:'pointer'}}>
+                Cancel
+              </button>
+            )}
+          </div>
+          {msg && (
+            <div style={{marginTop:'12px',fontSize:'13px',fontWeight:600,color: msg.ok ? '#4ade80' : '#f87171'}}>
+              {msg.ok ? '✅' : '⚠'} {msg.text}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function ParentPortalInner() {
   const { lang, t } = useLanguage();
 
@@ -185,6 +551,44 @@ function ParentPortalInner() {
   const [selectedStudentId, setSelectedStudentId] = useState(null);
   const [tab, setTab]     = useState('overview'); // overview | daily | weekly | subjects
   const [period, setPeriod] = useState('30');     // days for daily chart
+
+  // ── Chapter assignment edit/delete state ────────────────────────────────
+  const [editingAssignment, setEditingAssignment] = useState(null); // the row (from chapterAssignments) currently being edited, or null
+  const [deletingId, setDeletingId] = useState(null); // AssignmentID currently mid-delete, for the row's spinner
+
+  async function handleDeleteAssignment(assignmentId, chapterTitle) {
+    if (!window.confirm(`Delete the assignment "${chapterTitle || assignmentId}"? This cannot be undone.`)) return;
+    setDeletingId(assignmentId);
+    try {
+      const res = await fetch('/api/parent/delete-assignment', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assignmentId }),
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        alert(res.status === 404
+          ? 'Delete endpoint not found (404). Make sure delete-assignment.js has been deployed to pages/api/parent/.'
+          : `Unexpected server response (HTTP ${res.status}). Check the Apps Script deployment.`);
+        return;
+      }
+      const data = await res.json();
+      if (data.success) {
+        setStudents(prev => prev.map(s =>
+          s.studentId === selectedStudentId
+            ? { ...s, chapterAssignments: (s.chapterAssignments || []).filter(a => a.AssignmentID !== assignmentId) }
+            : s
+        ));
+        if (editingAssignment?.AssignmentID === assignmentId) setEditingAssignment(null);
+      } else {
+        alert(data.message || 'Could not delete the assignment.');
+      }
+    } catch (err) {
+      alert(`Connection failed: ${err.message}`);
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   // ── Login handler ────────────────────────────────────────────────────────
   async function handleLogin(e) {
@@ -217,13 +621,105 @@ function ParentPortalInner() {
     })
       .then(r => r.json())
       .then(data => {
-        setStudents(data.students || []);
-        if ((data.students || []).length > 0)
-          setSelectedStudentId(data.students[0].studentId);
+        const list = data.students || [];
+        setStudents(list);
+        setSelectedStudentId(prev =>
+          (prev && list.some(s => s.studentId === prev)) ? prev : (list[0]?.studentId || null)
+        );
       })
       .catch(() => setDataErr('Failed to load student data. Please refresh.'))
       .finally(() => setDataLoading(false));
   }, [authed, ptUser]);
+
+  // ── Fetch the Class list for the assignment builder's Class dropdown ────
+  // Called without a classLevel param, but its ONLY use now is
+  // chapterConfig.classLevels (the "Class Levels" tab, not tied to a
+  // per-class Sheet ID, so it's unaffected by the multi-class collapse bug).
+  // Subjects/chapters/questions are fetched separately, per selected class,
+  // inside ChapterAssignmentBuilder — see the comment there for why.
+  const [chapterConfig,        setChapterConfig]        = useState(null);
+  const [chapterConfigLoading, setChapterConfigLoading]  = useState(false);
+  useEffect(() => {
+    if (!authed) return;
+    setChapterConfigLoading(true);
+    fetch('/api/portal-config', { cache: 'no-store' })
+      .then(r => r.json())
+      .then(data => setChapterConfig(data))
+      .catch(() => setChapterConfig(null))
+      .finally(() => setChapterConfigLoading(false));
+  }, [authed]);
+
+  // ── Add / remove linked students ──────────────────────────────────────────
+  // Teachers whose account already has the "*" all-students value see every
+  // student already — there's nothing for them to add/remove individually,
+  // so that UI is hidden for them.
+  const seesAllStudents = (ptUser?.linkedStudentIDs || []).includes('*');
+
+  const [showAddPanel,      setShowAddPanel]      = useState(false);
+  const [addMode,           setAddMode]           = useState('dropdown'); // 'dropdown' | 'manual'
+  const [allStudentsList,   setAllStudentsList]   = useState([]);
+  const [allStudentsLoading,setAllStudentsLoading]= useState(false);
+  const [addSelectedId,     setAddSelectedId]     = useState('');
+  const [addManualId,       setAddManualId]       = useState('');
+  const [addBusy,           setAddBusy]           = useState(false);
+  const [addMsg,            setAddMsg]            = useState(null); // { ok, text }
+  const [removingId,        setRemovingId]        = useState(null);
+
+  // Lazily fetch the full student list the first time the Add panel opens.
+  useEffect(() => {
+    if (!showAddPanel || allStudentsList.length || allStudentsLoading) return;
+    setAllStudentsLoading(true);
+    fetch('/api/parent/all-students')
+      .then(r => r.json())
+      .then(data => setAllStudentsList(data.students || []))
+      .catch(() => {})
+      .finally(() => setAllStudentsLoading(false));
+  }, [showAddPanel]);
+
+  // Students not already linked — what the dropdown should actually offer.
+  const linkableStudents = allStudentsList.filter(s => !students.some(linked => linked.studentId === s.studentId));
+
+  async function handleAddStudent() {
+    const studentId = (addMode === 'dropdown' ? addSelectedId : addManualId).trim();
+    if (!studentId || !ptUser?.id) return;
+    setAddBusy(true); setAddMsg(null);
+    try {
+      const res = await fetch('/api/parent/link-student', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ptId: ptUser.id, studentId, mode: 'add' }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setPtUser(prev => ({ ...prev, linkedStudentIDs: data.linkedStudentIDs }));
+        setAddMsg({ ok:true, text:`Added ${studentId}.` });
+        setAddSelectedId(''); setAddManualId('');
+      } else {
+        setAddMsg({ ok:false, text: data.message || 'Could not add that student.' });
+      }
+    } catch (err) {
+      setAddMsg({ ok:false, text:`Connection failed: ${err.message}` });
+    } finally {
+      setAddBusy(false);
+    }
+  }
+
+  async function handleRemoveStudent(studentId) {
+    if (!ptUser?.id) return;
+    if (!confirm(`Remove ${studentId} from your students list? You can add them back any time.`)) return;
+    setRemovingId(studentId);
+    try {
+      const res = await fetch('/api/parent/link-student', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ptId: ptUser.id, studentId, mode: 'remove' }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setPtUser(prev => ({ ...prev, linkedStudentIDs: data.linkedStudentIDs }));
+        if (selectedStudentId === studentId) setSelectedStudentId(null);
+      }
+    } catch {}
+    finally { setRemovingId(null); }
+  }
 
   // ── Derived analytics for selected student ───────────────────────────────
   const selectedStudent = useMemo(
@@ -381,6 +877,21 @@ function ParentPortalInner() {
             font-weight:600;cursor:pointer;text-align:left;transition:all .2s;margin-bottom:2px;}
           .ptsb-student:hover{background:rgba(255,255,255,.06);color:#fff;}
           .ptsb-student.active{background:rgba(0,198,167,.12);color:var(--teal);}
+          .ptsb-addbtn{width:24px;height:24px;border-radius:7px;border:1px solid var(--border);
+            background:rgba(255,255,255,.04);color:var(--muted);cursor:pointer;font-size:11px;
+            display:flex;align-items:center;justify-content:center;transition:all .15s ease;}
+          .ptsb-addbtn:hover{background:rgba(0,198,167,.12);color:var(--teal);border-color:rgba(0,198,167,.3);}
+          .ptsb-addpanel{background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:10px;
+            padding:10px;margin:6px 4px 10px;}
+          .ptsb-addtabs{display:flex;gap:4px;margin-bottom:8px;}
+          .ptsb-addtab{flex:1;font-size:10.5px;font-weight:700;padding:6px 4px;border-radius:7px;
+            border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;}
+          .ptsb-addtab.active{background:rgba(0,198,167,.12);color:var(--teal);border-color:rgba(0,198,167,.3);}
+          .ptsb-removebtn{width:26px;height:26px;flex-shrink:0;border-radius:7px;border:none;
+            background:transparent;color:rgba(255,255,255,.25);cursor:pointer;font-size:11px;
+            display:flex;align-items:center;justify-content:center;transition:all .15s ease;}
+          .ptsb-removebtn:hover{background:rgba(239,68,68,.12);color:#f87171;}
+          .ptsb-removebtn:disabled{opacity:.5;cursor:default;}
           .ptsb-student-av{width:30px;height:30px;border-radius:50%;background:rgba(255,255,255,.08);
             display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;}
           .ptsb-ft{margin-top:auto;padding-top:16px;border-top:1px solid var(--border);}
@@ -428,6 +939,16 @@ function ParentPortalInner() {
           .pt-acc-low {background:rgba(239,68,68,.14); color:#f87171;}
           /* Empty / loading */
           .pt-empty{text-align:center;color:var(--muted);padding:40px 0;font-size:14px;}
+          /* Assignment builder fields (Assign a New Chapter card) */
+          .pt-field-l{display:block;font-size:11px;font-weight:700;text-transform:uppercase;
+            letter-spacing:.05em;color:var(--muted);margin-bottom:6px;}
+          .pt-input{width:100%;background:rgba(255,255,255,.05);border:1px solid var(--border);
+            border-radius:8px;padding:9px 12px;color:#fff;font-family:var(--fb);font-size:13px;
+            outline:none;transition:border-color .15s ease;}
+          .pt-input:focus{border-color:var(--teal);}
+          .pt-input:disabled{opacity:.45;cursor:not-allowed;}
+          .pt-input option{background:#11151c;color:#fff;}
+          textarea.pt-input{resize:vertical;font-family:var(--fb);}
           /* Period selector */
           .pt-period-sel{background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:8px;
             padding:6px 10px;color:#fff;font-family:var(--fb);font-size:12px;cursor:pointer;}
@@ -512,22 +1033,74 @@ function ParentPortalInner() {
                   <LanguageToggle />
                 </div>
 
-                <p className="ptsb-sec">My Students</p>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 4px'}}>
+                  <p className="ptsb-sec" style={{margin:0}}>My Students</p>
+                  {!seesAllStudents && (
+                    <button className="ptsb-addbtn" onClick={()=>{ setShowAddPanel(v=>!v); setAddMsg(null); }} title="Add a student">
+                      <i className={`fa-solid ${showAddPanel?'fa-xmark':'fa-plus'}`} />
+                    </button>
+                  )}
+                </div>
+
+                {showAddPanel && !seesAllStudents && (
+                  <div className="ptsb-addpanel">
+                    <div className="ptsb-addtabs">
+                      <button className={`ptsb-addtab${addMode==='dropdown'?' active':''}`} onClick={()=>setAddMode('dropdown')}>Select student</button>
+                      <button className={`ptsb-addtab${addMode==='manual'?' active':''}`} onClick={()=>setAddMode('manual')}>Enter ID</button>
+                    </div>
+                    {addMode === 'dropdown' ? (
+                      allStudentsLoading ? (
+                        <div style={{fontSize:'12px',color:'var(--muted)',padding:'6px 0'}}>Loading students…</div>
+                      ) : (
+                        <select className="pt-input" value={addSelectedId} onChange={e=>setAddSelectedId(e.target.value)} style={{fontSize:'12px',marginBottom:'8px'}}>
+                          <option value="">Select a student…</option>
+                          {linkableStudents.map(s => (
+                            <option key={s.studentId} value={s.studentId}>{s.studentName} ({s.studentId}){s.classLevel?` · ${s.classLevel}`:''}</option>
+                          ))}
+                        </select>
+                      )
+                    ) : (
+                      <input className="pt-input" style={{fontSize:'12px',marginBottom:'8px'}} placeholder="e.g. APX262834"
+                        value={addManualId} onChange={e=>setAddManualId(e.target.value)} />
+                    )}
+                    <button className="ptbtn" style={{padding:'8px 0',fontSize:'12px'}}
+                      disabled={addBusy || !(addMode==='dropdown' ? addSelectedId : addManualId.trim())}
+                      onClick={handleAddStudent}>
+                      {addBusy ? <><i className="fa-solid fa-circle-notch fa-spin" /> Adding…</> : <><i className="fa-solid fa-user-plus" /> Add Student</>}
+                    </button>
+                    {addMsg && (
+                      <div style={{fontSize:'11px',marginTop:'6px',fontWeight:600,color: addMsg.ok ? '#4ade80' : '#f87171'}}>
+                        {addMsg.ok ? '✅' : '⚠'} {addMsg.text}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <nav>
                   {dataLoading ? (
                     <div style={{padding:'8px 4px'}}><SK h="36px" /></div>
                   ) : students.length === 0 ? (
                     <p style={{fontSize:'12px',color:'var(--muted)',padding:'0 4px'}}>No students linked.</p>
                   ) : students.map(s => (
-                    <button key={s.studentId}
-                      className={`ptsb-student${selectedStudentId===s.studentId?' active':''}`}
-                      onClick={()=>{ setSelectedStudentId(s.studentId); setTab('overview'); setSbOpen(false); }}>
-                      <div className="ptsb-student-av"><i className="fa-solid fa-user-graduate" /></div>
-                      <div>
-                        <div style={{fontWeight:700,color:'inherit'}}>{s.studentName}</div>
-                        <div style={{fontSize:'11px',opacity:.6}}>{s.studentId}</div>
-                      </div>
-                    </button>
+                    <div key={s.studentId} style={{display:'flex',alignItems:'center',gap:'2px'}}>
+                      <button
+                        className={`ptsb-student${selectedStudentId===s.studentId?' active':''}`}
+                        style={{flex:1}}
+                        onClick={()=>{ setSelectedStudentId(s.studentId); setTab('overview'); setSbOpen(false); }}>
+                        <div className="ptsb-student-av"><i className="fa-solid fa-user-graduate" /></div>
+                        <div>
+                          <div style={{fontWeight:700,color:'inherit'}}>{s.studentName}</div>
+                          <div style={{fontSize:'11px',opacity:.6}}>{s.studentId}</div>
+                        </div>
+                      </button>
+                      {!seesAllStudents && (
+                        <button className="ptsb-removebtn" title={`Remove ${s.studentName}`}
+                          disabled={removingId===s.studentId}
+                          onClick={()=>handleRemoveStudent(s.studentId)}>
+                          {removingId===s.studentId ? <i className="fa-solid fa-circle-notch fa-spin" /> : <i className="fa-solid fa-xmark" />}
+                        </button>
+                      )}
+                    </div>
                   ))}
                 </nav>
 
@@ -842,11 +1415,99 @@ function ParentPortalInner() {
                       const completed = mapped.filter(a=>['Completed','graded','submitted','Graded'].includes(a._status)).length;
                       const overdue   = mapped.filter(a=>a._status==='Overdue').length;
                       const pct       = total ? Math.round((completed/total)*100) : 0;
-                      if (!total) return (
-                        <div className="pt-empty">No assignments found for this student yet.</div>
-                      );
+
+                      // ── NEW: chapter-specific assignments (the builder below) ──
+                      const chAsgns = (selectedStudent?.chapterAssignments || [])
+                        .slice()
+                        .sort((a,b) => (a.Status==='Completed'?1:0) - (b.Status==='Completed'?1:0) || new Date(b.CreatedDate||0) - new Date(a.CreatedDate||0));
+
                       return (
                         <>
+                          {/* ── Assign a New Chapter (builder) — doubles as the Edit
+                              form when editingAssignment is set. ──────────────── */}
+                          <ChapterAssignmentBuilder
+                            student={selectedStudent}
+                            chapterConfig={chapterConfig}
+                            chapterConfigLoading={chapterConfigLoading}
+                            createdBy={ptUser?.fullName || ptUser?.role || 'Parent Portal'}
+                            onCreated={(newRow) => {
+                              setStudents(prev => prev.map(s =>
+                                s.studentId === selectedStudentId
+                                  ? { ...s, chapterAssignments: [...(s.chapterAssignments||[]), newRow] }
+                                  : s
+                              ));
+                            }}
+                            editingAssignment={editingAssignment}
+                            onUpdated={(updatedRow) => {
+                              setStudents(prev => prev.map(s =>
+                                s.studentId === selectedStudentId
+                                  ? { ...s, chapterAssignments: (s.chapterAssignments||[]).map(a =>
+                                      a.AssignmentID === updatedRow.AssignmentID ? updatedRow : a) }
+                                  : s
+                              ));
+                              setEditingAssignment(null);
+                            }}
+                            onCancelEdit={() => setEditingAssignment(null)}
+                          />
+
+                          {/* ── Chapter Assignments table — one row per chapter, exactly
+                              as built above. This is what shows up for the student under
+                              "Assignments for you". ── */}
+                          <div className="pt-card" style={{marginBottom:'20px'}}>
+                            <div className="pt-card-t"><i className="fa-solid fa-book-open" /> Chapter Assignments ({chAsgns.length})</div>
+                            {chAsgns.length === 0 ? (
+                              <div className="pt-empty">No chapters assigned yet — use the form above to assign one.</div>
+                            ) : (
+                              <div style={{overflowX:'auto'}}>
+                                <table className="pt-topic-t">
+                                  <thead>
+                                    <tr><th>Subject</th><th>Class</th><th>Chapter</th><th>Questions</th><th>Date</th><th>Comments</th><th>Status</th><th>Actions</th></tr>
+                                  </thead>
+                                  <tbody>
+                                    {chAsgns.map((a,i) => {
+                                      const isDone = a.Status === 'Completed';
+                                      return (
+                                        <tr key={a.AssignmentID||i} style={editingAssignment?.AssignmentID===a.AssignmentID ? {background:'rgba(0,198,167,.08)'} : undefined}>
+                                          <td>{a.Subject}</td>
+                                          <td>{a.ClassLevel}</td>
+                                          <td style={{fontWeight:600}}>{a.ChapterTitle}</td>
+                                          <td>Q{a.FromQuestion}–{a.ToQuestion} of {a.TotalQuestions}</td>
+                                          <td style={{color:COLORS.muted}}>{String(a.AssignedDate||'').slice(0,10)||'—'}</td>
+                                          <td style={{color:'rgba(255,255,255,.6)',fontStyle:a.Comments?'italic':'normal',maxWidth:'160px'}}>{a.Comments||'—'}</td>
+                                          <td><span style={{fontSize:'12px',fontWeight:700,color:isDone?'#4ade80':COLORS.accent}}>{isDone?'✓ Completed':a.Status||'Task assigned'}</span></td>
+                                          <td style={{whiteSpace:'nowrap'}}>
+                                            <button
+                                              title="Edit"
+                                              onClick={() => setEditingAssignment(a)}
+                                              disabled={deletingId === a.AssignmentID}
+                                              style={{background:'none',border:'none',color:COLORS.accent,cursor:'pointer',marginRight:'10px',fontSize:'14px'}}
+                                            >
+                                              <i className="fa-solid fa-pen" />
+                                            </button>
+                                            <button
+                                              title="Delete"
+                                              onClick={() => handleDeleteAssignment(a.AssignmentID, a.ChapterTitle)}
+                                              disabled={deletingId === a.AssignmentID}
+                                              style={{background:'none',border:'none',color:'#f87171',cursor:'pointer',fontSize:'14px'}}
+                                            >
+                                              {deletingId === a.AssignmentID
+                                                ? <i className="fa-solid fa-circle-notch fa-spin" />
+                                                : <i className="fa-solid fa-trash" />}
+                                            </button>
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+
+                          {total === 0 ? (
+                            <div className="pt-empty">No other assignments found for this student.</div>
+                          ) : (
+                          <>
                           <div className="pt-card" style={{marginBottom:'20px'}}>
                             <div className="pt-card-t"><i className="fa-solid fa-chart-pie" /> Assignment Summary</div>
                             <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(100px,1fr))',gap:'12px',marginBottom:'16px'}}>
@@ -884,6 +1545,7 @@ function ParentPortalInner() {
                                           {a.TeacherNotes && <div style={{fontSize:'11px',color:'rgba(0,198,167,.7)',marginTop:'2px',fontStyle:'italic'}}>📝 {a.TeacherNotes}</div>}
                                         </td>
                                         <td>{a.Subject}</td>
+
                                         <td style={{color:a._status==='Overdue'?'#f87171':COLORS.muted,fontWeight:a._status==='Overdue'?700:400}}>{a.DueDate||'—'}</td>
                                         <td><span style={{fontSize:'11px',padding:'2px 8px',borderRadius:'100px',background:'rgba(255,255,255,.06)',color:COLORS.muted}}>{a.Difficulty||'—'}</span></td>
                                         <td><span style={{fontSize:'12px',fontWeight:700,color:sc}}>{a._status}</span></td>
@@ -895,6 +1557,8 @@ function ParentPortalInner() {
                               </table>
                             </div>
                           </div>
+                          </>
+                          )}
                         </>
                       );
                     })()}

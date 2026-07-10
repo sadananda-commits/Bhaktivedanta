@@ -54,6 +54,17 @@ async function fetchProgressForStudent(studentId) {
   return data.progress || [];
 }
 
+// Chapter-specific assignments (the new "Select subject/class/chapter +
+// question range" builder rows from the Parent Portal). Separate tab/action
+// from the legacy generic Assignments fetched below.
+async function fetchChapterAssignmentsForStudent(studentId) {
+  const url = `${SCRIPT_URL}?action=chapterAssignments&studentId=${encodeURIComponent(studentId)}`;
+  const res  = await fetch(url, { signal: AbortSignal.timeout(12000) });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  return data.assignments || [];
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end();
   const { linkedStudentIDs = [] } = req.body || {};
@@ -81,8 +92,9 @@ export default async function handler(req, res) {
       return res.status(200).json({ students: [], _note: 'No matching students found for linked IDs.' });
     }
 
-    // 3. Fetch progress and assignments for each target student in parallel
-    const [progressResults, assignmentResults] = await Promise.all([
+    // 3. Fetch progress, legacy assignments, and chapter assignments for each
+    //    target student in parallel
+    const [progressResults, assignmentResults, chapterAssignmentResults] = await Promise.all([
       Promise.allSettled(targets.map(s => fetchProgressForStudent(s.studentId))),
       Promise.allSettled(targets.map(async s => {
         try {
@@ -92,12 +104,14 @@ export default async function handler(req, res) {
           return data.assignments || [];
         } catch { return []; }
       })),
+      Promise.allSettled(targets.map(s => fetchChapterAssignmentsForStudent(s.studentId))),
     ]);
 
     const students = targets.map((s, i) => ({
       ...s,
-      progress:    progressResults[i].status === 'fulfilled'    ? progressResults[i].value    : [],
-      assignments: assignmentResults[i].status === 'fulfilled'  ? assignmentResults[i].value  : [],
+      progress:           progressResults[i].status === 'fulfilled'           ? progressResults[i].value           : [],
+      assignments:        assignmentResults[i].status === 'fulfilled'        ? assignmentResults[i].value        : [],
+      chapterAssignments: chapterAssignmentResults[i].status === 'fulfilled' ? chapterAssignmentResults[i].value : [],
     }));
 
     const result = { students };
