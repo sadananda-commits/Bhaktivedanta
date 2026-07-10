@@ -6,6 +6,7 @@ import { LanguageProvider, useLanguage, LanguageToggle } from '../lib/i18n';
 import MatchTheFollowing from '../components/MatchTheFollowing';
 import GroupChat from '../components/GroupChat';
 import ChatNotifications from '../components/ChatNotifications';
+import AssignmentNotifications from '../components/AssignmentNotifications';
 import { QUIZ_LEARNING_MODULES_DA, QUIZ_LEARNING_STEPS_DA, QUIZ_ASSIGNMENT_SUBJECTS_DA } from '../lib/quizContentDA';
 import {
   PORTAL_SETTINGS_DA, PORTAL_NAVIGATION_DA, PORTAL_DASH_STATS_DA, PORTAL_SUBJECTS_DEMO_DA,
@@ -1881,6 +1882,13 @@ function PortalInner() {
   const [myAssignments,        setMyAssignments]        = useState([]);
   const [myAssignmentsLoading, setMyAssignmentsLoading]  = useState(false);
   const [activeMyAssignmentId, setActiveMyAssignmentId]  = useState(null); // AssignmentID being attempted
+  // Count of chapters assigned to this student that aren't marked Completed
+  // yet — drives the red "Assignments for you" nav badge, same pattern as
+  // the chat unread badge.
+  const pendingMyAssignments = useMemo(
+    () => myAssignments.filter(a => a.Status !== 'Completed').length,
+    [myAssignments]
+  );
   const [expandedSubject, setExpandedSubject] = useState(null); // age-group expandable card
   // classFilter: null = "my class only"; 'all' = every class; Set of class strings = selected classes
   // Initialised to null so the dashboard always opens showing only the student's own class.
@@ -2645,6 +2653,17 @@ function PortalInner() {
       .catch(() => {});
   }, [profile.id]);
 
+  // Background refresh so a newly-assigned chapter (or one being marked
+  // Completed from the Parent Portal side) shows up in the nav badge without
+  // the student needing to open "Assignments for you" or reload the page —
+  // same background-watcher idea as ChatNotifications, just polled less
+  // often since assignments change far less frequently than chat messages.
+  useEffect(() => {
+    if (!profile.id) return;
+    const id = setInterval(refetchMyAssignments, 45000);
+    return () => clearInterval(id);
+  }, [profile.id, refetchMyAssignments]);
+
   // Called by LearningModulePlayer's onRangeComplete when a student finishes
   // every question in their assigned range. Optimistically flips the row to
   // "Completed" locally, then syncs the sheet — and exits back to the table.
@@ -3392,6 +3411,10 @@ function PortalInner() {
   onUnreadChange={setChatUnread}
   onOpenChat={(groupId) => { setTab('chat'); setChatFocusGroupId(groupId); }}
 />
+<AssignmentNotifications
+  profile={profile}
+  onOpenAssignment={(assignmentId) => { setTab('myassignments'); setActiveMyAssignmentId(assignmentId); }}
+/>
             <div className="sb-head">
               <div className="sb-av"><i className="fa-solid fa-user-graduate" /></div>
               <div style={{flex:1,minWidth:0}}><div className="sb-name">{profile.name}</div><div className="sb-id">{profile.id}</div></div>
@@ -3404,6 +3427,7 @@ function PortalInner() {
                   <i className={`fa-solid ${navItem['Icon (FontAwesome solid)']}`} /> {navItem.Label}
                   {navItem.ID==='notifications' && unreadCount>0 && <span className="nb-badge">{unreadCount}</span>}
 {navItem.ID==='chat' && chatUnread>0 && <span className="nb-badge">{chatUnread}</span>}
+{navItem.ID==='myassignments' && pendingMyAssignments>0 && <span className="nb-badge">{pendingMyAssignments}</span>}
                 </button>
               ))}
             </nav>
