@@ -217,6 +217,8 @@ export default function MatchTheFollowing({
           const isCorrect = submitted && result && result.correct[p.id];
           const isWrong = submitted && result && !result.correct[p.id];
           const wordEnglish = englishFor(p.left);
+          const correctMeaningEnglish = englishFor(p.right);
+          const filledMeaningEnglish = filledItem ? englishFor(filledItem.right) : null;
 
           let selectClass = 'mtf-select';
           if (filledItem) selectClass += ' mtf-select--filled';
@@ -227,7 +229,9 @@ export default function MatchTheFollowing({
 
               <div className="mtf-word-chip">
                 <span className="mtf-word-text">{p.left}</span>
-                {wordEnglish && <span className="mtf-english-hint">({wordEnglish})</span>}
+                {submitted && wordEnglish && (
+                  <span className="mtf-english-hint">({wordEnglish})</span>
+                )}
               </div>
 
               <div className="mtf-select-wrap">
@@ -237,11 +241,22 @@ export default function MatchTheFollowing({
                       <div className="mtf-result-content">
                         <span className="mtf-result-wrong-text">
                           {filledItem ? filledItem.right : 'No answer'}
+                          {filledMeaningEnglish ? ` (${filledMeaningEnglish})` : ''}
                         </span>
-                        <span className="mtf-result-correct-text">{p.right}</span>
+                        <span className="mtf-result-correct-text">
+                          {p.right}
+                          {correctMeaningEnglish && (
+                            <span className="mtf-result-correct-english"> ({correctMeaningEnglish})</span>
+                          )}
+                        </span>
                       </div>
                     ) : (
-                      <span className="mtf-result-content">{p.right}</span>
+                      <span className="mtf-result-content">
+                        {p.right}
+                        {correctMeaningEnglish && (
+                          <span className="mtf-result-correct-english"> ({correctMeaningEnglish})</span>
+                        )}
+                      </span>
                     )}
                   </div>
                 ) : (
@@ -508,6 +523,11 @@ export default function MatchTheFollowing({
           font-size: 15px;
           font-weight: 800;
           color: var(--success);
+        }
+        .mtf-result-correct-english {
+          font-size: 12px;
+          font-weight: 600;
+          color: var(--ink-muted);
         }
 
         .mtf-footer {
