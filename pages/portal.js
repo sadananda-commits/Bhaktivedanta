@@ -6,6 +6,7 @@ import { LanguageProvider, useLanguage, LanguageToggle } from '../lib/i18n';
 import MatchTheFollowing from '../components/MatchTheFollowing';
 import GroupChat from '../components/GroupChat';
 import ChatNotifications from '../components/ChatNotifications';
+import AssignmentNotifications from '../components/AssignmentNotifications';
 import { QUIZ_LEARNING_MODULES_DA, QUIZ_LEARNING_STEPS_DA, QUIZ_ASSIGNMENT_SUBJECTS_DA } from '../lib/quizContentDA';
 import {
   PORTAL_SETTINGS_DA, PORTAL_NAVIGATION_DA, PORTAL_DASH_STATS_DA, PORTAL_SUBJECTS_DEMO_DA,
@@ -1874,6 +1875,7 @@ function PortalInner() {
   const [notifs,      setNotifs]      = useState(FALLBACK.notifications.filter(n=>isRowActive(n.Active)));
   const [activeModuleId, setActiveModuleId] = useState(null);
   const [activeAssignmentSubject, setActiveAssignmentSubject] = useState(null);
+  const [shareCopied, setShareCopied] = useState(false); // "Copied!" flash on the quiz share button
   // ── ASSIGNMENTS FOR YOU — chapter-specific homework a parent/teacher
   // assigned from the Parent Portal builder table. Kept entirely separate
   // from activeModuleId/activeAssignmentSubject (the open Question Bank
@@ -1881,6 +1883,13 @@ function PortalInner() {
   const [myAssignments,        setMyAssignments]        = useState([]);
   const [myAssignmentsLoading, setMyAssignmentsLoading]  = useState(false);
   const [activeMyAssignmentId, setActiveMyAssignmentId]  = useState(null); // AssignmentID being attempted
+  // Count of chapters assigned to this student that aren't marked Completed
+  // yet — drives the red "Assignments for you" nav badge, same pattern as
+  // the chat unread badge.
+  const pendingMyAssignments = useMemo(
+    () => myAssignments.filter(a => a.Status !== 'Completed').length,
+    [myAssignments]
+  );
   const [expandedSubject, setExpandedSubject] = useState(null); // age-group expandable card
   // classFilter: null = "my class only"; 'all' = every class; Set of class strings = selected classes
   // Initialised to null so the dashboard always opens showing only the student's own class.
@@ -2634,6 +2643,81 @@ function PortalInner() {
   useEffect(() => { if (tab !== 'assignments') { setActiveModuleId(null); setActiveAssignmentSubject(null); } }, [tab]);
   useEffect(() => { if (tab !== 'myassignments') { setActiveMyAssignmentId(null); } }, [tab]);
 
+  // ── Shareable quiz links ─────────────────────────────────────────────────
+  // While a quiz is open, the address bar carries either ?moduleId=... (a
+  // topic from the Assignments tab — any classmate can open the same one)
+  // or ?assignmentId=... (a personal row from "Assignments for you" — only
+  // works for the student it was actually assigned to). Copying the page URL
+  // and sending it to another student, who then logs in, drops them straight
+  // into the same quiz instead of the dashboard.
+  const copyShareLink = useCallback(() => {
+    const url = window.location.href;
+    const flash = () => { setShareCopied(true); setTimeout(() => setShareCopied(false), 1800); };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(url).then(flash).catch(() => window.prompt(t('p_copy_link_prompt') || 'Copy this link:', url));
+    } else {
+      window.prompt(t('p_copy_link_prompt') || 'Copy this link:', url);
+    }
+  }, [t]);
+
+  // Reflect the currently open quiz in the URL (via replaceState, so it
+  // doesn't spam the browser's back-button history) so the address bar
+  // itself becomes the share link the moment a student opens a quiz.
+  useEffect(() => {
+    if (!authed || typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    let changed = false;
+
+    if (tab === 'assignments' && activeModuleId) {
+      if (params.get('moduleId') !== activeModuleId) { params.set('moduleId', activeModuleId); changed = true; }
+      if (params.has('assignmentId')) { params.delete('assignmentId'); changed = true; }
+    } else if (tab === 'myassignments' && activeMyAssignmentId) {
+      if (params.get('assignmentId') !== activeMyAssignmentId) { params.set('assignmentId', activeMyAssignmentId); changed = true; }
+      if (params.has('moduleId')) { params.delete('moduleId'); changed = true; }
+    } else if (params.has('moduleId') || params.has('assignmentId')) {
+      params.delete('moduleId'); params.delete('assignmentId'); changed = true;
+    }
+
+    if (changed) {
+      const qs = params.toString();
+      window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : ''));
+    }
+  }, [authed, tab, activeModuleId, activeMyAssignmentId]);
+
+  // On load, follow ?moduleId=/?assignmentId= from a shared link straight
+  // into the matching quiz. Waits for login + config (and, for assignmentId,
+  // for the student's own assignment list to finish loading) before giving
+  // up — a link opened while logged out will still work right after login.
+  const deepLinkAppliedRef = useRef(false);
+  useEffect(() => {
+    if (deepLinkAppliedRef.current) return;
+    if (!authed || !cfgReady || typeof window === 'undefined') return;
+
+    const params = new URLSearchParams(window.location.search);
+    const moduleId = params.get('moduleId');
+    const assignmentId = params.get('assignmentId');
+    if (!moduleId && !assignmentId) { deepLinkAppliedRef.current = true; return; }
+
+    if (moduleId) {
+      const mod = ASSIGN_LMOD.find(m => m['Module ID'] === moduleId);
+      if (mod) {
+        setActiveAssignmentSubject(mod.Subject);
+        setActiveModuleId(moduleId);
+        setTab('assignments');
+        deepLinkAppliedRef.current = true;
+      }
+      // else: modules may not have loaded yet — try again next render
+      return;
+    }
+
+    if (assignmentId) {
+      if (myAssignmentsLoading) return; // wait for "Assignments for you" to finish fetching
+      const row = myAssignments.find(a => a.AssignmentID === assignmentId);
+      if (row) { setActiveMyAssignmentId(assignmentId); setTab('myassignments'); }
+      deepLinkAppliedRef.current = true; // stop trying either way once resolved
+    }
+  }, [authed, cfgReady, ASSIGN_LMOD, myAssignments, myAssignmentsLoading]);
+
   // Re-fetch this student's "Assignments for you" list — used right after
   // the tab is opened and again after completing one, so Status flips to
   // "Completed" without needing a full page reload.
@@ -2644,6 +2728,17 @@ function PortalInner() {
       .then(data => setMyAssignments(data.assignments || []))
       .catch(() => {});
   }, [profile.id]);
+
+  // Background refresh so a newly-assigned chapter (or one being marked
+  // Completed from the Parent Portal side) shows up in the nav badge without
+  // the student needing to open "Assignments for you" or reload the page —
+  // same background-watcher idea as ChatNotifications, just polled less
+  // often since assignments change far less frequently than chat messages.
+  useEffect(() => {
+    if (!profile.id) return;
+    const id = setInterval(refetchMyAssignments, 45000);
+    return () => clearInterval(id);
+  }, [profile.id, refetchMyAssignments]);
 
   // Called by LearningModulePlayer's onRangeComplete when a student finishes
   // every question in their assigned range. Optimistically flips the row to
@@ -2949,6 +3044,9 @@ function PortalInner() {
     .asgn-crumb:hover{color:var(--teal);}
     .asgn-crumb-sep{font-size:9px;color:var(--border);}
     .asgn-crumb-current{color:#fff;}
+    .asgn-share-btn{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:700;color:var(--muted);background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:20px;cursor:pointer;padding:5px 12px;margin-left:auto;transition:color .2s,border-color .2s,background .2s;}
+    .asgn-share-btn:hover{color:var(--teal);border-color:var(--teal);}
+    .asgn-share-btn.copied{color:var(--teal);border-color:var(--teal);}
     .lp-try-card{background:rgba(0,198,167,.06);border:1px solid rgba(0,198,167,.2);border-radius:var(--r);padding:16px 18px;margin:18px 0;}
     .lp-try-lbl{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--teal);margin-bottom:8px;}
     .lp-try-card p{font-size:13px;color:rgba(255,255,255,.75);line-height:1.6;}
@@ -3392,6 +3490,10 @@ function PortalInner() {
   onUnreadChange={setChatUnread}
   onOpenChat={(groupId) => { setTab('chat'); setChatFocusGroupId(groupId); }}
 />
+<AssignmentNotifications
+  profile={profile}
+  onOpenAssignment={(assignmentId) => { setTab('myassignments'); setActiveMyAssignmentId(assignmentId); }}
+/>
             <div className="sb-head">
               <div className="sb-av"><i className="fa-solid fa-user-graduate" /></div>
               <div style={{flex:1,minWidth:0}}><div className="sb-name">{profile.name}</div><div className="sb-id">{profile.id}</div></div>
@@ -3404,6 +3506,7 @@ function PortalInner() {
                   <i className={`fa-solid ${navItem['Icon (FontAwesome solid)']}`} /> {navItem.Label}
                   {navItem.ID==='notifications' && unreadCount>0 && <span className="nb-badge">{unreadCount}</span>}
 {navItem.ID==='chat' && chatUnread>0 && <span className="nb-badge">{chatUnread}</span>}
+{navItem.ID==='myassignments' && pendingMyAssignments>0 && <span className="nb-badge">{pendingMyAssignments}</span>}
                 </button>
               ))}
             </nav>
@@ -4365,6 +4468,9 @@ function PortalInner() {
                     <span className="asgn-crumb" onClick={()=>setActiveModuleId(null)}>{activeAssignmentSubject}</span>
                     <i className="fa-solid fa-chevron-right asgn-crumb-sep" />
                     <span className="asgn-crumb-current">{ASSIGN_LMOD.find(m=>m['Module ID']===activeModuleId)?.Title}</span>
+                    <button className={`asgn-share-btn${shareCopied?' copied':''}`} onClick={copyShareLink} title="Copy a link straight to this quiz">
+                      <i className={`fa-solid ${shareCopied ? 'fa-check' : 'fa-share-nodes'}`} /> {shareCopied ? 'Copied!' : 'Share'}
+                    </button>
                   </div>
                   <LearningModulePlayer
                     key={activeModuleId}
@@ -4433,6 +4539,9 @@ function PortalInner() {
                       <span className="asgn-crumb" onClick={()=>setActiveMyAssignmentId(null)}>Assignments for you</span>
                       <i className="fa-solid fa-chevron-right asgn-crumb-sep" />
                       <span className="asgn-crumb-current">{row.ChapterTitle || module?.Title}</span>
+                      <button className={`asgn-share-btn${shareCopied?' copied':''}`} onClick={copyShareLink} title="Copy a link straight to this quiz">
+                        <i className={`fa-solid ${shareCopied ? 'fa-check' : 'fa-share-nodes'}`} /> {shareCopied ? 'Copied!' : 'Share'}
+                      </button>
                     </div>
                     <LearningModulePlayer
                       key={activeMyAssignmentId}
