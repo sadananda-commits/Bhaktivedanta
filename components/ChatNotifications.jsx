@@ -17,16 +17,23 @@
 // Polls less often than GroupChat's in-chat 4s polling (this runs
 // everywhere in the background; that only runs while the chat is open).
 //
-// USAGE (in portal.js, mounted unconditionally, e.g. right inside the
-// top-level portal wrapper):
+// USAGE (in portal.js, mounted unconditionally, e.g. right next to
+// <GroupChat /> near the top of the portal wrapper — GroupChat is now a
+// floating widget, not tab content, so both live at the top level):
+//   const chatRef = useRef(null);
+//   ...
+//   <GroupChat ref={chatRef} profile={profile} t={t} classLevels={KNOWN_CLASSES} />
 //   <ChatNotifications
 //     profile={profile}
 //     onUnreadChange={setChatUnread}
-//     onOpenChat={(groupId) => { setTab('chat'); setChatFocusGroupId(groupId); }}
+//     onOpenChat={(groupId) => chatRef.current?.open(groupId)}
 //   />
-// Then pass focusGroupId={chatFocusGroupId} into <GroupChat />, and show
+// The toast's "View" button calls onOpenChat, which pops the floating chat
+// widget open (or brings it out of minimize) straight to that conversation
+// — no tab-switching involved anymore. Still show
 // {chatUnread>0 && <span className="nb-badge">{chatUnread}</span>} next to
-// the Chat nav item the same way the Notifications badge already works.
+// the Chat nav item the same way the Notifications badge already works,
+// and wire that nav item's onClick to chatRef.current?.open() as well.
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { isUnread } from '../utils/chatLastSeen';

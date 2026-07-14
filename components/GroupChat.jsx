@@ -10,19 +10,54 @@
 // new messages every POLL_MS milliseconds, using `since` (the timestamp of
 // the last message it has) so each poll only pulls what's new.
 //
-// USAGE:
-//   <GroupChat profile={profile} t={t} focusGroupId={chatFocusGroupId} classLevels={KNOWN_CLASSES} />
+// ── Floating widget, not a tab ────────────────────────────────────────────
+// This renders as a floating chat window (bottom-right corner), the same
+// way most messenger widgets work. Mount it ONCE, unconditionally, near the
+// top of the portal shell — same spot as <ChatNotifications /> — NOT inside
+// whatever tab used to hold "Chat". That way opening a chat, then switching
+// to the Quiz tab (or any other tab) to keep working, leaves the chat
+// exactly where it was: still open, still polling, until the student
+// explicitly hits the minimize or close button. Nothing here ever closes
+// itself automatically.
+//
+// It has three visual states:
+//   - closed:    just a small round launcher button in the corner
+//   - open:      the full chat panel (picker / messages / input)
+//   - minimized: a slim title bar only — chat keeps polling in the
+//                background, just tucked out of the way
+//
+// USAGE (in portal.js, mounted unconditionally, e.g. right next to
+// <ChatNotifications />):
+//   const chatRef = useRef(null);
+//   ...
+//   <GroupChat ref={chatRef} profile={profile} t={t} classLevels={KNOWN_CLASSES} />
+//   <ChatNotifications
+//     profile={profile}
+//     onUnreadChange={setChatUnread}
+//     onOpenChat={(groupId) => chatRef.current?.open(groupId)}
+//   />
+//   ...and wire the "Chat" nav item to `onClick={() => chatRef.current?.open()}`
+//   instead of switching tabs.
+//
 // `profile` needs at least { id, name, classLevel }. `classLevels`, if
 // provided (an array of class-name strings, e.g. KNOWN_CLASSES from
 // portal.js), lets a student start a chat with anyone in ANY of those
 // classes, not just their own — the picker fetches every class in the list
 // and merges the results into one searchable roster, tagging each name with
 // its class. Without `classLevels`, it falls back to just profile.classLevel
-// (old behaviour). `focusGroupId`, if provided, switches to that chat
-// whenever it changes — used by ChatNotifications.jsx so a toast's "View"
-// button can jump straight to the right conversation.
+// (old behaviour).
+//
+// The ref exposes an imperative API so anything outside (nav bar, a
+// notification toast, a "message this student" button elsewhere in the
+// portal) can pop the widget open without re-rendering it into existence:
+//   chatRef.current.open()          -> opens the widget on whatever chat was last active
+//   chatRef.current.open(groupId)   -> opens the widget AND jumps to that chat
+//   chatRef.current.close()         -> hides it back to the launcher button
+// `focusGroupId` is still supported as a simpler, prop-driven alternative
+// to calling the ref (used the same way it always was), and also opens the
+// widget if it was closed or minimized.
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { markSeen } from '../utils/chatLastSeen';
 
 const POLL_MS = 4000;
@@ -49,8 +84,15 @@ function renderMessageText(text) {
   });
 }
 
-export default function GroupChat({ profile, t, focusGroupId, classLevels }) {
+const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, classLevels }, ref) {
   const tr = t || (s => s);
+
+  // ── Floating widget state: 'closed' | 'open' | 'minimized' ───────────────
+  // Lives independently of which portal tab is active — this is the whole
+  // point of it being a widget instead of tab content. Nothing sets this
+  // back to 'closed' except the student clicking the close button (or
+  // calling chatRef.current.close()).
+  const [widgetState, setWidgetState] = useState('closed');
 
   const [groups, setGroups] = useState([]);
   const [groupsLoading, setGroupsLoading] = useState(true);
@@ -65,11 +107,15 @@ export default function GroupChat({ profile, t, focusGroupId, classLevels }) {
   const [reportedIds, setReportedIds] = useState(new Set());
 
   // ── 1:1 chat picker — searches across every class in `classLevels` ───────
+  // Class and name are two SEPARATE filters (not one combined search box)
+  // so a student can narrow "Class 4B" down to a short list first, then
+  // find the name — much easier to scan than one long alphabetical roster.
   const [showPicker, setShowPicker] = useState(false);
   const [classmates, setClassmates] = useState([]); // merged roster across all classes, each tagged with .classLevel
   const [classmatesLoading, setClassmatesLoading] = useState(false);
   const [classmatesError, setClassmatesError] = useState('');
-  const [classmateFilter, setClassmateFilter] = useState('');
+  const [classFilter, setClassFilter] = useState(''); // '' = all classes
+  const [classmateFilter, setClassmateFilter] = useState(''); // name search text
   const [startingDmFor, setStartingDmFor] = useState(null);
   const [dmError, setDmError] = useState('');
 
@@ -105,8 +151,23 @@ export default function GroupChat({ profile, t, focusGroupId, classLevels }) {
   // ── Jump to a specific chat when told to from outside (e.g. a
   // ChatNotifications toast's "View" button) ───────────────────────────────
   useEffect(() => {
-    if (focusGroupId) setActiveGroupId(focusGroupId);
+    if (focusGroupId) {
+      setActiveGroupId(focusGroupId);
+      setWidgetState('open');
+    }
   }, [focusGroupId]);
+
+  // ── Imperative API for anything outside this component (nav bar, a
+  // notification toast, etc.) to pop the widget open/closed without going
+  // through props. This is the preferred integration point — see header. ──
+  useImperativeHandle(ref, () => ({
+    open: (groupId) => {
+      if (groupId) setActiveGroupId(groupId);
+      setWidgetState('open');
+    },
+    close: () => setWidgetState('closed'),
+    minimize: () => setWidgetState('minimized'),
+  }), []);
 
   // ── Fetch messages: full history on group switch, incremental after ──────
   const fetchMessages = useCallback((groupId, since) => {
@@ -182,6 +243,7 @@ export default function GroupChat({ profile, t, focusGroupId, classLevels }) {
     setShowPicker(prev => !prev);
     setDmError('');
     setClassmateFilter('');
+    setClassFilter('');
     if (classmates.length || !classLevelOptions.length) return; // already loaded, or nothing to look up
 
     setClassmatesLoading(true);
@@ -252,14 +314,13 @@ export default function GroupChat({ profile, t, focusGroupId, classLevels }) {
 
   // ── The "start a chat" picker — shared markup used in both the empty
   // state (no groups yet) and the normal header, so it's always styled
-  // consistently by the single <style jsx> block below. Search matches
-  // either name or class, so typing "Class 4" narrows to that class too. ──
-  const filteredClassmates = classmateFilter.trim()
-    ? classmates.filter(c => {
-        const q = classmateFilter.trim().toLowerCase();
-        return c.studentName.toLowerCase().includes(q) || (c.classLevel || '').toLowerCase().includes(q);
-      })
-    : classmates;
+  // consistently by the single <style jsx> block below. Class and name
+  // filters are independent (both must match, when set). ──────────────────
+  const filteredClassmates = classmates.filter(c => {
+    if (classFilter && c.classLevel !== classFilter) return false;
+    if (!classmateFilter.trim()) return true;
+    return c.studentName.toLowerCase().includes(classmateFilter.trim().toLowerCase());
+  });
 
   const picker = showPicker && (
     <div className="gc-picker">
@@ -269,23 +330,36 @@ export default function GroupChat({ profile, t, focusGroupId, classLevels }) {
           <i className="fa-solid fa-xmark" />
         </button>
       </div>
-      {multiClass && <div className="gc-picker-hint">Any class — search by name{multiClass ? ' or class' : ''}</div>}
+      {multiClass && <div className="gc-picker-hint">Pick a class, then find their name</div>}
 
       {!classmatesLoading && !classmatesError && classmates.length > 0 && (
-        <div className="gc-picker-search">
-          <i className="fa-solid fa-magnifying-glass" />
-          <input
-            type="text"
-            value={classmateFilter}
-            onChange={e => setClassmateFilter(e.target.value)}
-            placeholder={multiClass ? 'Search by name or class…' : 'Search by name…'}
-            autoFocus
-          />
-          {classmateFilter && (
-            <button className="gc-picker-search-clear" onClick={() => setClassmateFilter('')} aria-label="Clear search">
-              <i className="fa-solid fa-xmark" />
-            </button>
+        <div className="gc-picker-filters">
+          {multiClass && (
+            <select
+              className="gc-picker-class-select"
+              value={classFilter}
+              onChange={e => setClassFilter(e.target.value)}
+              aria-label="Filter by class"
+            >
+              <option value="">All classes</option>
+              {classLevelOptions.map(cl => <option key={cl} value={cl}>{cl}</option>)}
+            </select>
           )}
+          <div className="gc-picker-search">
+            <i className="fa-solid fa-magnifying-glass" />
+            <input
+              type="text"
+              value={classmateFilter}
+              onChange={e => setClassmateFilter(e.target.value)}
+              placeholder="Search by name…"
+              autoFocus={!multiClass}
+            />
+            {classmateFilter && (
+              <button className="gc-picker-search-clear" onClick={() => setClassmateFilter('')} aria-label="Clear search">
+                <i className="fa-solid fa-xmark" />
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -296,35 +370,112 @@ export default function GroupChat({ profile, t, focusGroupId, classLevels }) {
       ) : !classmates.length ? (
         <div className="gc-empty-inner">No other students found yet.</div>
       ) : !filteredClassmates.length ? (
-        <div className="gc-empty-inner">No one matches "{classmateFilter}"</div>
-      ) : (
-        <div className="gc-picker-list">
-          {filteredClassmates.map(c => (
-            <button
-              key={c.studentId}
-              className="gc-picker-item"
-              onClick={() => startDm(c)}
-              disabled={startingDmFor === c.studentId}
-            >
-              <span className="gc-picker-avatar"><i className="fa-solid fa-user" /></span>
-              <span className="gc-picker-name">{c.studentName}</span>
-              {c.classLevel && multiClass && <span className="gc-picker-class-badge">{c.classLevel}</span>}
-              {startingDmFor === c.studentId
-                ? <i className="fa-solid fa-spinner fa-spin gc-picker-chevron" />
-                : <i className="fa-solid fa-chevron-right gc-picker-chevron" />}
-            </button>
-          ))}
+        <div className="gc-empty-inner">
+          {classFilter && classmateFilter
+            ? <>No one named "{classmateFilter}" in {classFilter}</>
+            : classFilter
+            ? <>No one found in {classFilter}</>
+            : <>No one matches "{classmateFilter}"</>}
         </div>
+      ) : (
+        <>
+          {(classFilter || classmateFilter) && (
+            <div className="gc-picker-count">{filteredClassmates.length} student{filteredClassmates.length === 1 ? '' : 's'}</div>
+          )}
+          <div className="gc-picker-list">
+            {filteredClassmates.map(c => (
+              <button
+                key={c.studentId}
+                className="gc-picker-item"
+                onClick={() => startDm(c)}
+                disabled={startingDmFor === c.studentId}
+              >
+                <span className="gc-picker-avatar"><i className="fa-solid fa-user" /></span>
+                <span className="gc-picker-name">{c.studentName}</span>
+                {c.classLevel && multiClass && !classFilter && <span className="gc-picker-class-badge">{c.classLevel}</span>}
+                {startingDmFor === c.studentId
+                  ? <i className="fa-solid fa-spinner fa-spin gc-picker-chevron" />
+                  : <i className="fa-solid fa-chevron-right gc-picker-chevron" />}
+              </button>
+            ))}
+          </div>
+        </>
       )}
       {dmError && <div className="gc-error" style={{ margin: '0 10px 10px' }}><i className="fa-solid fa-circle-exclamation" /> {dmError}</div>}
     </div>
   );
 
+  // ── Closed: just the round launcher button in the corner ─────────────────
+  if (widgetState === 'closed') {
+    return (
+      <button className="gcw-launcher" onClick={() => setWidgetState('open')} aria-label="Open chat">
+        <i className="fa-solid fa-comment-dots" />
+        <style jsx>{`
+          .gcw-launcher {
+            position: fixed; right: 20px; bottom: 20px; z-index: 9997;
+            width: 56px; height: 56px; border-radius: 50%; border: none;
+            background: #00C6A7; color: #fff; font-size: 21px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            box-shadow: 0 10px 26px rgba(0,0,0,.22);
+            transition: transform .12s;
+          }
+          .gcw-launcher:hover { transform: scale(1.06); }
+          @media (max-width: 640px) { .gcw-launcher { right: 14px; bottom: 14px; } }
+        `}</style>
+      </button>
+    );
+  }
+
+  // ── Minimized: a slim title bar only — polling keeps running underneath,
+  // it's just tucked out of the way while the student works on something
+  // else. Clicking it (or the expand icon) reopens the full panel. ────────
+  if (widgetState === 'minimized') {
+    return (
+      <div className="gcw-bar" onClick={() => setWidgetState('open')} role="button" tabIndex={0}>
+        <i className="fa-solid fa-comment-dots" />
+        <span className="gcw-bar-title">{hasGroups ? (activeGroup?.groupName || 'Chat') : 'Chat'}</span>
+        <button className="gcw-bar-btn" onClick={e => { e.stopPropagation(); setWidgetState('open'); }} aria-label="Expand chat">
+          <i className="fa-solid fa-chevron-up" />
+        </button>
+        <button className="gcw-bar-btn" onClick={e => { e.stopPropagation(); setWidgetState('closed'); }} aria-label="Close chat">
+          <i className="fa-solid fa-xmark" />
+        </button>
+        <style jsx>{`
+          .gcw-bar {
+            position: fixed; right: 20px; bottom: 20px; z-index: 9997;
+            display: flex; align-items: center; gap: 10px;
+            width: 230px; max-width: calc(100vw - 24px);
+            padding: 12px 10px 12px 16px; border-radius: 14px;
+            background: #1B2130; color: #fff; cursor: pointer;
+            font-family: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
+            box-shadow: 0 10px 26px rgba(0,0,0,.22);
+          }
+          .gcw-bar i.fa-comment-dots { color: #00C6A7; font-size: 15px; flex-shrink: 0; }
+          .gcw-bar-title { flex: 1; min-width: 0; font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+          .gcw-bar-btn {
+            border: none; background: none; color: rgba(255,255,255,.7); cursor: pointer;
+            font-size: 12px; width: 22px; height: 22px; flex-shrink: 0;
+            display: flex; align-items: center; justify-content: center;
+          }
+          .gcw-bar-btn:hover { color: #fff; }
+          @media (max-width: 640px) { .gcw-bar { right: 12px; bottom: 12px; } }
+        `}</style>
+      </div>
+    );
+  }
+
+  // ── Open: the full floating panel ─────────────────────────────────────────
   if (groupsLoading) {
-    return <div className="gc-card gc-empty">Loading your groups…</div>;
+    return (
+      <div className="gcw-dock">
+        <div className="gc-card gc-empty">Loading your groups…</div>
+        <style jsx>{`.gcw-dock { position: fixed; right: 20px; bottom: 20px; z-index: 9997; }`}</style>
+      </div>
+    );
   }
 
   return (
+    <div className="gcw-dock">
     <div className="gc-card">
       <div className="gc-header">
         <div className="gc-title">
@@ -343,11 +494,19 @@ export default function GroupChat({ profile, t, focusGroupId, classLevels }) {
           {canStartDm && (
             <button className={`gc-newchat-btn${showPicker ? ' active' : ''}`} onClick={openPicker} aria-label="Start a new chat">
               <i className="fa-solid fa-user-plus" />
-              <span>New chat</span>
+              <span className="gc-newchat-label">New chat</span>
             </button>
           )}
+          <div className="gc-window-controls">
+            <button className="gc-window-btn" onClick={() => setWidgetState('minimized')} aria-label="Minimize chat">
+              <i className="fa-solid fa-minus" />
+            </button>
+            <button className="gc-window-btn" onClick={() => setWidgetState('closed')} aria-label="Close chat">
+              <i className="fa-solid fa-xmark" />
+            </button>
+          </div>
         </div>
-        <div className="gc-subtitle">Cheer each other on — your teacher can see this chat too 🎉</div>
+        <div className="gc-subtitle">Cheer each other on — your teacher can see this chat too 🎉 — keep working, this stays open</div>
       </div>
 
       {picker}
@@ -432,15 +591,30 @@ export default function GroupChat({ profile, t, focusGroupId, classLevels }) {
           --bubble-other: #F4F1EB;
 
           font-family: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
-          max-width: 640px;
+          width: 380px;
+          max-width: calc(100vw - 24px);
           display: flex;
           flex-direction: column;
           background: var(--paper);
           border: 1px solid var(--border);
           border-radius: 16px;
           overflow: hidden;
-          box-shadow: 0 1px 3px rgba(28,33,48,0.04), 0 10px 28px rgba(28,33,48,0.06);
+          box-shadow: 0 10px 34px rgba(28,33,48,0.22);
         }
+
+        .gcw-dock {
+          position: fixed;
+          right: 20px;
+          bottom: 20px;
+          z-index: 9997;
+        }
+        @media (max-width: 640px) {
+          .gcw-dock { right: 12px; bottom: 0; left: 12px; }
+          .gc-card { width: auto; max-width: none; }
+        }
+
+        .gc-newchat-label { }
+        @media (max-width: 420px) { .gc-newchat-label { display: none; } }
         .gc-empty {
           padding: 28px 20px;
           text-align: center;
@@ -475,8 +649,8 @@ export default function GroupChat({ profile, t, focusGroupId, classLevels }) {
 
         .gc-messages {
           flex: 1;
-          min-height: 260px;
-          max-height: 420px;
+          min-height: 220px;
+          max-height: 380px;
           overflow-y: auto;
           padding: 16px 18px;
           display: flex;
@@ -614,7 +788,29 @@ export default function GroupChat({ profile, t, focusGroupId, classLevels }) {
           display: flex; align-items: center; justify-content: center; flex-shrink: 0;
         }
         .gc-send-btn:disabled { background: #D7D3C9; cursor: default; }
+
+        .gc-window-controls { display: flex; align-items: center; gap: 2px; margin-left: 4px; flex-shrink: 0; }
+        .gc-window-btn {
+          width: 24px; height: 24px; border-radius: 6px; border: none; background: none;
+          color: var(--ink-muted); cursor: pointer; font-size: 12px;
+          display: flex; align-items: center; justify-content: center;
+        }
+        .gc-window-btn:hover { background: var(--bubble-other); color: var(--ink); }
+
+        .gc-picker-filters { display: flex; gap: 8px; margin: 0 12px 8px; }
+        .gc-picker-class-select {
+          flex-shrink: 0; max-width: 40%; border: 1.5px solid var(--border); border-radius: 999px;
+          padding: 7px 10px; font-size: 12.5px; font-family: inherit; color: var(--ink);
+          background: var(--paper); cursor: pointer;
+        }
+        .gc-picker-filters .gc-picker-search { margin: 0; flex: 1; min-width: 0; }
+        .gc-picker-count { margin: 0 16px 6px; font-size: 11px; font-weight: 700; color: var(--ink-muted); }
       `}</style>
     </div>
+    </div>
   );
-}
+});
+
+GroupChat.displayName = 'GroupChat';
+
+export default GroupChat;
