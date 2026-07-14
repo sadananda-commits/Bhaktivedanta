@@ -1856,8 +1856,8 @@ function PortalInner() {
   // (can't read localStorage in useState initialiser because Next.js runs it
   // server-side where window doesn't exist, so the read is always skipped).
   const [profile, setProfile] = useState({ name: '', id: '', classLevel: 'Class 3' });
+  const chatRef = useRef(null);
   const [chatUnread, setChatUnread] = useState(0);
-  const [chatFocusGroupId, setChatFocusGroupId] = useState(null);
   const [loginErr,    setLoginErr]    = useState('');
   const [loading,     setLoading]     = useState(false);
   const [uploadName,  setUploadName]  = useState('');
@@ -3462,6 +3462,11 @@ function PortalInner() {
       ) : (
         <div className={`dash${activeModuleId ? ' quiz-mode' : ''}`}>
 
+          {/* GROUP CHAT — mounted once, unconditionally, at the top level.
+              GroupChat renders itself as a fixed-position bubble/panel, not
+              inline content, so it must not also be rendered inside a tab. */}
+          <GroupChat ref={chatRef} profile={profile} t={t} classLevels={KNOWN_CLASSES} />
+
           {/* Floating sidebar button — only visible in quiz mode (issue 6) */}
           <button
             className="sb-float-btn"
@@ -3488,7 +3493,7 @@ function PortalInner() {
 <ChatNotifications
   profile={profile}
   onUnreadChange={setChatUnread}
-  onOpenChat={(groupId) => { setTab('chat'); setChatFocusGroupId(groupId); }}
+  onOpenChat={(groupId) => chatRef.current?.open(groupId)}
 />
 <AssignmentNotifications
   profile={profile}
@@ -3502,7 +3507,15 @@ function PortalInner() {
             <p className="sb-sec">{S.SidebarSectionLabel}</p>
             <nav className="sb-nav">
               {NAV.map(navItem => (
-                <button key={navItem.ID} className={`nb${tab===navItem.ID?' active':''}`} onClick={() => { setTab(navItem.ID); setSidebarPeeking(false); }}>
+                <button
+                  key={navItem.ID}
+                  className={`nb${tab===navItem.ID?' active':''}`}
+                  onClick={() => {
+                    if (navItem.ID === 'chat') { chatRef.current?.open(); return; }
+                    setTab(navItem.ID);
+                    setSidebarPeeking(false);
+                  }}
+                >
                   <i className={`fa-solid ${navItem['Icon (FontAwesome solid)']}`} /> {navItem.Label}
                   {navItem.ID==='notifications' && unreadCount>0 && <span className="nb-badge">{unreadCount}</span>}
 {navItem.ID==='chat' && chatUnread>0 && <span className="nb-badge">{chatUnread}</span>}
@@ -4646,18 +4659,6 @@ function PortalInner() {
                 />
               </>
             )}
-{/* GROUP CHAT */}
-{tab==='chat' && (
-  <>
-    <div className="main-top">
-      <div>
-        <div className="pg-h">Group Chat</div>
-        <div className="pg-s">Chat with your groupmates — teachers and parents can see this too</div>
-      </div>
-    </div>
-    <GroupChat profile={profile} t={t} focusGroupId={chatFocusGroupId} classLevels={KNOWN_CLASSES} />
-  </>
-)}
             {/* SCHEDULE */}
             {tab==='schedule' && (<>
               <div className="main-top"><div><div className="pg-h">{t('p_schedule_title')}</div><div className="pg-s">{t('p_schedule_subtitle')}</div></div></div>
