@@ -7,6 +7,17 @@
 //  Sheets. No subject names, class levels, chapter names, or Module IDs are
 //  ever hardcoded here.
 //
+//  WHAT CHANGED IN v4
+//  ──────────────────
+//  9. Removed the double class-validation. Previously a sheet was mapped to
+//     a Class here in "Class Subject Map" AND every row inside that sheet's
+//     "Learning Modules"/"Learning Steps" tabs needed its own matching Class
+//     cell. Now the mapping row is the single source of truth: every row
+//     fetched from a mapped sheet is stamped with that mapping's Class,
+//     full stop. Admins no longer need (or should bother with) a Class
+//     column inside individual subject sheets at all — just write the
+//     questions and map the sheet to a Class + Subject here.
+//
 //  WHAT CHANGED IN v3
 //  ──────────────────
 //  7. NEW "Class Levels" tab — Class | Label | Age | Aliases | Display Order
@@ -347,11 +358,26 @@ export default async function handler(req, res) {
       console.warn('[portal-config]   Until then, class-filtering is NOT active (all subjects shown to all classes).');
     }
 
-    // ── Build subject-card list (assignmentSubjects) ─────────────────────────
-    // v2: derived from classSubjectMap rows filtered by class.
-    // v1 fallback: use the old "Assignment Subjects" tab as-is (no class filter).
+    // ── Build subject-card list (assignmentSubjects) AND the list of sheets ──
+    // to fetch (sheetEntries). v2: derived from classSubjectMap rows filtered
+    // by class. v1 fallback: use the old "Assignment Subjects" tab as-is (no
+    // class filter).
+    //
+    // v4 — SINGLE SOURCE OF TRUTH FOR CLASS (no more double validation):
+    // Previously a module/step row also needed its OWN "Class" cell (inside
+    // the individual subject sheet's "Learning Modules"/"Learning Steps"
+    // tabs) to match the requested class — i.e. a sheet had to be mapped to
+    // a class here AND every row inside it had to repeat that same class.
+    // Since each sheet is already mapped to exactly one Class + Subject in
+    // "Class Subject Map" (one sheet per class's subject folder), that
+    // second check was redundant. Now every row fetched from a mapped sheet
+    // is simply STAMPED with the Class from this mapping row, replacing
+    // whatever (if anything) is in the sheet's own Class column. An admin
+    // now only has to: (1) write questions in a sheet, (2) map that sheet to
+    // a Class + Subject here — nothing inside the sheet needs a Class column
+    // at all, and nothing there is re-validated.
     let assignmentSubjects;
-    let sheetIdBySubject = {};
+    let sheetEntries = []; // { subject, class, sheetId } — one per mapped sheet
 
     if (usingV2) {
       // Filter classSubjectMap by Active + classMatches
@@ -359,19 +385,14 @@ export default async function handler(req, res) {
         .filter(row => row['Active'] !== false && classMatches(row['Class'], requestedClass))
         .sort((a, b) => (Number(a['Display Order']) || 999) - (Number(b['Display Order']) || 999));
 
-      // Warn about rows with no Class tag (migration hint)
-      const untagged = classSubjectMap.filter(row => row['Active'] !== false && !(row['Class'] || '').trim());
-      if (untagged.length) {
-        console.warn(`[portal-config] ⚠ ${untagged.length} rows in "Class Subject Map" have a blank Class — they show to ALL classes. Tag them to enable proper filtering.`);
-        untagged.slice(0, 5).forEach(r => console.warn(`[portal-config]   → Subject: "${r['Subject']}"`));
-      }
-
-      // Build sheetIdBySubject (deduplicated — multiple class rows pointing at
-      // the same Sheet ID is normal; we only need to fetch each sheet once)
+      // Build sheetEntries — one entry per mapping row (not deduped by
+      // subject name alone, since the same subject name can map to a
+      // different Sheet ID per class).
       activeRows.forEach(row => {
-        const name = (row['Subject'] || '').trim();
-        const id   = (row['Sheet ID'] || '').trim();
-        if (name && id && !sheetIdBySubject[name]) sheetIdBySubject[name] = id;
+        const name  = (row['Subject']  || '').trim();
+        const id    = (row['Sheet ID'] || '').trim();
+        const klass = (row['Class']    || '').trim(); // '' = visible to all classes
+        if (name && id) sheetEntries.push({ subject: name, class: klass, sheetId: id });
       });
 
       // Build assignmentSubjects for the client (one card per unique subject
@@ -395,63 +416,56 @@ export default async function handler(req, res) {
       });
 
     } else {
-      // Legacy path: use old Assignment Subjects list (no class filter)
+      // Legacy path: use old Assignment Subjects list (no class filter, no
+      // per-class sheet — every mapped sheet is treated as visible to all).
       assignmentSubjects = legacyAssignmentSubjects.filter(row => row['Active'] !== false);
       legacySubjectSheetMap
         .filter(row => row['Active'] !== false)
         .forEach(row => {
           const name = (row['Subject'] || '').trim();
           const id   = (row['Sheet ID'] || '').trim();
-          if (name && id) sheetIdBySubject[name] = id;
+          if (name && id) sheetEntries.push({ subject: name, class: '', sheetId: id });
         });
     }
 
-    const subjects = Object.keys(sheetIdBySubject);
-    console.log('[portal-config] Subjects to fetch:', subjects.join(', ') || '(none)');
+    console.log('[portal-config] Sheets to fetch:', sheetEntries.map(e => `${e.subject}${e.class ? ` (${e.class})` : ''}`).join(', ') || '(none)');
 
-    if (subjects.length === 0) {
+    if (sheetEntries.length === 0) {
       console.warn('[portal-config] ⚠ No subjects to load. Check that:');
       console.warn('[portal-config]   (1) The sheet is shared as "Anyone with the link → Viewer"');
       console.warn('[portal-config]   (2) The tab is named exactly "Class Subject Map"');
       console.warn('[portal-config]   (3) MASTER_SHEET_ID is correct:', MASTER_SHEET_ID);
     }
 
-    // ── Fetch all subject sheets in parallel ─────────────────────────────────
+    // ── Fetch every mapped sheet in parallel ─────────────────────────────────
+    // Memoised by sheetId+tab so two mapping rows that happen to point at the
+    // exact same Sheet ID (e.g. one sheet intentionally shared across two
+    // classes) only hit the network once.
+    const tabFetchCache = new Map();
+    const fetchTabCached = (sheetId, tabName) => {
+      const key = `${sheetId}::${tabName}`;
+      if (!tabFetchCache.has(key)) tabFetchCache.set(key, fetchTab(sheetId, tabName));
+      return tabFetchCache.get(key);
+    };
+
     const results = await Promise.all(
-      subjects.flatMap(name => [
-        fetchTab(sheetIdBySubject[name], 'Learning Modules'),
-        fetchTab(sheetIdBySubject[name], 'Learning Steps'),
+      sheetEntries.flatMap(entry => [
+        fetchTabCached(entry.sheetId, 'Learning Modules'),
+        fetchTabCached(entry.sheetId, 'Learning Steps'),
       ])
     );
 
-    let allModules = [];
-    let allSteps   = [];
-    subjects.forEach((_, i) => {
-      allModules = allModules.concat(results[i * 2]);
-      allSteps   = allSteps.concat(results[i * 2 + 1]);
+    // ── Stamp every row with its mapping's Class — the mapping is the ONLY
+    // place class membership is decided; nothing inside the sheet is
+    // re-checked or required to agree with it.
+    let learningModules = [];
+    let learningSteps   = [];
+    sheetEntries.forEach((entry, i) => {
+      results[i * 2].forEach(m     => learningModules.push({ ...m, Class: entry.class }));
+      results[i * 2 + 1].forEach(s => learningSteps.push({ ...s, Class: entry.class }));
     });
 
-    // ── Class-filter modules and steps ───────────────────────────────────────
-    // If a class was requested, keep only rows where Class matches or is blank.
-    // This is the core fix: previously every student saw ALL modules regardless
-    // of their class level.
-    const learningModules = requestedClass
-      ? allModules.filter(m => classMatches(m['Class'], requestedClass))
-      : allModules;
-
-    const learningSteps = requestedClass
-      ? allSteps.filter(s => classMatches(s['Class'], requestedClass))
-      : allSteps;
-
-    // Warn about untagged modules (helps admins track migration progress)
-    if (requestedClass) {
-      const untaggedMods = allModules.filter(m => !(m['Class'] || '').trim());
-      if (untaggedMods.length) {
-        console.warn(`[portal-config] ⚠ ${untaggedMods.length} Learning Module rows have blank Class — visible to all classes. Tag them to restrict by class.`);
-      }
-    }
-
-    console.log(`[portal-config] ✓ After class filter: ${learningModules.length} modules, ${learningSteps.length} steps (class: "${requestedClass || 'all'}")`);
+    console.log(`[portal-config] ✓ ${learningModules.length} modules, ${learningSteps.length} steps loaded across ${sheetEntries.length} mapped sheet(s) (class: "${requestedClass || 'all'}")`);
 
     const payload = { assignmentSubjects, learningModules, learningSteps, classLevels, config };
 
