@@ -4655,7 +4655,7 @@ function PortalInner() {
         <div className="pg-s">Chat with your groupmates — teachers and parents can see this too</div>
       </div>
     </div>
-    <GroupChat profile={profile} t={t} focusGroupId={chatFocusGroupId} />
+    <GroupChat profile={profile} t={t} focusGroupId={chatFocusGroupId} classLevels={KNOWN_CLASSES} />
   </>
 )}
             {/* SCHEDULE */}

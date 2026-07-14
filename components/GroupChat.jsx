@@ -11,14 +11,18 @@
 // the last message it has) so each poll only pulls what's new.
 //
 // USAGE:
-//   <GroupChat profile={profile} t={t} focusGroupId={chatFocusGroupId} />
-// `profile` needs at least { id, name, classLevel }. classLevel is only
-// needed for the "start a 1:1 chat" picker — without it, that button is
-// simply hidden. `focusGroupId`, if provided, switches to that chat
+//   <GroupChat profile={profile} t={t} focusGroupId={chatFocusGroupId} classLevels={KNOWN_CLASSES} />
+// `profile` needs at least { id, name, classLevel }. `classLevels`, if
+// provided (an array of class-name strings, e.g. KNOWN_CLASSES from
+// portal.js), lets a student start a chat with anyone in ANY of those
+// classes, not just their own — the picker fetches every class in the list
+// and merges the results into one searchable roster, tagging each name with
+// its class. Without `classLevels`, it falls back to just profile.classLevel
+// (old behaviour). `focusGroupId`, if provided, switches to that chat
 // whenever it changes — used by ChatNotifications.jsx so a toast's "View"
 // button can jump straight to the right conversation.
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { markSeen } from '../utils/chatLastSeen';
 
 const POLL_MS = 4000;
@@ -45,7 +49,7 @@ function renderMessageText(text) {
   });
 }
 
-export default function GroupChat({ profile, t, focusGroupId }) {
+export default function GroupChat({ profile, t, focusGroupId, classLevels }) {
   const tr = t || (s => s);
 
   const [groups, setGroups] = useState([]);
@@ -60,14 +64,21 @@ export default function GroupChat({ profile, t, focusGroupId }) {
   const [sending, setSending] = useState(false);
   const [reportedIds, setReportedIds] = useState(new Set());
 
-  // ── 1:1 chat picker ────────────────────────────────────────────────────
+  // ── 1:1 chat picker — searches across every class in `classLevels` ───────
   const [showPicker, setShowPicker] = useState(false);
-  const [classmates, setClassmates] = useState([]);
+  const [classmates, setClassmates] = useState([]); // merged roster across all classes, each tagged with .classLevel
   const [classmatesLoading, setClassmatesLoading] = useState(false);
   const [classmatesError, setClassmatesError] = useState('');
   const [classmateFilter, setClassmateFilter] = useState('');
   const [startingDmFor, setStartingDmFor] = useState(null);
   const [dmError, setDmError] = useState('');
+
+  // The full list of classes to draw students from. Falls back to just the
+  // student's own class if the caller doesn't pass classLevels in.
+  const classLevelOptions = useMemo(() => {
+    if (classLevels?.length) return classLevels;
+    return profile?.classLevel ? [profile.classLevel] : [];
+  }, [classLevels, profile?.classLevel]);
 
   const lastTimestampRef = useRef(null);
   const pollRef = useRef(null);
@@ -171,16 +182,23 @@ export default function GroupChat({ profile, t, focusGroupId }) {
     setShowPicker(prev => !prev);
     setDmError('');
     setClassmateFilter('');
-    if (classmates.length || !profile?.classLevel) return; // already loaded, or nothing to look up
+    if (classmates.length || !classLevelOptions.length) return; // already loaded, or nothing to look up
+
     setClassmatesLoading(true);
     setClassmatesError('');
-    fetch(`/api/student/chat-dm?classLevel=${encodeURIComponent(profile.classLevel)}&excludeStudentId=${encodeURIComponent(profile.id)}`)
-      .then(r => r.json())
-      .then(data => {
-        if (data.error) { setClassmatesError(data.error); return; }
-        setClassmates(data.classmates || []);
+    Promise.all(
+      classLevelOptions.map(cl =>
+        fetch(`/api/student/chat-dm?classLevel=${encodeURIComponent(cl)}&excludeStudentId=${encodeURIComponent(profile.id)}`)
+          .then(r => r.json())
+          .then(data => (data.classmates || []).map(c => ({ ...c, classLevel: cl })))
+          .catch(() => []) // one class failing to load shouldn't block the rest
+      )
+    )
+      .then(lists => {
+        const merged = lists.flat().sort((a, b) => a.studentName.localeCompare(b.studentName));
+        if (!merged.length) setClassmatesError('Could not load students — try again');
+        setClassmates(merged);
       })
-      .catch(() => setClassmatesError('Could not load classmates — try again'))
       .finally(() => setClassmatesLoading(false));
   };
 
@@ -229,23 +247,29 @@ export default function GroupChat({ profile, t, focusGroupId }) {
   };
 
   const hasGroups = groups.length > 0;
-  const canStartDm = !!profile?.classLevel;
+  const canStartDm = classLevelOptions.length > 0;
+  const multiClass = classLevelOptions.length > 1;
 
   // ── The "start a chat" picker — shared markup used in both the empty
   // state (no groups yet) and the normal header, so it's always styled
-  // consistently by the single <style jsx> block below. ──────────────────
+  // consistently by the single <style jsx> block below. Search matches
+  // either name or class, so typing "Class 4" narrows to that class too. ──
   const filteredClassmates = classmateFilter.trim()
-    ? classmates.filter(c => c.studentName.toLowerCase().includes(classmateFilter.trim().toLowerCase()))
+    ? classmates.filter(c => {
+        const q = classmateFilter.trim().toLowerCase();
+        return c.studentName.toLowerCase().includes(q) || (c.classLevel || '').toLowerCase().includes(q);
+      })
     : classmates;
 
   const picker = showPicker && (
     <div className="gc-picker">
       <div className="gc-picker-head">
-        <span>Start a chat with a classmate</span>
+        <span>Start a new chat</span>
         <button className="gc-picker-close" onClick={() => setShowPicker(false)} aria-label="Close">
           <i className="fa-solid fa-xmark" />
         </button>
       </div>
+      {multiClass && <div className="gc-picker-hint">Any class — search by name{multiClass ? ' or class' : ''}</div>}
 
       {!classmatesLoading && !classmatesError && classmates.length > 0 && (
         <div className="gc-picker-search">
@@ -254,7 +278,7 @@ export default function GroupChat({ profile, t, focusGroupId }) {
             type="text"
             value={classmateFilter}
             onChange={e => setClassmateFilter(e.target.value)}
-            placeholder="Search classmates by name…"
+            placeholder={multiClass ? 'Search by name or class…' : 'Search by name…'}
             autoFocus
           />
           {classmateFilter && (
@@ -268,9 +292,9 @@ export default function GroupChat({ profile, t, focusGroupId }) {
       {classmatesError ? (
         <div className="gc-empty-inner">{classmatesError}</div>
       ) : classmatesLoading ? (
-        <div className="gc-empty-inner">Loading classmates…</div>
+        <div className="gc-empty-inner">Loading students…</div>
       ) : !classmates.length ? (
-        <div className="gc-empty-inner">No classmates found to chat with yet.</div>
+        <div className="gc-empty-inner">No other students found yet.</div>
       ) : !filteredClassmates.length ? (
         <div className="gc-empty-inner">No one matches "{classmateFilter}"</div>
       ) : (
@@ -284,6 +308,7 @@ export default function GroupChat({ profile, t, focusGroupId }) {
             >
               <span className="gc-picker-avatar"><i className="fa-solid fa-user" /></span>
               <span className="gc-picker-name">{c.studentName}</span>
+              {c.classLevel && multiClass && <span className="gc-picker-class-badge">{c.classLevel}</span>}
               {startingDmFor === c.studentId
                 ? <i className="fa-solid fa-spinner fa-spin gc-picker-chevron" />
                 : <i className="fa-solid fa-chevron-right gc-picker-chevron" />}
@@ -316,8 +341,9 @@ export default function GroupChat({ profile, t, focusGroupId }) {
             <span>Chat</span>
           )}
           {canStartDm && (
-            <button className={`gc-newchat-btn${showPicker ? ' active' : ''}`} onClick={openPicker} aria-label="Start a new 1:1 chat" title="Start a new chat">
+            <button className={`gc-newchat-btn${showPicker ? ' active' : ''}`} onClick={openPicker} aria-label="Start a new chat">
               <i className="fa-solid fa-user-plus" />
+              <span>New chat</span>
             </button>
           )}
         </div>
@@ -329,10 +355,20 @@ export default function GroupChat({ profile, t, focusGroupId }) {
       {!hasGroups ? (
         <div className="gc-empty-inner" style={{ padding: '28px 20px' }}>
           <i className="fa-solid fa-people-group" style={{ fontSize: '22px', marginBottom: '8px', display: 'block' }} />
-          {groupsError
-            ? <>Couldn't load your chats: {groupsError}</>
-            : <>You're not in a chat group yet — ask your teacher to add you to one{canStartDm ? ', or start a 1:1 chat above.' : '.'}</>
-          }
+          {groupsError ? (
+            <>Couldn't load your chats: {groupsError}</>
+          ) : (
+            <>
+              <div>You don't have any chats yet.</div>
+              {canStartDm ? (
+                <button className="gc-empty-cta" onClick={openPicker}>
+                  <i className="fa-solid fa-user-plus" /> Start your first chat
+                </button>
+              ) : (
+                <div style={{ marginTop: 4 }}>Ask your teacher to add you to a chat group.</div>
+              )}
+            </>
+          )}
         </div>
       ) : (
         <>
@@ -477,12 +513,21 @@ export default function GroupChat({ profile, t, focusGroupId }) {
         .gc-report-btn:disabled { cursor: default; color: #B91C1C; text-decoration: none; }
 
         .gc-newchat-btn {
-          margin-left: auto; width: 28px; height: 28px; border-radius: 50%;
-          border: none; background: var(--bubble-other); color: var(--ink);
-          cursor: pointer; display: flex; align-items: center; justify-content: center;
-          font-size: 12px; flex-shrink: 0; transition: background .15s;
+          margin-left: auto; display: flex; align-items: center; gap: 6px;
+          padding: 7px 13px; border-radius: 999px;
+          border: 1.5px solid var(--brand); background: var(--bubble-mine); color: var(--brand);
+          cursor: pointer; font-size: 12.5px; font-weight: 800; font-family: inherit;
+          flex-shrink: 0; transition: background .15s, color .15s;
         }
         .gc-newchat-btn:hover, .gc-newchat-btn.active { background: var(--brand); color: #fff; }
+
+        .gc-empty-cta {
+          margin: 12px auto 0; display: flex; align-items: center; gap: 8px;
+          padding: 10px 18px; border-radius: 999px; border: none;
+          background: var(--brand); color: #fff; font-weight: 800; font-size: 13.5px;
+          font-family: inherit; cursor: pointer; box-shadow: 0 6px 16px rgba(0,198,167,.28);
+        }
+        .gc-empty-cta:hover { filter: brightness(1.05); }
 
         .gc-picker {
           border-bottom: 1px solid var(--border);
@@ -498,6 +543,10 @@ export default function GroupChat({ profile, t, focusGroupId }) {
           font-size: 13px; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
         }
         .gc-picker-close:hover { color: var(--ink); }
+
+        .gc-picker-hint {
+          margin: -4px 16px 8px; font-size: 11.5px; color: var(--ink-muted);
+        }
 
         .gc-picker-search {
           display: flex; align-items: center; gap: 8px;
@@ -538,6 +587,10 @@ export default function GroupChat({ profile, t, focusGroupId }) {
           font-size: 11px; flex-shrink: 0;
         }
         .gc-picker-name { flex: 1; font-weight: 600; }
+        .gc-picker-class-badge {
+          font-size: 10.5px; font-weight: 700; color: var(--ink-muted);
+          background: var(--bubble-other); border-radius: 999px; padding: 2px 8px; flex-shrink: 0;
+        }
         .gc-picker-chevron { color: var(--ink-muted); font-size: 11px; flex-shrink: 0; }
 
         .gc-error {
