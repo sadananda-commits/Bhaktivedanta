@@ -84,7 +84,7 @@ function renderMessageText(text) {
   });
 }
 
-const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, classLevels }, ref) {
+const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, classLevels, onStartCall }, ref) {
   const tr = t || (s => s);
 
   // ── Floating widget state: 'closed' | 'open' | 'minimized' ───────────────
@@ -118,6 +118,21 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
   const [classmateFilter, setClassmateFilter] = useState(''); // name search text
   const [startingDmFor, setStartingDmFor] = useState(null);
   const [dmError, setDmError] = useState('');
+
+  // ── Presence — "who's online right now", polled independently of the
+  // picker being open, since it drives the online dot both in the picker
+  // list AND next to an already-open DM's name in the header. ──────────────
+  const [onlineIds, setOnlineIds] = useState(new Set());
+  useEffect(() => {
+    if (!profile?.id) return;
+    const poll = () => fetch('/api/student/presence?action=online')
+      .then(r => r.json())
+      .then(data => setOnlineIds(new Set((data.online || []).map(String))))
+      .catch(() => {});
+    poll();
+    const id = setInterval(poll, 15000);
+    return () => clearInterval(id);
+  }, [profile?.id]);
 
   // The full list of classes to draw students from. Falls back to just the
   // student's own class if the caller doesn't pass classLevels in.
@@ -213,6 +228,14 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
   }, [messages]);
 
   const activeGroup = groups.find(g => g.groupId === activeGroupId);
+
+  // For a 1:1 DM, figure out who the "other" student is so the header can
+  // show their online status and a Call button — Group chats (3+ people)
+  // don't get a Call button, calling is 1:1 only.
+  const otherMember = activeGroup?.type === 'DM'
+    ? { id: (activeGroup.memberIds || []).find(id => String(id) !== String(profile.id)), name: activeGroup.groupName }
+    : null;
+  const otherIsOnline = !!(otherMember && otherMember.id && onlineIds.has(String(otherMember.id)));
 
   const send = () => {
     const trimmed = input.trim();
@@ -391,6 +414,10 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
                 disabled={startingDmFor === c.studentId}
               >
                 <span className="gc-picker-avatar"><i className="fa-solid fa-user" /></span>
+                <span
+                  className={`gc-status-dot${onlineIds.has(String(c.studentId)) ? ' online' : ''}`}
+                  title={onlineIds.has(String(c.studentId)) ? 'Online now' : 'Offline'}
+                />
                 <span className="gc-picker-name">{c.studentName}</span>
                 {c.classLevel && multiClass && !classFilter && <span className="gc-picker-class-badge">{c.classLevel}</span>}
                 {startingDmFor === c.studentId
@@ -490,6 +517,23 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
             )
           ) : (
             <span>Chat</span>
+          )}
+          {otherMember && (
+            <>
+              <span
+                className={`gc-status-dot${otherIsOnline ? ' online' : ''}`}
+                title={otherIsOnline ? 'Online now' : 'Offline'}
+              />
+              <button
+                className="gc-call-btn"
+                onClick={() => otherIsOnline && otherMember.id && onStartCall?.(otherMember.id, otherMember.name)}
+                disabled={!otherIsOnline}
+                title={otherIsOnline ? `Call ${otherMember.name}` : `${otherMember.name} is offline`}
+                aria-label="Call"
+              >
+                <i className="fa-solid fa-phone" />
+              </button>
+            </>
           )}
           {canStartDm && (
             <button className={`gc-newchat-btn${showPicker ? ' active' : ''}`} onClick={openPicker} aria-label="Start a new chat">
@@ -796,6 +840,19 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
           display: flex; align-items: center; justify-content: center;
         }
         .gc-window-btn:hover { background: var(--bubble-other); color: var(--ink); }
+
+        .gc-status-dot {
+          width: 8px; height: 8px; border-radius: 50%; background: #D7D3C9;
+          flex-shrink: 0; margin: 0 -2px;
+        }
+        .gc-status-dot.online { background: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,.18); }
+        .gc-picker-item .gc-status-dot { margin: 0; }
+        .gc-call-btn {
+          width: 28px; height: 28px; border-radius: 50%; border: none;
+          background: #22c55e; color: #fff; cursor: pointer; font-size: 11.5px;
+          display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+        }
+        .gc-call-btn:disabled { background: #D7D3C9; cursor: default; }
 
         .gc-picker-filters { display: flex; gap: 8px; margin: 0 12px 8px; }
         .gc-picker-class-select {

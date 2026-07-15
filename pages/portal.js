@@ -7,6 +7,7 @@ import MatchTheFollowing from '../components/MatchTheFollowing';
 import GroupChat from '../components/GroupChat';
 import ChatNotifications from '../components/ChatNotifications';
 import AssignmentNotifications from '../components/AssignmentNotifications';
+import CallManager from '../components/CallManager';
 import { QUIZ_LEARNING_MODULES_DA, QUIZ_LEARNING_STEPS_DA, QUIZ_ASSIGNMENT_SUBJECTS_DA } from '../lib/quizContentDA';
 import {
   PORTAL_SETTINGS_DA, PORTAL_NAVIGATION_DA, PORTAL_DASH_STATS_DA, PORTAL_SUBJECTS_DEMO_DA,
@@ -1858,6 +1859,10 @@ function PortalInner() {
   const [profile, setProfile] = useState({ name: '', id: '', classLevel: 'Class 3' });
   const chatRef = useRef(null);
   const [chatUnread, setChatUnread] = useState(0);
+  // Set by GroupChat's "Call" button to { calleeId, calleeName } — picked
+  // up by CallManager to start ringing, then cleared back to null once
+  // handled (see onCallRequestHandled).
+  const [callRequest, setCallRequest] = useState(null);
   const [loginErr,    setLoginErr]    = useState('');
   const [loading,     setLoading]     = useState(false);
   const [uploadName,  setUploadName]  = useState('');
@@ -3465,7 +3470,13 @@ function PortalInner() {
           {/* GROUP CHAT — mounted once, unconditionally, at the top level.
               GroupChat renders itself as a fixed-position bubble/panel, not
               inline content, so it must not also be rendered inside a tab. */}
-          <GroupChat ref={chatRef} profile={profile} t={t} classLevels={KNOWN_CLASSES} />
+          <GroupChat
+            ref={chatRef}
+            profile={profile}
+            t={t}
+            classLevels={KNOWN_CLASSES}
+            onStartCall={(otherStudentId, otherStudentName) => setCallRequest({ calleeId: otherStudentId, calleeName: otherStudentName })}
+          />
 
           {/* Floating sidebar button — only visible in quiz mode (issue 6) */}
           <button
@@ -3498,6 +3509,11 @@ function PortalInner() {
 <AssignmentNotifications
   profile={profile}
   onOpenAssignment={(assignmentId) => { setTab('myassignments'); setActiveMyAssignmentId(assignmentId); }}
+/>
+<CallManager
+  profile={profile}
+  callRequest={callRequest}
+  onCallRequestHandled={() => setCallRequest(null)}
 />
             <div className="sb-head">
               <div className="sb-av"><i className="fa-solid fa-user-graduate" /></div>
