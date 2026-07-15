@@ -8,6 +8,8 @@ import GroupChat from '../components/GroupChat';
 import ChatNotifications from '../components/ChatNotifications';
 import AssignmentNotifications from '../components/AssignmentNotifications';
 import CallManager from '../components/CallManager';
+import { signOutBeacon } from '../hooks/usePresenceHeartbeat';
+import { requestCallNotificationPermission } from '../hooks/useIncomingCallRinger';
 import { QUIZ_LEARNING_MODULES_DA, QUIZ_LEARNING_STEPS_DA, QUIZ_ASSIGNMENT_SUBJECTS_DA } from '../lib/quizContentDA';
 import {
   PORTAL_SETTINGS_DA, PORTAL_NAVIGATION_DA, PORTAL_DASH_STATS_DA, PORTAL_SUBJECTS_DEMO_DA,
@@ -2505,6 +2507,9 @@ function PortalInner() {
           classLevel: data.classLevel || '',
         }));
         setAuthed(true);
+        // Ask now, not mid-ring — asking for Notification permission while
+        // a call is already coming in would be too late for that first call.
+        requestCallNotificationPermission();
       }
       else setLoginErr(data.message || t('p_invalid_credentials'));
     } catch { setLoginErr(S.ConnectionErrorMsg || t('p_connection_failed')); }
@@ -2512,6 +2517,11 @@ function PortalInner() {
   };
 
   const handleLogout = () => {
+    // Tell the server this device is deliberately signing out, right now —
+    // distinct from just going idle or briefly missing a heartbeat, and
+    // what makes a classmate's call fail fast with "signed out" instead of
+    // ringing uselessly. Fire this before clearing profile.id below.
+    signOutBeacon(profile.id);
     destroyCharts(); setAuthed(false); setTab('dashboard'); setMobileNavOpen(false);
     // Clear localStorage FIRST so the persistence effect below doesn't
     // immediately re-save the reset state with classLevel: 'Class 3'.

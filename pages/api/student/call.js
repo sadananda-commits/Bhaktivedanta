@@ -13,6 +13,13 @@
 //
 // GET  ?action=incoming&studentId=...      → any ringing call for this student
 // GET  ?action=state&callId=...            → full state of one call (for polling)
+// Note: 'start' can come back as { error: 'offline' } — that means the
+// callee has no fresh presence at all (never signed in, or explicitly
+// signed out on every device) and no call row was even created. Anything
+// else (idle or active) proceeds as a normal ring; the call UI should show
+// a distinct "they're signed out" message for the offline case rather than
+// ringing and then timing out.
+//
 // POST { action:'start',    callerId, callerName, calleeId, calleeName, offer }
 // POST { action:'answer',   callId, answer }
 // POST { action:'decline',  callId }
