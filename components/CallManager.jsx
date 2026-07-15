@@ -64,7 +64,7 @@
 //   needed at all), so if audio calls have been working fine but video
 //   calls connect with no picture/choppy video, a TURN provider is the
 //   first thing to check — outgoing video is also capped at ~500kbps
-//   (capVideoBitrate_ below) to go easier on a school's shared bandwidth.
+//   (capVideoBitrate_ before) to go easier on a school's shared bandwidth.
 // - Ringing times out after 30s with no answer (RING_TIMEOUT_MS).
 
 import { useEffect, useRef, useState, useCallback } from 'react';
@@ -81,12 +81,13 @@ const ICE_SERVERS = [
   }] : []),
 ];
 
-const ACTIVE_POLL_MS  = 1500;  // signaling poll once a call is ringing/live
+const ACTIVE_POLL_MS  = 800;   // was 1500 — tighter poll once a call is ringing/live
 const RING_TIMEOUT_MS = 30000;
+const MEDIA_TIMEOUT_MS = 12000; // NEW — if SDP+ICE haven't produced a real connection within 12s of answering, give up rather than let a silent "connected" call run forever
 const OFFLINE_MSG_MS  = 3500;  // how long the "they're signed out" toast stays up
 
 export default function CallManager({ profile, callRequest, onCallRequestHandled }) {
-  const [phase, setPhase]         = useState('idle'); // idle | outgoing | offline | incoming | connected
+  const [phase, setPhase]         = useState('idle'); // idle | outgoing | offline | incoming | connecting | connected
   const [peerName, setPeerName]   = useState('');
   const [duration, setDuration]   = useState(0);
   const [muted, setMuted]         = useState(false);
@@ -102,6 +103,7 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
   const seenCandidatesRef  = useRef(0);
   const activePollRef      = useRef(null);
   const ringTimeoutRef     = useRef(null);
+  const mediaTimeoutRef    = useRef(null);
   const durationTimerRef   = useRef(null);
   const offlineTimeoutRef  = useRef(null);
 
@@ -131,26 +133,29 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
   }).then(r => r.json()).catch(() => ({})), []);
 
   // ── Candidate batching ───────────────────────────────────────────────
-  // ICE gathering fires a burst of candidates (often 5-20) within a second
-  // or two of a call starting. Posting each one as its own request piles a
-  // spike of near-simultaneous writes onto the Apps Script backend right on
-  // top of everything else already polling it (chat, presence, ringer) —
-  // exactly the kind of burst that can trip Google's per-account concurrent-
-  // execution limits. Instead, queue candidates and flush them as one
-  // request every 200ms, which folds a 15-candidate burst into 1-2 requests
-  // instead of 15.
+  // NEW — reads callIdRef.current at SEND time, not at queue time. If the
+  // call ID isn't back from post('start') yet (ICE candidates routinely fire
+  // before that round-trip finishes), it retries in 150ms instead of sending
+  // a batch with a blank callId that the backend just silently drops.
   const candidateQueueRef = useRef([]);
   const candidateFlushTimerRef = useRef(null);
-  const queueCandidate = useCallback((callId, role, candidate) => {
+  const flushCandidates_ = useCallback((role) => {
+    const callId = callIdRef.current;
+    if (!callId) {
+      candidateFlushTimerRef.current = setTimeout(() => flushCandidates_(role), 150);
+      return;
+    }
+    const batch = candidateQueueRef.current;
+    candidateQueueRef.current = [];
+    candidateFlushTimerRef.current = null;
+    if (batch.length) post('candidate', { callId, role, candidates: batch });
+  }, [post]);
+
+  const queueCandidate = useCallback((role, candidate) => {
     candidateQueueRef.current.push(candidate);
     if (candidateFlushTimerRef.current) return;
-    candidateFlushTimerRef.current = setTimeout(() => {
-      const batch = candidateQueueRef.current;
-      candidateQueueRef.current = [];
-      candidateFlushTimerRef.current = null;
-      if (batch.length) post('candidate', { callId, role, candidates: batch });
-    }, 200);
-  }, [post]);
+    candidateFlushTimerRef.current = setTimeout(() => flushCandidates_(role), 200);
+  }, [flushCandidates_]);
 
   const get = useCallback((action, params) => {
     const qs = new URLSearchParams({ action, ...params }).toString();
@@ -162,6 +167,7 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
     if (localStreamRef.current) { localStreamRef.current.getTracks().forEach(t => t.stop()); localStreamRef.current = null; }
     if (activePollRef.current) { clearInterval(activePollRef.current); activePollRef.current = null; }
     if (ringTimeoutRef.current) { clearTimeout(ringTimeoutRef.current); ringTimeoutRef.current = null; }
+    if (mediaTimeoutRef.current) { clearTimeout(mediaTimeoutRef.current); mediaTimeoutRef.current = null; }
     if (durationTimerRef.current) { clearInterval(durationTimerRef.current); durationTimerRef.current = null; }
     if (offlineTimeoutRef.current) { clearTimeout(offlineTimeoutRef.current); offlineTimeoutRef.current = null; }
     if (candidateFlushTimerRef.current) { clearTimeout(candidateFlushTimerRef.current); candidateFlushTimerRef.current = null; }
@@ -184,18 +190,27 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
     cleanup();
   }, [post, cleanup]);
 
-  const createPeerConnection = useCallback((onCandidate) => {
+  // NEW — onMediaUp fires once, the first time the connection genuinely
+  // comes up; onMediaDown fires on failed/disconnected/closed so a call that
+  // drops mid-conversation doesn't just sit there frozen on "connected".
+  const createPeerConnection = useCallback((onCandidate, onMediaUp, onMediaDown) => {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    let upFired = false;
     pc.onicecandidate = (e) => { if (e.candidate) onCandidate(e.candidate); };
     // One <video> element handles both call types — for an audio-only call
     // it just never receives a video track, and stays visually hidden (see
     // render section) while still playing the audio track normally.
     pc.ontrack = (e) => { if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0]; };
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed') endCall(true);
+      if (pc.connectionState === 'connected' && !upFired) {
+        upFired = true;
+        onMediaUp && onMediaUp();
+      } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected' || pc.connectionState === 'closed') {
+        onMediaDown && onMediaDown();
+      }
     };
     return pc;
-  }, [endCall]);
+  }, []);
 
   const startDurationTimer = useCallback(() => {
     const startedAt = Date.now();
@@ -237,9 +252,15 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
       setPhase('outgoing');
       if (wantsVideo && localVideoRef.current) localVideoRef.current.srcObject = stream;
 
-      const pc = createPeerConnection((candidate) => {
-        queueCandidate(callIdRef.current, 'caller', candidate);
-      });
+      const pc = createPeerConnection(
+        (candidate) => queueCandidate('caller', candidate),
+        () => { // onMediaUp
+          clearTimeout(mediaTimeoutRef.current);
+          setPhase('connected');
+          startDurationTimer();
+        },
+        () => endCall(true) // onMediaDown — call dropped after it was up
+      );
       pcRef.current = pc;
       stream.getTracks().forEach(t => pc.addTrack(t, stream));
       if (wantsVideo) capVideoBitrate_(pc);
@@ -278,8 +299,11 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
         if (state.Status === 'accepted' && state.Answer && pc.signalingState === 'have-local-offer') {
           clearTimeout(ringTimeoutRef.current);
           await pc.setRemoteDescription(state.Answer);
-          setPhase('connected');
-          startDurationTimer();
+          setPhase('connecting'); // SDP is done, but ICE hasn't necessarily succeeded yet
+          mediaTimeoutRef.current = setTimeout(() => {
+            console.error('[CallManager] media never connected (caller side)');
+            endCall(true);
+          }, MEDIA_TIMEOUT_MS);
         }
 
         const calleeCandidates = state.CalleeCandidates || [];
@@ -348,9 +372,15 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
       setCallMode(wantsVideo ? 'video' : 'audio');
       if (wantsVideo && localVideoRef.current) localVideoRef.current.srcObject = stream;
 
-      const pc = createPeerConnection((candidate) => {
-        queueCandidate(call.CallID, 'callee', candidate);
-      });
+      const pc = createPeerConnection(
+        (candidate) => queueCandidate('callee', candidate),
+        () => { // onMediaUp
+          clearTimeout(mediaTimeoutRef.current);
+          setPhase('connected');
+          startDurationTimer();
+        },
+        () => endCall(true) // onMediaDown
+      );
       pcRef.current = pc;
       stream.getTracks().forEach(t => pc.addTrack(t, stream));
       if (wantsVideo) capVideoBitrate_(pc);
@@ -360,8 +390,11 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
       await pc.setLocalDescription(answer);
       await ringerAccept(answer); // posts the answer, stops ring escalation, clears hook's incoming state
 
-      setPhase('connected');
-      startDurationTimer();
+      setPhase('connecting');
+      mediaTimeoutRef.current = setTimeout(() => {
+        console.error('[CallManager] media never connected (callee side)');
+        endCall(true);
+      }, MEDIA_TIMEOUT_MS);
 
       activePollRef.current = setInterval(async () => {
         const state = await get('state', { callId: callIdRef.current });
@@ -416,7 +449,7 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
         ref={remoteVideoRef}
         autoPlay
         playsInline
-        className={callMode === 'video' && (phase === 'connected' || phase === 'outgoing') ? 'cm-remote-video-visible' : 'cm-remote-video-hidden'}
+        className={callMode === 'video' && (phase === 'connected' || phase === 'connecting' || phase === 'outgoing') ? 'cm-remote-video-visible' : 'cm-remote-video-hidden'}
       />
 
       {phase === 'offline' && (
@@ -442,11 +475,11 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
       {/* Video call panel — replaces the small pill bar with a proper view
           once there's actually a camera involved. Local preview is a PiP in
           the corner, same pattern as most video call UIs. */}
-      {callMode === 'video' && (phase === 'outgoing' || phase === 'connected') && (
+      {callMode === 'video' && (phase === 'outgoing' || phase === 'connecting' || phase === 'connected') && (
         <div className="cm-video-panel">
           <div className="cm-video-status">
             <span className="cm-video-name">{peerName}</span>
-            <span className="cm-video-sub">{phase === 'outgoing' ? 'Calling…' : fmt(duration)}</span>
+            <span className="cm-video-sub">{phase === 'outgoing' ? 'Calling…' : phase === 'connecting' ? 'Connecting…' : fmt(duration)}</span>
           </div>
           <video ref={localVideoRef} autoPlay playsInline muted className={`cm-local-preview ${cameraOff ? 'cm-local-preview-off' : ''}`} />
           {cameraOff && <div className="cm-camera-off-badge"><i className="fa-solid fa-video-slash" /></div>}
@@ -465,12 +498,12 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
       )}
 
       {/* Audio-only bar — unchanged from before, just gated to callMode==='audio'. */}
-      {callMode === 'audio' && (phase === 'outgoing' || phase === 'connected') && (
+      {callMode === 'audio' && (phase === 'outgoing' || phase === 'connecting' || phase === 'connected') && (
         <div className="cm-bar">
           <div className="cm-bar-icon"><i className={`fa-solid ${phase === 'outgoing' ? 'fa-phone-volume' : 'fa-phone'}`} /></div>
           <div className="cm-bar-body">
             <div className="cm-bar-name">{peerName}</div>
-            <div className="cm-bar-status">{phase === 'outgoing' ? 'Calling…' : fmt(duration)}</div>
+            <div className="cm-bar-status">{phase === 'outgoing' ? 'Calling…' : phase === 'connecting' ? 'Connecting…' : fmt(duration)}</div>
           </div>
           {phase === 'connected' && (
             <button className="cm-bar-btn" onClick={toggleMute} aria-label="Mute">

@@ -19,7 +19,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 
-const POLL_MS = 4000; // deliberately short — this is a cheap GET, and it's the thing standing in for a real push
+const POLL_MS = 2000; // was 4000 — halves the worst-case delay before the callee even sees the incoming modal
 
 // Ask for Notification permission once, e.g. right after login, so the
 // browser-level popup ("Show desktop notifications when idle") is available
