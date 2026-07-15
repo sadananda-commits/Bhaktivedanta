@@ -130,6 +130,28 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
     body: JSON.stringify({ action, ...body }),
   }).then(r => r.json()).catch(() => ({})), []);
 
+  // ── Candidate batching ───────────────────────────────────────────────
+  // ICE gathering fires a burst of candidates (often 5-20) within a second
+  // or two of a call starting. Posting each one as its own request piles a
+  // spike of near-simultaneous writes onto the Apps Script backend right on
+  // top of everything else already polling it (chat, presence, ringer) —
+  // exactly the kind of burst that can trip Google's per-account concurrent-
+  // execution limits. Instead, queue candidates and flush them as one
+  // request every 200ms, which folds a 15-candidate burst into 1-2 requests
+  // instead of 15.
+  const candidateQueueRef = useRef([]);
+  const candidateFlushTimerRef = useRef(null);
+  const queueCandidate = useCallback((callId, role, candidate) => {
+    candidateQueueRef.current.push(candidate);
+    if (candidateFlushTimerRef.current) return;
+    candidateFlushTimerRef.current = setTimeout(() => {
+      const batch = candidateQueueRef.current;
+      candidateQueueRef.current = [];
+      candidateFlushTimerRef.current = null;
+      if (batch.length) post('candidate', { callId, role, candidates: batch });
+    }, 200);
+  }, [post]);
+
   const get = useCallback((action, params) => {
     const qs = new URLSearchParams({ action, ...params }).toString();
     return fetch(`/api/student/call?${qs}`).then(r => r.json()).catch(() => ({}));
@@ -142,6 +164,8 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
     if (ringTimeoutRef.current) { clearTimeout(ringTimeoutRef.current); ringTimeoutRef.current = null; }
     if (durationTimerRef.current) { clearInterval(durationTimerRef.current); durationTimerRef.current = null; }
     if (offlineTimeoutRef.current) { clearTimeout(offlineTimeoutRef.current); offlineTimeoutRef.current = null; }
+    if (candidateFlushTimerRef.current) { clearTimeout(candidateFlushTimerRef.current); candidateFlushTimerRef.current = null; }
+    candidateQueueRef.current = [];
     if (localVideoRef.current) localVideoRef.current.srcObject = null;
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
     callIdRef.current = null;
@@ -214,7 +238,7 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
       if (wantsVideo && localVideoRef.current) localVideoRef.current.srcObject = stream;
 
       const pc = createPeerConnection((candidate) => {
-        post('candidate', { callId: callIdRef.current, role: 'caller', candidate });
+        queueCandidate(callIdRef.current, 'caller', candidate);
       });
       pcRef.current = pc;
       stream.getTracks().forEach(t => pc.addTrack(t, stream));
@@ -269,7 +293,7 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
       console.error('[CallManager] startCall error:', err);
       cleanup();
     }
-  }, [phase, profile, post, get, createPeerConnection, endCall, cleanup, startDurationTimer]);
+  }, [phase, profile, post, get, createPeerConnection, endCall, cleanup, startDurationTimer, queueCandidate]);
 
   // Kick off an outgoing call whenever the parent hands us a new request.
   useEffect(() => {
@@ -325,7 +349,7 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
       if (wantsVideo && localVideoRef.current) localVideoRef.current.srcObject = stream;
 
       const pc = createPeerConnection((candidate) => {
-        post('candidate', { callId: call.CallID, role: 'callee', candidate });
+        queueCandidate(call.CallID, 'callee', candidate);
       });
       pcRef.current = pc;
       stream.getTracks().forEach(t => pc.addTrack(t, stream));
@@ -355,7 +379,7 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
       ringerDecline();
       cleanup();
     }
-  }, [ringerIncoming, ringerAccept, ringerDecline, post, get, createPeerConnection, cleanup, startDurationTimer]);
+  }, [ringerIncoming, ringerAccept, ringerDecline, post, get, createPeerConnection, cleanup, startDurationTimer, queueCandidate]);
 
   const declineCall = useCallback(() => {
     ringerDecline();

@@ -124,7 +124,14 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
   // list AND next to an already-open DM's name in the header. ──────────────
   const [onlineIds, setOnlineIds] = useState(new Set());
   useEffect(() => {
-    if (!profile?.id) return;
+    // Nothing in the closed state (just the launcher button) shows an online
+    // dot, so there's no reason to keep this poll running in the background
+    // for every authed student on every tab, all day — it only matters while
+    // the picker or an open DM header is actually visible. This does NOT
+    // touch call-ringing: usePresenceHeartbeat (the write side, in
+    // CallManager) keeps running regardless of this widget's state, so a
+    // student stays callable even with the chat widget closed.
+    if (!profile?.id || widgetState === 'closed') return;
     const poll = () => fetch('/api/student/presence?action=online')
       .then(r => r.json())
       .then(data => setOnlineIds(new Set((data.online || []).map(String))))
@@ -132,7 +139,7 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
     poll();
     const id = setInterval(poll, 15000);
     return () => clearInterval(id);
-  }, [profile?.id]);
+  }, [profile?.id, widgetState]);
 
   // The full list of classes to draw students from. Falls back to just the
   // student's own class if the caller doesn't pass classLevels in.
