@@ -3514,7 +3514,7 @@ function PortalInner({ initialProfile }) {
 
           {/* Online Students List */}
           <OnlineStudents 
-            onCall={(id, name) => setCallRequest({ calleeId: id, calleeName: name })}
+            onCall={(id, name, mode) => setCallRequest({ calleeId: id, calleeName: name, mode: mode || 'audio' })}
             profile={profile}
 			onSignOut={handleLogout}  // ← ADD THIS
           />

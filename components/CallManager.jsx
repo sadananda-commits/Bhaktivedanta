@@ -29,7 +29,7 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
   const { updateOnlineUsers } = usePresence();
   
   const [phase, setPhase] = useState('idle'); // idle | outgoing | incoming | connecting | connected
-  const [callInfo, setCallInfo] = useState(null); // { peerId, peerName, callType }
+  const [callInfo, setCallInfo] = useState(null); // { peerId, peerName, callId, callType }
   const [duration, setDuration] = useState(0);
 
   const wsRef = useRef(null);
@@ -52,9 +52,14 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
 
     ws.onopen = () => {
       console.log('[CallManager] WebSocket connected');
+      // Send name with register message
       ws.send(JSON.stringify({
         type: 'register',
-        payload: { studentId: profile.id, deviceId: `${profile.id}-${Date.now()}` }
+        payload: { 
+          studentId: profile.id, 
+          studentName: profile.name,  // ← ADDED student name
+          deviceId: `${profile.id}-${Date.now()}` 
+        }
       }));
     };
 
@@ -71,7 +76,7 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
     return () => {
       if (ws.readyState === 1) ws.close();
     };
-  }, [profile?.id]);
+  }, [profile?.id, profile?.name]);
 
   function handleMessage(msg, ws) {
     const { type } = msg;
@@ -126,14 +131,8 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
 
     pc.ontrack = (e) => {
       console.log('[CallManager] Track received:', e.track.kind);
-      if (e.track.kind === 'video') {
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = e.streams[0];
-        }
-      } else if (e.track.kind === 'audio') {
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = e.streams[0];
-        }
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = e.streams[0];
       }
     };
 
@@ -198,7 +197,7 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
           callId, 
           offer, 
           calleeId, 
-          callType: mode,
+          callType: mode,  // IMPORTANT: include call type
           callerId: profile.id, 
           callerName: profile.name,
           additionalCallees: additionalCallees.length > 0 ? additionalCallees : undefined
@@ -374,9 +373,6 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
   // ─── Render ──────────────────────────────────────────────────────────────
   return (
     <>
-      {/* Audio element for audio calls and remote audio */}
-      <audio ref={remoteVideoRef} autoPlay playsInline style={{ display: 'none' }} />
-      
       {/* Video elements for video calls */}
       <video ref={remoteVideoRef} autoPlay playsInline style={{ display: 'none' }} />
       <video ref={localVideoRef} autoPlay playsInline muted style={{ display: 'none' }} />
@@ -402,7 +398,7 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
         </div>
       )}
 
-      {/* Video call UI - During connecting and connected phases */}
+      {/* Video call UI - Full screen during connected */}
       {(phase === 'connecting' || phase === 'connected') && callInfo?.callType === 'video' && (
         <div style={styles.videoCallContainer}>
           {/* Remote video (main, larger) */}
@@ -435,8 +431,8 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
         </div>
       )}
 
-      {/* Audio call bar - Only for outgoing/connecting/connected audio calls */}
-      {(phase === 'outgoing' || (phase === 'connecting' && callInfo?.callType !== 'video') || (phase === 'connected' && callInfo?.callType !== 'video')) && callInfo && (
+      {/* Audio call bar - Only for audio calls */}
+      {(phase === 'outgoing' || phase === 'connecting' || phase === 'connected') && callInfo && callInfo.callType !== 'video' && (
         <div style={styles.bar}>
           <span>{callInfo.peerName}</span>
           <span>{phase === 'outgoing' ? 'Calling...' : phase === 'connecting' ? 'Connecting...' : fmt(duration)}</span>
@@ -525,7 +521,6 @@ const styles = {
     cursor: 'pointer',
     fontSize: '12px',
   },
-  // Video call styles
   videoCallContainer: {
     position: 'fixed',
     inset: 0,
@@ -544,7 +539,7 @@ const styles = {
   },
   localVideo: {
     position: 'absolute',
-    bottom: '80px',
+    bottom: '100px',
     right: '20px',
     width: '150px',
     height: '150px',

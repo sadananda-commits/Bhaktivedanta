@@ -24,7 +24,7 @@ const server = createServer(async (req, res) => {
 
 const wss = new WebSocketServer({ noServer: true });
 
-// Track connected users: userId -> ws
+// Track connected users: userId -> { ws, name }
 const users = new Map();
 
 server.on('upgrade', (req, socket, head) => {
@@ -34,6 +34,7 @@ server.on('upgrade', (req, socket, head) => {
   if (pathname === '/api/ws/calls') {
     wss.handleUpgrade(req, socket, head, (ws) => {
       let userId = null;
+      let userName = null;
 
       ws.on('message', (data) => {
         try {
@@ -41,29 +42,32 @@ server.on('upgrade', (req, socket, head) => {
           
           if (msg.type === 'register') {
             userId = msg.payload.studentId;
-            users.set(userId, ws);
-            console.log(`[WS] ${userId} registered (${users.size} online)`);
+            userName = msg.payload.studentName || msg.payload.studentId;  // Use name if provided
+            users.set(userId, { ws, name: userName });
+            console.log(`[WS] ${userId} (${userName}) registered (${users.size} online)`);
             
             ws.send(JSON.stringify({ type: 'registered' }));
             broadcastPresence();
           } 
           else if (msg.type === 'offer') {
-            const { calleeId, callerId, callId, offer, callerName } = msg.payload;
-            const calleeWs = users.get(calleeId);
+            const { calleeId, callerId, callId, offer, callerName, callType } = msg.payload;
+            const calleeUser = users.get(calleeId);
+            const calleeWs = calleeUser?.ws;
             
             console.log(`[WS] Offer from ${callerId} to ${calleeId}:`, calleeWs ? 'forwarding' : 'CALLEE NOT ONLINE');
             
             if (calleeWs && calleeWs.readyState === 1) {
-              // Transform offer into incoming-call for receiver
+              // Transform offer into incoming-call for receiver - INCLUDE callType!
               calleeWs.send(JSON.stringify({
                 type: 'incoming-call',
-                payload: { callId, callerId, callerName, offer }
+                payload: { callId, callerId, callerName, offer, callType }  // ← ADDED callType
               }));
             }
           } 
           else if (msg.type === 'answer') {
             const { callerId } = msg.payload;
-            const callerWs = users.get(callerId);
+            const callerUser = users.get(callerId);
+            const callerWs = callerUser?.ws;
             
             console.log(`[WS] Answer to ${callerId}:`, callerWs ? 'forwarding' : 'CALLER NOT ONLINE');
             
@@ -78,9 +82,9 @@ server.on('upgrade', (req, socket, head) => {
             
             // Forward to ALL other users
             let forwarded = 0;
-            for (const [id, ws] of users.entries()) {
-              if (id !== from && ws.readyState === 1) {
-                ws.send(JSON.stringify(msg));
+            for (const [id, user] of users.entries()) {
+              if (id !== from && user.ws.readyState === 1) {
+                user.ws.send(JSON.stringify(msg));
                 forwarded++;
               }
             }
@@ -90,9 +94,9 @@ server.on('upgrade', (req, socket, head) => {
           }
           else if (msg.type === 'end') {
             const { callId } = msg.payload;
-            for (const ws of users.values()) {
-              if (ws.readyState === 1) {
-                ws.send(JSON.stringify(msg));
+            for (const user of users.values()) {
+              if (user.ws.readyState === 1) {
+                user.ws.send(JSON.stringify(msg));
               }
             }
           }
@@ -118,11 +122,16 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 function broadcastPresence() {
-  const online = Array.from(users.keys()).map(id => ({ id, status: 'active' }));
+  // Include BOTH id and name in presence broadcast
+  const online = Array.from(users.entries()).map(([id, user]) => ({ 
+    id, 
+    name: user.name,  // ← ADDED name field
+    status: 'active' 
+  }));
   const msg = JSON.stringify({ type: 'presence-update', online });
   
-  for (const ws of users.values()) {
-    if (ws.readyState === 1) ws.send(msg);
+  for (const user of users.values()) {
+    if (user.ws.readyState === 1) user.ws.send(msg);
   }
 }
 
@@ -130,4 +139,3 @@ server.listen(PORT, () => {
   console.log(`[Server] Ready on http://localhost:${PORT}`);
   console.log('[WebSocket] Listening on ws://localhost:3000/api/ws/calls');
 });
-

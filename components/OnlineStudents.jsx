@@ -3,16 +3,17 @@ import { useRef, useState, useEffect } from 'react';
 
 export function OnlineStudents({ onCall, profile, onSignOut }) {
   const { onlineUsers } = usePresence();
-  const [position, setPosition] = useState({ x: 5, y: typeof window !== 'undefined' ? window.innerHeight - 380 : 700 }); // Left side, bottom corner (further left)
+  const [position, setPosition] = useState({ x: 5, y: typeof window !== 'undefined' ? window.innerHeight - 380 : 700 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const [expandedUserId, setExpandedUserId] = useState(null);  // Track which user's menu is open
   const containerRef = useRef(null);
 
   const onlineStudents = onlineUsers.filter(u => u.id !== profile?.id);
 
   const handleMouseDown = (e) => {
-    // Only drag from the title area, not from buttons
-    if (e.target.closest('button')) return;
+    // Don't drag if clicking on buttons or menus
+    if (e.target.closest('button') || e.target.closest('[role="menu"]')) return;
     
     setIsDragging(true);
     const rect = containerRef.current?.getBoundingClientRect();
@@ -63,6 +64,20 @@ export function OnlineStudents({ onCall, profile, onSignOut }) {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  const handleCallClick = (userId, userName) => {
+    setExpandedUserId(userId);
+  };
+
+  const handleAudioCall = (userId, userName) => {
+    onCall?.(userId, userName, 'audio');
+    setExpandedUserId(null);
+  };
+
+  const handleVideoCall = (userId, userName) => {
+    onCall?.(userId, userName, 'video');
+    setExpandedUserId(null);
+  };
+
   return (
     <div
       ref={containerRef}
@@ -91,13 +106,34 @@ export function OnlineStudents({ onCall, profile, onSignOut }) {
                 <span style={styles.indicator}>●</span>
                 <span style={styles.name}>{user.name || user.id}</span>
               </div>
-              <button 
-                onClick={() => onCall?.(user.id, user.name || user.id)}
-                style={styles.callBtn}
-                title="Call this student"
-              >
-                📞
-              </button>
+              
+              {/* Call menu - show both audio and video options */}
+              {expandedUserId === user.id ? (
+                <div style={styles.callMenu} role="menu">
+                  <button 
+                    onClick={() => handleAudioCall(user.id, user.name || user.id)}
+                    style={styles.menuBtn}
+                    title="Audio call"
+                  >
+                    🎤
+                  </button>
+                  <button 
+                    onClick={() => handleVideoCall(user.id, user.name || user.id)}
+                    style={styles.menuBtn}
+                    title="Video call"
+                  >
+                    📹
+                  </button>
+                </div>
+              ) : (
+                <button 
+                  onClick={() => handleCallClick(user.id, user.name || user.id)}
+                  style={styles.callBtn}
+                  title="Call this student"
+                >
+                  📞
+                </button>
+              )}
             </div>
           ))
         )}
@@ -163,7 +199,7 @@ const styles = {
     alignItems: 'center',
     padding: '10px',
     borderBottom: '1px solid #333',
-    gap: '10px',
+    gap: '8px',
   },
   itemInfo: {
     display: 'flex',
@@ -192,6 +228,22 @@ const styles = {
     fontSize: '12px',
     fontWeight: 'bold',
     whiteSpace: 'nowrap',
+    transition: 'background-color 0.2s',
+  },
+  callMenu: {
+    display: 'flex',
+    gap: '5px',
+    flexShrink: 0,
+  },
+  menuBtn: {
+    background: '#3b82f6',
+    color: '#fff',
+    border: 'none',
+    padding: '6px 8px',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontSize: '12px',
+    fontWeight: 'bold',
     transition: 'background-color 0.2s',
   },
   signOutBtn: {
