@@ -59,6 +59,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { markSeen } from '../utils/chatLastSeen';
+import { usePresence } from '../lib/PresenceContext';
 
 const POLL_MS = 4000;
 const MAX_LEN = 300;
@@ -86,6 +87,15 @@ function renderMessageText(text) {
 
 const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, classLevels, onStartCall }, ref) {
   const tr = t || (s => s);
+
+  // ── Presence context (WebSocket-based) ────────────────────────────────────
+  let presenceContext;
+  try {
+    presenceContext = usePresence();
+  } catch {
+    // PresenceProvider not available, will fall back to polling
+    presenceContext = { onlineUsers: [], isUserOnline: () => false };
+  }
 
   // ── Floating widget state: 'closed' | 'open' | 'minimized' ───────────────
   // Lives independently of which portal tab is active — this is the whole
@@ -119,19 +129,27 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
   const [startingDmFor, setStartingDmFor] = useState(null);
   const [dmError, setDmError] = useState('');
 
-  // ── Presence — "who's online right now", polled independently of the
-  // picker being open, since it drives the online dot both in the picker
-  // list AND next to an already-open DM's name in the header. ──────────────
+  // ── Presence — "who's online right now"
+  // First tries WebSocket-based presence from context (real-time, no polling)
+  // Falls back to API polling if context unavailable ────────────────────────
   const [onlineIds, setOnlineIds] = useState(new Set());
+
+  // Update from context whenever it changes
   useEffect(() => {
-    // Nothing in the closed state (just the launcher button) shows an online
-    // dot, so there's no reason to keep this poll running in the background
-    // for every authed student on every tab, all day — it only matters while
-    // the picker or an open DM header is actually visible. This does NOT
-    // touch call-ringing: usePresenceHeartbeat (the write side, in
-    // CallManager) keeps running regardless of this widget's state, so a
-    // student stays callable even with the chat widget closed.
+    if (presenceContext?.onlineUsers?.length > 0) {
+      const ids = new Set(presenceContext.onlineUsers.map(u => String(u.id)));
+      setOnlineIds(ids);
+      console.log('[GroupChat] Updated online users from context:', ids.size);
+    }
+  }, [presenceContext?.onlineUsers]);
+
+  // Fallback to polling if context isn't available
+  useEffect(() => {
     if (!profile?.id || widgetState === 'closed') return;
+
+    // Only poll if we're NOT getting data from context
+    if (presenceContext?.onlineUsers?.length > 0) return;
+
     const poll = () => fetch('/api/student/presence?action=online')
       .then(r => r.json())
       .then(data => setOnlineIds(new Set((data.online || []).map(String))))
@@ -139,7 +157,7 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
     poll();
     const id = setInterval(poll, 15000);
     return () => clearInterval(id);
-  }, [profile?.id, widgetState]);
+  }, [profile?.id, widgetState, presenceContext?.onlineUsers?.length]);
 
   // The full list of classes to draw students from. Falls back to just the
   // student's own class if the caller doesn't pass classLevels in.

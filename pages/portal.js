@@ -3,6 +3,7 @@ import Script from 'next/script';
 import Link from 'next/link';
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { LanguageProvider, useLanguage, LanguageToggle } from '../lib/i18n';
+import { PresenceProvider } from '../lib/PresenceContext';
 import MatchTheFollowing from '../components/MatchTheFollowing';
 import GroupChat from '../components/GroupChat';
 import ChatNotifications from '../components/ChatNotifications';
@@ -1813,7 +1814,17 @@ function CompletedTopicsTab({ learnProgress, learningModules, subjects, stepsFor
 // ─────────────────────────────────────────────────────────────────────────────
 // COMPONENT
 // ─────────────────────────────────────────────────────────────────────────────
-function PortalInner() {
+export default function Portal({ profile: initialProfile }) {
+  return (
+    <PresenceProvider>
+      <LanguageProvider>
+        <PortalInner initialProfile={initialProfile} />
+      </LanguageProvider>
+    </PresenceProvider>
+  );
+}
+
+function PortalInner({ initialProfile }) {
   const { lang, t } = useLanguage();
   // The live Google Sheets behind /api/portal-config (Mathematics, Science,
   // English Grammar, Social Studies, General Knowledge, AI question banks)
@@ -4939,10 +4950,4 @@ function PortalInner() {
   );
 }
 
-export default function Portal() {
-  return (
-    <LanguageProvider>
-      <PortalInner />
-    </LanguageProvider>
-  );
-}
+
