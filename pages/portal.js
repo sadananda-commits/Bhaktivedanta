@@ -9,6 +9,8 @@ import GroupChat from '../components/GroupChat';
 import ChatNotifications from '../components/ChatNotifications';
 import AssignmentNotifications from '../components/AssignmentNotifications';
 import CallManager from '../components/CallManager';
+import { OnlineStudents } from '../components/OnlineStudents';
+import { CallMultipleDialog } from '../components/CallMultipleDialog';
 import { signOutBeacon } from '../hooks/usePresenceHeartbeat';
 import { requestCallNotificationPermission } from '../hooks/useIncomingCallRinger';
 import { QUIZ_LEARNING_MODULES_DA, QUIZ_LEARNING_STEPS_DA, QUIZ_ASSIGNMENT_SUBJECTS_DA } from '../lib/quizContentDA';
@@ -1876,6 +1878,7 @@ function PortalInner({ initialProfile }) {
   // up by CallManager to start ringing, then cleared back to null once
   // handled (see onCallRequestHandled).
   const [callRequest, setCallRequest] = useState(null);
+  const [showGroupCall, setShowGroupCall] = useState(false);
   const [loginErr,    setLoginErr]    = useState('');
   const [loading,     setLoading]     = useState(false);
   const [uploadName,  setUploadName]  = useState('');
@@ -1957,6 +1960,14 @@ function PortalInner({ initialProfile }) {
   useEffect(() => {
     setCfg(lang === 'da' ? danishFallback : FALLBACK);
   }, [lang]);
+
+  // ── Register student as online when they login to the portal ──
+  useEffect(() => {
+    if (profile?.id && authed) {
+      fetch(`/api/student/presence?action=online&studentId=${profile.id}`)
+        .catch(() => {/* non-critical */});
+    }
+  }, [profile?.id, authed]);
 
   // ── Announcement strip: fetch directly on mount from the known doc URL so
   // the ticker is always visible, even when the portal-config fetch is slow
@@ -3496,8 +3507,25 @@ function PortalInner({ initialProfile }) {
             profile={profile}
             t={t}
             classLevels={KNOWN_CLASSES}
-            onStartCall={(otherStudentId, otherStudentName) => setCallRequest({ calleeId: otherStudentId, calleeName: otherStudentName })}
+            onStartCall={(otherStudentId, otherStudentName, mode = 'audio', additionalCallees = []) => 
+              setCallRequest({ calleeId: otherStudentId, calleeName: otherStudentName, mode, additionalCallees })
+            }
           />
+
+          {/* Online Students List */}
+          <OnlineStudents 
+            onCall={(id, name) => setCallRequest({ calleeId: id, calleeName: name })}
+            profile={profile}
+          />
+
+          {/* Group Call Dialog */}
+          {showGroupCall && (
+            <CallMultipleDialog
+              profile={profile}
+              onCall={(req) => setCallRequest(req)}
+              onClose={() => setShowGroupCall(false)}
+            />
+          )}
 
           {/* Floating sidebar button — only visible in quiz mode (issue 6) */}
           <button
@@ -3507,6 +3535,32 @@ function PortalInner({ initialProfile }) {
             title="Open menu"
           >
             <i className={`fa-solid ${sidebarPeeking ? 'fa-xmark' : 'fa-bars'}`} />
+          </button>
+
+          {/* Group Call Button */}
+          <button
+            onClick={() => setShowGroupCall(true)}
+            title="Start a group call (3-4 students)"
+            style={{
+              position: 'fixed',
+              bottom: '20px',
+              right: '20px',
+              zIndex: 999,
+              background: '#22c55e',
+              color: '#fff',
+              border: 'none',
+              padding: '12px 16px',
+              borderRadius: '50px',
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: 'bold',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+            }}
+          >
+            👥 Group Call
           </button>
 
           {/* Tap-outside backdrop — closes peeking sidebar in quiz mode */}

@@ -2,26 +2,17 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { usePresence } from '../lib/PresenceContext';
 
 const ICE_SERVERS = [
-  { urls: 'stun:stun.relay.metered.ca:80' },
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
   {
-    urls: 'turn:global.relay.metered.ca:80',
-    username: '7ef80766d85666a9be534171',
-    credential: 'r+7EwMBQJg1wkZB0',
+    urls: 'turn:openrelay.metered.ca:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
   },
   {
-    urls: 'turn:global.relay.metered.ca:80?transport=tcp',
-    username: '7ef80766d85666a9be534171',
-    credential: 'r+7EwMBQJg1wkZB0',
-  },
-  {
-    urls: 'turn:global.relay.metered.ca:443',
-    username: '7ef80766d85666a9be534171',
-    credential: 'r+7EwMBQJg1wkZB0',
-  },
-  {
-    urls: 'turns:global.relay.metered.ca:443?transport=tcp',
-    username: '7ef80766d85666a9be534171',
-    credential: 'r+7EwMBQJg1wkZB0',
+    urls: 'turn:openrelay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
   },
 ];
 
@@ -43,14 +34,7 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
   useEffect(() => {
     if (!profile?.id) return;
 
-    // Use Railway WebSocket in production, localhost in development
-const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-const wsHost = process.env.NEXT_PUBLIC_WS_URL || `${wsProtocol}//${window.location.host}/api/ws/calls`;
-
-console.log('[CallManager] WebSocket URL:', wsHost);
-console.log('[CallManager] Env var:', process.env.NEXT_PUBLIC_WS_URL);
-
-const ws = new WebSocket(wsHost);
+    const ws = new WebSocket(`ws://localhost:3000/api/ws/calls`);
 
     ws.onopen = () => {
       console.log('[CallManager] WebSocket connected');
@@ -85,10 +69,10 @@ const ws = new WebSocket(wsHost);
       if (msg.online) updateOnlineUsers(msg.online);
     } 
     else if (type === 'incoming-call') {
-      const { callId, callerId, callerName, offer } = msg.payload;
-      console.log('[CallManager] Incoming call from:', callerName);
+      const { callId, callerId, callerName, offer, callType } = msg.payload;
+      console.log('[CallManager] Incoming', callType || 'audio', 'call from:', callerName);
       setPhase('incoming');
-      setCallInfo({ peerId: callerId, peerName: callerName, callId, offer });
+      setCallInfo({ peerId: callerId, peerName: callerName, callId, offer, callType: callType || 'audio' });
     } 
     else if (type === 'answer') {
       console.log('[CallManager] Received answer');
@@ -151,12 +135,21 @@ const ws = new WebSocket(wsHost);
     return pc;
   }, [profile.id]);
 
-  const startCall = useCallback(async (calleeId, calleeName) => {
+  const startCall = useCallback(async (calleeId, calleeName, mode = 'audio', additionalCallees = []) => {
     if (phase !== 'idle') return;
 
     try {
-      console.log('[CallManager] Starting call to:', calleeName);
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      console.log(`[CallManager] Starting ${mode} call to:`, calleeName);
+      
+      // Request media based on mode
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: true, 
+        video: mode === 'video' ? {
+          facingMode: 'user',
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+        } : false
+      });
       localStreamRef.current = stream;
 
       const pc = createPC(calleeId);
@@ -174,7 +167,15 @@ const ws = new WebSocket(wsHost);
       
       wsRef.current.send(JSON.stringify({
         type: 'offer',
-        payload: { callId, offer, calleeId, callerId: profile.id, callerName: profile.name }
+        payload: { 
+          callId, 
+          offer, 
+          calleeId, 
+          callType: mode,
+          callerId: profile.id, 
+          callerName: profile.name,
+          additionalCallees: additionalCallees.length > 0 ? additionalCallees : undefined
+        }
       }));
 
       console.log('[CallManager] ✅ Offer sent to server');
@@ -196,8 +197,15 @@ const ws = new WebSocket(wsHost);
     if (phase !== 'incoming' || !callInfo) return;
 
     try {
-      console.log('[CallManager] Accepting call');
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      console.log('[CallManager] Accepting', callInfo.callType, 'call');
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: true, 
+        video: callInfo.callType === 'video' ? {
+          facingMode: 'user',
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+        } : false
+      });
       localStreamRef.current = stream;
 
       const pc = createPC(callInfo.peerId);
@@ -314,7 +322,12 @@ const ws = new WebSocket(wsHost);
   // Handle callRequest from parent (GroupChat calling)
   useEffect(() => {
     if (callRequest?.calleeId) {
-      startCall(callRequest.calleeId, callRequest.calleeName);
+      startCall(
+        callRequest.calleeId, 
+        callRequest.calleeName,
+        callRequest.mode || 'audio',  // Support video mode
+        callRequest.additionalCallees || []  // Support group calls
+      );
       onCallRequestHandled?.();
     }
   }, [callRequest, startCall, onCallRequestHandled]);

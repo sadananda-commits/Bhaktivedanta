@@ -551,12 +551,21 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
               />
               <button
                 className="gc-call-btn"
-                onClick={() => otherIsOnline && otherMember.id && onStartCall?.(otherMember.id, otherMember.name)}
+                onClick={() => otherIsOnline && otherMember.id && onStartCall?.(otherMember.id, otherMember.name, 'audio')}
                 disabled={!otherIsOnline}
                 title={otherIsOnline ? `Call ${otherMember.name}` : `${otherMember.name} is offline`}
-                aria-label="Call"
+                aria-label="Audio Call"
               >
                 <i className="fa-solid fa-phone" />
+              </button>
+              <button
+                className="gc-call-btn"
+                onClick={() => otherIsOnline && otherMember.id && onStartCall?.(otherMember.id, otherMember.name, 'video')}
+                disabled={!otherIsOnline}
+                title={otherIsOnline ? `Video call ${otherMember.name}` : `${otherMember.name} is offline`}
+                aria-label="Video Call"
+              >
+                <i className="fa-solid fa-video" />
               </button>
             </>
           )}
