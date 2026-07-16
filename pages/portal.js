@@ -3516,6 +3516,7 @@ function PortalInner({ initialProfile }) {
           <OnlineStudents 
             onCall={(id, name) => setCallRequest({ calleeId: id, calleeName: name })}
             profile={profile}
+			onSignOut={handleLogout}  // ← ADD THIS
           />
 
           {/* Group Call Dialog */}
@@ -3616,7 +3617,7 @@ function PortalInner({ initialProfile }) {
             </nav>
             <div className="sb-ft">
               <div style={{marginBottom:'10px'}}><LanguageToggle style={{width:'100%',justifyContent:'center'}} /></div>
-              <button className="lo-btn" onClick={handleLogout}><i className="fa-solid fa-power-off" /> {S.SignOutLabel}</button>
+              
             </div>
           </aside>
 

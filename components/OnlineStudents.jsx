@@ -1,14 +1,86 @@
 import { usePresence } from '../lib/PresenceContext';
+import { useRef, useState, useEffect } from 'react';
 
-export function OnlineStudents({ onCall, profile }) {
+export function OnlineStudents({ onCall, profile, onSignOut }) {
   const { onlineUsers } = usePresence();
+  const [position, setPosition] = useState({ x: 20, y: typeof window !== 'undefined' ? window.innerHeight - 380 : 700 }); // Left side, bottom corner
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const containerRef = useRef(null);
+
+  // Adjust position on window resize to keep card in bottom-left
+  useEffect(() => {
+    const handleResize = () => {
+      setPosition(prev => ({
+        ...prev,
+        y: Math.min(prev.y, window.innerHeight - 380)
+      }));
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   const onlineStudents = onlineUsers.filter(u => u.id !== profile?.id);
 
+  const handleMouseDown = (e) => {
+    // Only drag from the title area, not from buttons
+    if (e.target.closest('button')) return;
+    
+    setIsDragging(true);
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (rect) {
+      setDragOffset({
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top,
+      });
+    }
+  };
+
+  // Properly manage global event listeners with useEffect
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseMove = (e) => {
+      setPosition({
+        x: e.clientX - dragOffset.x,
+        y: e.clientY - dragOffset.y,
+      });
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    // Add listeners when dragging starts
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    // Cleanup: Remove listeners when dragging ends or component unmounts
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging, dragOffset]);
+
   return (
-    <div style={styles.container}>
-      <h3 style={styles.title}>🟢 Online Now</h3>
-      <div style={styles.count}>{onlineStudents.length} student{onlineStudents.length !== 1 ? 's' : ''}</div>
+    <div
+      ref={containerRef}
+      style={{
+        ...styles.container,
+        left: `${position.x}px`,
+        top: `${position.y}px`,
+        cursor: isDragging ? 'grabbing' : 'grab',
+      }}
+      onMouseDown={handleMouseDown}
+    >
+      {/* Header with title */}
+      <div style={styles.header}>
+        <h3 style={styles.title}>🟢 Online Now</h3>
+        <div style={styles.count}>{onlineStudents.length}</div>
+      </div>
+
+      {/* Online students list */}
       <div style={styles.list}>
         {onlineStudents.length === 0 ? (
           <p style={styles.empty}>No one else online</p>
@@ -22,6 +94,7 @@ export function OnlineStudents({ onCall, profile }) {
               <button 
                 onClick={() => onCall?.(user.id, user.id)}
                 style={styles.callBtn}
+                title="Call this student"
               >
                 📞
               </button>
@@ -29,6 +102,16 @@ export function OnlineStudents({ onCall, profile }) {
           ))
         )}
       </div>
+
+      {/* Sign Out Button */}
+      <button
+        onClick={onSignOut}
+        style={styles.signOutBtn}
+        title="Sign out from portal"
+      >
+        <i className="fa-solid fa-power-off" style={styles.signOutIcon} />
+        Sign Out
+      </button>
     </div>
   );
 }
@@ -36,8 +119,6 @@ export function OnlineStudents({ onCall, profile }) {
 const styles = {
   container: {
     position: 'fixed',
-    right: '20px',
-    top: '20px',
     background: '#1B2130',
     color: '#fff',
     padding: '15px',
@@ -46,20 +127,35 @@ const styles = {
     zIndex: 1000,
     boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
     fontFamily: 'Arial, sans-serif',
+    userSelect: 'none',
+  },
+  header: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '10px',
+    paddingBottom: '8px',
+    borderBottom: '1px solid #333',
+    cursor: 'grab',
   },
   title: {
-    margin: '0 0 8px 0',
+    margin: '0',
     fontSize: '14px',
     fontWeight: 'bold',
+    cursor: 'grab',
   },
   count: {
     fontSize: '12px',
-    color: '#888',
-    marginBottom: '10px',
+    color: '#22c55e',
+    fontWeight: 'bold',
+    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+    padding: '2px 8px',
+    borderRadius: '12px',
   },
   list: {
-    maxHeight: '400px',
+    maxHeight: '300px',
     overflowY: 'auto',
+    marginBottom: '10px',
   },
   item: {
     display: 'flex',
@@ -96,12 +192,25 @@ const styles = {
     fontSize: '12px',
     fontWeight: 'bold',
     whiteSpace: 'nowrap',
+    transition: 'background-color 0.2s',
   },
-  empty: {
-    padding: '20px 10px',
-    textAlign: 'center',
-    color: '#888',
+  signOutBtn: {
+    width: '100%',
+    padding: '10px',
+    background: '#ef4444',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '6px',
+    cursor: 'pointer',
     fontSize: '13px',
-    margin: 0,
+    fontWeight: 'bold',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '8px',
+    transition: 'background-color 0.2s',
+  },
+  signOutIcon: {
+    marginRight: '4px',
   },
 };
