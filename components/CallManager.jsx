@@ -32,6 +32,10 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
     // Use Railway WebSocket in production, localhost in development
 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 const wsHost = process.env.NEXT_PUBLIC_WS_URL || `${wsProtocol}//${window.location.host}/api/ws/calls`;
+
+console.log('[CallManager] WebSocket URL:', wsHost);
+console.log('[CallManager] Env var:', process.env.NEXT_PUBLIC_WS_URL);
+
 const ws = new WebSocket(wsHost);
 
     ws.onopen = () => {
