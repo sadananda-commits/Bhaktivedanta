@@ -2,12 +2,26 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { usePresence } from '../lib/PresenceContext';
 
 const ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun.relay.metered.ca:80' },
   {
-    urls: ['turn:turnserver.studyo.app:3478'],
-    username: 'webrtc',
-    credential: 'webrtc',
+    urls: 'turn:global.relay.metered.ca:80',
+    username: '7ef80766d85666a9be534171',
+    credential: 'r+7EwMBQJg1wkZB0',
+  },
+  {
+    urls: 'turn:global.relay.metered.ca:80?transport=tcp',
+    username: '7ef80766d85666a9be534171',
+    credential: 'r+7EwMBQJg1wkZB0',
+  },
+  {
+    urls: 'turn:global.relay.metered.ca:443',
+    username: '7ef80766d85666a9be534171',
+    credential: 'r+7EwMBQJg1wkZB0',
+  },
+  {
+    urls: 'turns:global.relay.metered.ca:443?transport=tcp',
+    username: '7ef80766d85666a9be534171',
+    credential: 'r+7EwMBQJg1wkZB0',
   },
 ];
 
