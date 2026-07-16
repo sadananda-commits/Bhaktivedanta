@@ -2,17 +2,26 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { usePresence } from '../lib/PresenceContext';
 
 const ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun.relay.metered.ca:80' },
   {
-    urls: 'turn:openrelay.metered.ca:80',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
+    urls: 'turn:global.relay.metered.ca:80',
+    username: '7ef80766d85666a9be534171',
+    credential: 'r+7EwMBQJg1wkZB0',
   },
   {
-    urls: 'turn:openrelay.metered.ca:443',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
+    urls: 'turn:global.relay.metered.ca:80?transport=tcp',
+    username: '7ef80766d85666a9be534171',
+    credential: 'r+7EwMBQJg1wkZB0',
+  },
+  {
+    urls: 'turn:global.relay.metered.ca:443',
+    username: '7ef80766d85666a9be534171',
+    credential: 'r+7EwMBQJg1wkZB0',
+  },
+  {
+    urls: 'turns:global.relay.metered.ca:443?transport=tcp',
+    username: '7ef80766d85666a9be534171',
+    credential: 'r+7EwMBQJg1wkZB0',
   },
 ];
 
@@ -35,11 +44,13 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
     if (!profile?.id) return;
 
     // Use Railway WebSocket in production, localhost in development
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || `${wsProtocol}//${window.location.host}/api/ws/calls`;
-    
-    console.log('[CallManager] Connecting to:', wsUrl);
-    const ws = new WebSocket(wsUrl);
+const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+const wsHost = process.env.NEXT_PUBLIC_WS_URL || `${wsProtocol}//${window.location.host}/api/ws/calls`;
+
+console.log('[CallManager] WebSocket URL:', wsHost);
+console.log('[CallManager] Env var:', process.env.NEXT_PUBLIC_WS_URL);
+
+const ws = new WebSocket(wsHost);
 
     ws.onopen = () => {
       console.log('[CallManager] WebSocket connected');
@@ -203,6 +214,8 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
 
     try {
       console.log('[CallManager] Accepting', callInfo.callType, 'call');
+      
+      // Request media based on callType
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: true, 
         video: callInfo.callType === 'video' ? {
