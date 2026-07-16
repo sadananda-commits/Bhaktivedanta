@@ -29,28 +29,26 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
   const { updateOnlineUsers } = usePresence();
   
   const [phase, setPhase] = useState('idle'); // idle | outgoing | incoming | connecting | connected
-  const [callInfo, setCallInfo] = useState(null); // { peerId, peerName }
+  const [callInfo, setCallInfo] = useState(null); // { peerId, peerName, callType }
   const [duration, setDuration] = useState(0);
 
   const wsRef = useRef(null);
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
   const remoteVideoRef = useRef(null);
+  const localVideoRef = useRef(null);
   const timersRef = useRef({});
-  const bufferedCandidatesRef = useRef([]); // Buffer candidates until PC exists
+  const bufferedCandidatesRef = useRef([]);
 
   // ─── WebSocket Connection ───────────────────────────────────────────────
   useEffect(() => {
     if (!profile?.id) return;
 
-    // Use Railway WebSocket in production, localhost in development
-const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-const wsHost = process.env.NEXT_PUBLIC_WS_URL || `${wsProtocol}//${window.location.host}/api/ws/calls`;
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsHost = process.env.NEXT_PUBLIC_WS_URL || `${wsProtocol}//${window.location.host}/api/ws/calls`;
 
-console.log('[CallManager] WebSocket URL:', wsHost);
-console.log('[CallManager] Env var:', process.env.NEXT_PUBLIC_WS_URL);
-
-const ws = new WebSocket(wsHost);
+    console.log('[CallManager] WebSocket URL:', wsHost);
+    const ws = new WebSocket(wsHost);
 
     ws.onopen = () => {
       console.log('[CallManager] WebSocket connected');
@@ -128,8 +126,14 @@ const ws = new WebSocket(wsHost);
 
     pc.ontrack = (e) => {
       console.log('[CallManager] Track received:', e.track.kind);
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = e.streams[0];
+      if (e.track.kind === 'video') {
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = e.streams[0];
+        }
+      } else if (e.track.kind === 'audio') {
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = e.streams[0];
+        }
       }
     };
 
@@ -158,15 +162,22 @@ const ws = new WebSocket(wsHost);
       console.log(`[CallManager] Starting ${mode} call to:`, calleeName);
       
       // Request media based on mode
-      const stream = await navigator.mediaDevices.getUserMedia({ 
+      const constraints = { 
         audio: true, 
         video: mode === 'video' ? {
           facingMode: 'user',
           width: { ideal: 640 },
           height: { ideal: 480 },
         } : false
-      });
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       localStreamRef.current = stream;
+
+      // Display local video if in video mode
+      if (mode === 'video' && localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+      }
 
       const pc = createPC(calleeId);
       stream.getTracks().forEach(t => pc.addTrack(t, stream));
@@ -196,7 +207,7 @@ const ws = new WebSocket(wsHost);
 
       console.log('[CallManager] ✅ Offer sent to server');
       setPhase('outgoing');
-      setCallInfo({ peerId: calleeId, peerName: calleeName, callId });
+      setCallInfo({ peerId: calleeId, peerName: calleeName, callId, callType: mode });
 
       // Timeout
       timersRef.current.media = setTimeout(() => {
@@ -216,22 +227,29 @@ const ws = new WebSocket(wsHost);
       console.log('[CallManager] Accepting', callInfo.callType, 'call');
       
       // Request media based on callType
-      const stream = await navigator.mediaDevices.getUserMedia({ 
+      const constraints = { 
         audio: true, 
         video: callInfo.callType === 'video' ? {
           facingMode: 'user',
           width: { ideal: 640 },
           height: { ideal: 480 },
         } : false
-      });
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       localStreamRef.current = stream;
+
+      // Display local video if in video mode
+      if (callInfo.callType === 'video' && localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+      }
 
       const pc = createPC(callInfo.peerId);
       stream.getTracks().forEach(t => pc.addTrack(t, stream));
 
       await pc.setRemoteDescription(new RTCSessionDescription(callInfo.offer));
 
-      flushBufferedCandidates(); // Add any buffered candidates now
+      flushBufferedCandidates();
 
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
@@ -267,7 +285,7 @@ const ws = new WebSocket(wsHost);
       pc.setRemoteDescription(new RTCSessionDescription(answer))
         .then(() => {
           console.log('[CallManager] ✅ Answer set successfully');
-          flushBufferedCandidates(); // Add buffered candidates now
+          flushBufferedCandidates();
           setPhase('connecting');
         })
         .catch(e => console.error('[CallManager] ❌ Error setting answer:', e.message));
@@ -283,7 +301,6 @@ const ws = new WebSocket(wsHost);
         .then(() => console.log('[CallManager] ✅ Candidate added'))
         .catch(e => console.error('[CallManager] ❌ Error adding candidate:', e.message));
     } else {
-      // PC doesn't exist yet - buffer for later
       console.log('[CallManager] 📦 Buffering candidate (PC not created yet)');
       bufferedCandidatesRef.current.push(candidate);
     }
@@ -321,6 +338,8 @@ const ws = new WebSocket(wsHost);
     }
 
     localStreamRef.current?.getTracks().forEach(t => t.stop());
+    if (localVideoRef.current) localVideoRef.current.srcObject = null;
+    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
     pcRef.current?.close();
     Object.values(timersRef.current).forEach(clearTimeout);
 
@@ -343,8 +362,8 @@ const ws = new WebSocket(wsHost);
       startCall(
         callRequest.calleeId, 
         callRequest.calleeName,
-        callRequest.mode || 'audio',  // Support video mode
-        callRequest.additionalCallees || []  // Support group calls
+        callRequest.mode || 'audio',
+        callRequest.additionalCallees || []
       );
       onCallRequestHandled?.();
     }
@@ -355,7 +374,12 @@ const ws = new WebSocket(wsHost);
   // ─── Render ──────────────────────────────────────────────────────────────
   return (
     <>
+      {/* Audio element for audio calls and remote audio */}
       <audio ref={remoteVideoRef} autoPlay playsInline style={{ display: 'none' }} />
+      
+      {/* Video elements for video calls */}
+      <video ref={remoteVideoRef} autoPlay playsInline style={{ display: 'none' }} />
+      <video ref={localVideoRef} autoPlay playsInline muted style={{ display: 'none' }} />
 
       {/* Incoming call modal */}
       {phase === 'incoming' && callInfo && (
@@ -363,7 +387,9 @@ const ws = new WebSocket(wsHost);
           <div style={styles.modal}>
             <div style={styles.avatar}>📞</div>
             <div style={styles.name}>{callInfo.peerName}</div>
-            <div style={styles.status}>Incoming call...</div>
+            <div style={styles.status}>
+              Incoming {callInfo.callType === 'video' ? '📹 video' : '🎤 audio'} call...
+            </div>
             <div style={styles.buttons}>
               <button onClick={declineCall} style={{ ...styles.btn, ...styles.decline }}>
                 ✕ Decline
@@ -376,8 +402,41 @@ const ws = new WebSocket(wsHost);
         </div>
       )}
 
-      {/* Call bar */}
-      {(phase === 'outgoing' || phase === 'connecting' || phase === 'connected') && callInfo && (
+      {/* Video call UI - During connecting and connected phases */}
+      {(phase === 'connecting' || phase === 'connected') && callInfo?.callType === 'video' && (
+        <div style={styles.videoCallContainer}>
+          {/* Remote video (main, larger) */}
+          <video 
+            ref={remoteVideoRef} 
+            autoPlay 
+            playsInline
+            style={styles.remoteVideo}
+          />
+          
+          {/* Local video (small PIP in corner) */}
+          <video 
+            ref={localVideoRef} 
+            autoPlay 
+            playsInline 
+            muted
+            style={styles.localVideo}
+          />
+
+          {/* Call info and end button */}
+          <div style={styles.videoCallBar}>
+            <div style={styles.videoCallInfo}>
+              <span>{callInfo.peerName}</span>
+              <span style={styles.duration}>{fmt(duration)}</span>
+            </div>
+            <button onClick={() => endCall()} style={styles.endVideoBtn}>
+              📞 End Call
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Audio call bar - Only for outgoing/connecting/connected audio calls */}
+      {(phase === 'outgoing' || (phase === 'connecting' && callInfo?.callType !== 'video') || (phase === 'connected' && callInfo?.callType !== 'video')) && callInfo && (
         <div style={styles.bar}>
           <span>{callInfo.peerName}</span>
           <span>{phase === 'outgoing' ? 'Calling...' : phase === 'connecting' ? 'Connecting...' : fmt(duration)}</span>
@@ -465,5 +524,69 @@ const styles = {
     borderRadius: '20px',
     cursor: 'pointer',
     fontSize: '12px',
+  },
+  // Video call styles
+  videoCallContainer: {
+    position: 'fixed',
+    inset: 0,
+    background: '#000',
+    zIndex: 9998,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  remoteVideo: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'contain',
+    backgroundColor: '#000',
+  },
+  localVideo: {
+    position: 'absolute',
+    bottom: '80px',
+    right: '20px',
+    width: '150px',
+    height: '150px',
+    borderRadius: '10px',
+    border: '3px solid #fff',
+    objectFit: 'cover',
+    backgroundColor: '#1B2130',
+  },
+  videoCallBar: {
+    position: 'absolute',
+    bottom: '20px',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    background: 'rgba(27, 33, 48, 0.9)',
+    color: '#fff',
+    padding: '15px 25px',
+    borderRadius: '50px',
+    display: 'flex',
+    gap: '30px',
+    alignItems: 'center',
+    fontSize: '14px',
+    fontFamily: 'Arial, sans-serif',
+  },
+  videoCallInfo: {
+    display: 'flex',
+    gap: '20px',
+    alignItems: 'center',
+  },
+  duration: {
+    fontWeight: 'bold',
+    color: '#22c55e',
+    minWidth: '60px',
+    textAlign: 'right',
+  },
+  endVideoBtn: {
+    background: '#ef4444',
+    color: '#fff',
+    border: 'none',
+    padding: '10px 20px',
+    borderRadius: '20px',
+    cursor: 'pointer',
+    fontSize: '14px',
+    fontWeight: 'bold',
   },
 };

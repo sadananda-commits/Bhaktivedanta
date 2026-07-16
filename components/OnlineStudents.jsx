@@ -3,23 +3,10 @@ import { useRef, useState, useEffect } from 'react';
 
 export function OnlineStudents({ onCall, profile, onSignOut }) {
   const { onlineUsers } = usePresence();
-  const [position, setPosition] = useState({ x: 20, y: typeof window !== 'undefined' ? window.innerHeight - 380 : 700 }); // Left side, bottom corner
+  const [position, setPosition] = useState({ x: 5, y: typeof window !== 'undefined' ? window.innerHeight - 380 : 700 }); // Left side, bottom corner (further left)
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const containerRef = useRef(null);
-
-  // Adjust position on window resize to keep card in bottom-left
-  useEffect(() => {
-    const handleResize = () => {
-      setPosition(prev => ({
-        ...prev,
-        y: Math.min(prev.y, window.innerHeight - 380)
-      }));
-    };
-
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
 
   const onlineStudents = onlineUsers.filter(u => u.id !== profile?.id);
 
@@ -63,6 +50,19 @@ export function OnlineStudents({ onCall, profile, onSignOut }) {
     };
   }, [isDragging, dragOffset]);
 
+  // Adjust position on window resize to keep card in bottom-left
+  useEffect(() => {
+    const handleResize = () => {
+      setPosition(prev => ({
+        ...prev,
+        y: Math.min(prev.y, window.innerHeight - 380)
+      }));
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   return (
     <div
       ref={containerRef}
@@ -89,10 +89,10 @@ export function OnlineStudents({ onCall, profile, onSignOut }) {
             <div key={user.id} style={styles.item}>
               <div style={styles.itemInfo}>
                 <span style={styles.indicator}>●</span>
-                <span style={styles.name}>{user.id}</span>
+                <span style={styles.name}>{user.name || user.id}</span>
               </div>
               <button 
-                onClick={() => onCall?.(user.id, user.id)}
+                onClick={() => onCall?.(user.id, user.name || user.id)}
                 style={styles.callBtn}
                 title="Call this student"
               >

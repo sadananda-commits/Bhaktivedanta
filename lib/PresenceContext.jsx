@@ -3,7 +3,7 @@ import { createContext, useContext, useState, useCallback } from 'react';
 const PresenceContext = createContext();
 
 export function PresenceProvider({ children }) {
-  const [onlineUsers, setOnlineUsers] = useState([]); // array of { id, status }
+  const [onlineUsers, setOnlineUsers] = useState([]); // array of { id, name, status }
 
   const updateOnlineUsers = useCallback((users) => {
     setOnlineUsers(users || []);
