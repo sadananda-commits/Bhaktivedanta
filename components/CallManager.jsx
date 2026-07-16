@@ -34,7 +34,12 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
   useEffect(() => {
     if (!profile?.id) return;
 
-    const ws = new WebSocket(`ws://localhost:3000/api/ws/calls`);
+    // Use Railway WebSocket in production, localhost in development
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || `${wsProtocol}//${window.location.host}/api/ws/calls`;
+    
+    console.log('[CallManager] Connecting to:', wsUrl);
+    const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
       console.log('[CallManager] WebSocket connected');
