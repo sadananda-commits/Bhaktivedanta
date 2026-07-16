@@ -28,15 +28,13 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
   const localStreamRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const timersRef = useRef({});
+  const bufferedCandidatesRef = useRef([]); // Buffer candidates until PC exists
 
   // ─── WebSocket Connection ───────────────────────────────────────────────
   useEffect(() => {
     if (!profile?.id) return;
 
-    // Use Railway WebSocket in production, localhost in development
-const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-const wsHost = process.env.NEXT_PUBLIC_WS_URL || `${wsProtocol}//${window.location.host}/api/ws/calls`;
-const ws = new WebSocket(wsHost);
+    const ws = new WebSocket(`ws://localhost:3000/api/ws/calls`);
 
     ws.onopen = () => {
       console.log('[CallManager] WebSocket connected');
@@ -191,6 +189,8 @@ const ws = new WebSocket(wsHost);
 
       await pc.setRemoteDescription(new RTCSessionDescription(callInfo.offer));
 
+      flushBufferedCandidates(); // Add any buffered candidates now
+
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
@@ -225,6 +225,7 @@ const ws = new WebSocket(wsHost);
       pc.setRemoteDescription(new RTCSessionDescription(answer))
         .then(() => {
           console.log('[CallManager] ✅ Answer set successfully');
+          flushBufferedCandidates(); // Add buffered candidates now
           setPhase('connecting');
         })
         .catch(e => console.error('[CallManager] ❌ Error setting answer:', e.message));
@@ -240,7 +241,22 @@ const ws = new WebSocket(wsHost);
         .then(() => console.log('[CallManager] ✅ Candidate added'))
         .catch(e => console.error('[CallManager] ❌ Error adding candidate:', e.message));
     } else {
-      console.error('[CallManager] ❌ No PC to add candidate');
+      // PC doesn't exist yet - buffer for later
+      console.log('[CallManager] 📦 Buffering candidate (PC not created yet)');
+      bufferedCandidatesRef.current.push(candidate);
+    }
+  }
+
+  function flushBufferedCandidates() {
+    const pc = pcRef.current;
+    if (pc && bufferedCandidatesRef.current.length > 0) {
+      console.log(`[CallManager] 🔄 Flushing ${bufferedCandidatesRef.current.length} buffered candidates`);
+      bufferedCandidatesRef.current.forEach(candidate => {
+        pc.addIceCandidate(new RTCIceCandidate(candidate))
+          .then(() => console.log('[CallManager] ✅ Buffered candidate added'))
+          .catch(e => console.error('[CallManager] ❌ Error adding buffered candidate:', e.message));
+      });
+      bufferedCandidatesRef.current = [];
     }
   }
 
