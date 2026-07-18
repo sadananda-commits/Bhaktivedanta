@@ -7,6 +7,7 @@ export function OnlineStudents({ onCall, profile, onSignOut }) {
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [expandedUserId, setExpandedUserId] = useState(null);  // Track which user's menu is open
+  const [isOpen, setIsOpen] = useState(false); // starts minimized — just a small icon until clicked
   const containerRef = useRef(null);
 
   const onlineStudents = onlineUsers.filter(u => u.id !== profile?.id);
@@ -78,6 +79,25 @@ export function OnlineStudents({ onCall, profile, onSignOut }) {
     setExpandedUserId(null);
   };
 
+  // Minimized state: just a small round icon, bottom-left, with a badge
+  // showing how many classmates are online. Doesn't block any of the
+  // screen — tap it to open the full list.
+  if (!isOpen) {
+    return (
+      <button
+        onClick={() => setIsOpen(true)}
+        style={{ ...styles.fab, left: `${position.x}px`, top: `${position.y}px` }}
+        title="Who's online"
+        aria-label="Show online students"
+      >
+        <i className="fa-solid fa-user-group" style={styles.fabIcon} />
+        {onlineStudents.length > 0 && (
+          <span style={styles.fabBadge}>{onlineStudents.length}</span>
+        )}
+      </button>
+    );
+  }
+
   return (
     <div
       ref={containerRef}
@@ -89,10 +109,20 @@ export function OnlineStudents({ onCall, profile, onSignOut }) {
       }}
       onMouseDown={handleMouseDown}
     >
-      {/* Header with title */}
+      {/* Header with title + a close button to collapse back to the icon */}
       <div style={styles.header}>
         <h3 style={styles.title}>🟢 Online Now</h3>
-        <div style={styles.count}>{onlineStudents.length}</div>
+        <div style={styles.headerRight}>
+          <div style={styles.count}>{onlineStudents.length}</div>
+          <button
+            onClick={() => setIsOpen(false)}
+            style={styles.closeBtn}
+            title="Minimize"
+            aria-label="Minimize online list"
+          >
+            <i className="fa-solid fa-xmark" />
+          </button>
+        </div>
       </div>
 
       {/* Online students list */}
@@ -153,6 +183,55 @@ export function OnlineStudents({ onCall, profile, onSignOut }) {
 }
 
 const styles = {
+  fab: {
+    position: 'fixed',
+    width: '48px',
+    height: '48px',
+    borderRadius: '50%',
+    background: '#1B2130',
+    color: '#22c55e',
+    border: '2px solid #22c55e',
+    boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+    cursor: 'pointer',
+    zIndex: 1000,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fabIcon: {
+    fontSize: '18px',
+  },
+  fabBadge: {
+    position: 'absolute',
+    top: '-4px',
+    right: '-4px',
+    background: '#22c55e',
+    color: '#0b0f16',
+    fontSize: '10px',
+    fontWeight: 'bold',
+    minWidth: '18px',
+    height: '18px',
+    borderRadius: '9px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '0 4px',
+    border: '2px solid #1B2130',
+  },
+  headerRight: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  closeBtn: {
+    background: 'transparent',
+    color: 'rgba(255,255,255,.6)',
+    border: 'none',
+    cursor: 'pointer',
+    fontSize: '14px',
+    padding: '2px 4px',
+    lineHeight: 1,
+  },
   container: {
     position: 'fixed',
     background: '#1B2130',
