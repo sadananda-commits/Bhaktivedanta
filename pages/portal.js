@@ -614,13 +614,26 @@ function computeAchievements(SUBJ, learnProgress, t) {
 // INTERACTIVE LEARNING — topic grid, intro, step-by-step lesson, completion
 // ─────────────────────────────────────────────────────────────────────────────
 function ModuleStatusBadge({ progress, total, t }) {
+  // attempted: how many questions the student has answered so far in this
+  // chapter, however far along they are. remaining is derived from that vs
+  // total — total itself is nearly free (see LearningModulesGrid below), so
+  // this adds no extra fetches, just a bit more math on data already loaded.
+  const attempted = progress?.answers ? Object.keys(progress.answers).length : (progress?.attempted || 0);
+  const remaining = total > 0 ? Math.max(total - attempted, 0) : null;
+  const countSuffix = total > 0 ? ` · ${total} question${total === 1 ? '' : 's'}` : '';
+
   if (!progress || !progress.startedAt) {
-    return <span className="lm-status notstarted"><i className="fa-solid fa-circle-play" /> {t('p_not_started')}</span>;
+    return <span className="lm-status notstarted"><i className="fa-solid fa-circle-play" /> {t('p_not_started')}{countSuffix}</span>;
   }
   if (progress.completedAt) {
     return <span className="lm-status completed"><i className="fa-solid fa-circle-check" /> {t('p_completed')} · {progress.correct}/{total}</span>;
   }
-  return <span className="lm-status inprogress"><i className="fa-solid fa-hourglass-half" /> {progress.completionPct||0}% {t('p_in_progress')}</span>;
+  return (
+    <span className="lm-status inprogress">
+      <i className="fa-solid fa-hourglass-half" /> {progress.completionPct||0}% {t('p_in_progress')}
+      {remaining !== null ? ` · ${remaining} left` : ''}
+    </span>
+  );
 }
 
 function AssignmentSubjectsGrid({ subjects, statsFor, onOpen, t }) {
@@ -660,7 +673,15 @@ function LearningModulesGrid({ modules, stepsFor, progressMap, onOpen, t }) {
     <div className="lm-grid">
       {modules.map(m => {
         const id = m['Module ID'];
-        const total = stepsFor(id).length;
+        // Prefer a count column authored directly on the "Learning Modules"
+        // tab (e.g. "Total Questions") — this is what actually keeps this
+        // instant/cheap for a 100,000-row class, since it never requires
+        // counting (or even fetching) "Learning Steps" rows at all. Falls
+        // back to counting from the class's already-loaded summary-mode
+        // step data for any chapter that doesn't have the column filled in
+        // yet, so nothing breaks for sheets not yet updated.
+        const sheetCount = Number(m['Total Questions'] ?? m['Question Count'] ?? m['No of Questions'] ?? m['# Questions'] ?? '');
+        const total = Number.isFinite(sheetCount) && sheetCount > 0 ? sheetCount : stepsFor(id).length;
         const progress = progressMap[id];
         return (
           <div key={id} className="lm-card" role="button" tabIndex={0}
