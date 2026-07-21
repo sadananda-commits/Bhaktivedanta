@@ -95,47 +95,7 @@ function parseCSV(text) {
   return rows;
 }
 
-// A single cell holding a pasted/embedded image (as a base64 data URI) can
-// easily be 50-200KB of text. Multiplied across thousands of rows in a
-// content-heavy class, that's what produced a payload too large for
-// JSON.stringify to even build (RangeError: Invalid string length) — which
-// silently dropped ALL learningSteps to [] for that class, breaking the
-// question view for every student in it, not just the parent dropdown.
-// Cap any single cell's length; anything longer almost certainly isn't
-// meant to be inline in a spreadsheet cell anyway (paste an actual image
-// into the Sheet cell + a Drive share link into a text cell instead, or a
-// direct image URL, rather than a raw data: URI).
-const MAX_CELL_LENGTH = 8000;
-
-// Sending a huge payload isn't just slow — if it's big enough, JSON.stringify
-// itself throws RangeError: Invalid string length, and that throw happens
-// SYNCHRONOUSLY inside res.json(). If that call isn't wrapped, it crashes
-// the request with no response at all (worse than a graceful empty one) —
-// this is what was happening on the cache-hit fast path below, which ran
-// before the handler's main try/catch and had no protection whatsoever.
-// This helper makes every res.json() call in this file crash-proof, with a
-// fallback payload to send instead if the primary one can't be serialized.
-function safeJsonSend(res, payload, fallback) {
-  try {
-    const body = JSON.stringify(payload);
-    res.setHeader('Content-Type', 'application/json');
-    return res.status(200).send(body);
-  } catch (err) {
-    console.error('[portal-config] ✗ Payload too large to serialize (RangeError expected here) — sending fallback instead:', err.message);
-    try {
-      const fallbackBody = JSON.stringify(fallback);
-      res.setHeader('Content-Type', 'application/json');
-      return res.status(200).send(fallbackBody);
-    } catch (err2) {
-      // Even the fallback didn't fit — this should be essentially
-      // impossible (fallback is always small), but never crash regardless.
-      console.error('[portal-config] ✗ Even fallback payload failed to serialize:', err2.message);
-      return res.status(200).send('{"assignmentSubjects":[],"learningModules":[],"learningSteps":[],"classLevels":[],"config":{}}');
-    }
-  }
-}
-
-function rowsToObjects(rows, tabName) {
+function rowsToObjects(rows) {
   if (!rows.length) return [];
   const headers = rows[0].map(h => h.trim());
   const out = [];
@@ -146,12 +106,6 @@ function rowsToObjects(rows, tabName) {
     headers.forEach((h, i) => {
       if (!h) return;
       let val = (cells[i] !== undefined ? cells[i] : '').trim();
-      if (val.length > MAX_CELL_LENGTH) {
-        console.warn(`[portal-config] ⚠ Oversized cell truncated — "${tabName}" row ${r + 1}, column "${h}" (${val.length} chars). This is almost certainly a pasted image/base64 blob — replace it with a Drive/image URL in the Sheet.`);
-        val = val.startsWith('data:image')
-          ? '[image removed — too large for the portal; replace with a URL in the Sheet]'
-          : val.slice(0, MAX_CELL_LENGTH) + '… [truncated, was too large]';
-      }
       if      (h === 'Active')                                val = val.toUpperCase() === 'TRUE';
       else if (h === 'Display Order' || h === 'Step Number') val = val === '' ? '' : Number(val);
       obj[h] = val;
@@ -177,7 +131,7 @@ async function fetchTab(sheetId, tabName, overrideUrl) {
       console.warn(`[portal-config]   URL: https://docs.google.com/spreadsheets/d/${sheetId}/edit`);
       return [];
     }
-    const rows = rowsToObjects(parseCSV(text), tabName);
+    const rows = rowsToObjects(parseCSV(text));
     console.log(`[portal-config] ✓ ${rows.length} rows — "${tabName}" from ${sheetId}`);
     return rows;
   } catch (err) {
@@ -235,40 +189,25 @@ const DEFAULT_CLASS_LEVELS = [
 // DEFAULT_CLASS_LEVELS if the tab is missing/empty so the portal still works
 // on day one, before the admin has created the tab.
 async function buildClassLevels() {
-  // Everything below is wrapped defensively — this function used to be the
-  // one place in the whole file that could still throw and take down the
-  // ENTIRE /api/portal-config route with an unhandled 500, because it runs
-  // before the main try/catch in the handler. Every other tab-fetch in this
-  // file (see fetchTab) already degrades to [] on any failure; this brings
-  // buildClassLevels in line with that same "never throw" contract so one
-  // bad row (e.g. a "Class Levels" row with an unexpected/blank cell that
-  // trips up .trim()) can no longer take out the class AND subject
-  // dropdowns together the way it just did (500 → client falls back to no
-  // data at all for either dropdown).
-  try {
-    const rows = await fetchTab(MASTER_SHEET_ID, 'Class Levels');
-    const active = rows
-      .filter(r => r && r['Active'] !== false && String(r['Class'] || '').trim())
-      .map(r => ({
-        Class:            String(r['Class'] || '').trim(),
-        Label:            String(r['Label'] || '').trim() || String(r['Class'] || '').trim(),
-        Age:              String(r['Age'] || '').trim(),
-        Aliases:          String(r['Aliases'] || '').trim(),
-        'Display Order':  r['Display Order'] === '' || r['Display Order'] === undefined || Number.isNaN(Number(r['Display Order'])) ? 999 : Number(r['Display Order']),
-        Active:           true,
-      }))
-      .sort((a, b) => (a['Display Order'] || 999) - (b['Display Order'] || 999));
+  const rows = await fetchTab(MASTER_SHEET_ID, 'Class Levels');
+  const active = rows
+    .filter(r => r['Active'] !== false && (r['Class'] || '').trim())
+    .map(r => ({
+      Class:            r['Class'].trim(),
+      Label:            (r['Label'] || '').trim() || r['Class'].trim(),
+      Age:              (r['Age'] || '').trim(),
+      Aliases:          (r['Aliases'] || '').trim(),
+      'Display Order':  r['Display Order'] === '' || r['Display Order'] === undefined ? 999 : Number(r['Display Order']),
+      Active:           true,
+    }))
+    .sort((a, b) => (a['Display Order'] || 999) - (b['Display Order'] || 999));
 
-    if (active.length === 0) {
-      console.warn('[portal-config] ⚠ "Class Levels" tab not found or empty — using built-in default of 12 classes (Class 0–10 + Adult).');
-      console.warn('[portal-config]   To manage classes from the Sheet, add a "Class Levels" tab with columns: Class | Label | Age | Aliases | Display Order | Active');
-      return DEFAULT_CLASS_LEVELS;
-    }
-    return active;
-  } catch (err) {
-    console.error('[portal-config] ✗ buildClassLevels threw unexpectedly — falling back to built-in default of 12 classes instead of 500ing the whole route:', err);
+  if (active.length === 0) {
+    console.warn('[portal-config] ⚠ "Class Levels" tab not found or empty — using built-in default of 12 classes (Class 0–10 + Adult).');
+    console.warn('[portal-config]   To manage classes from the Sheet, add a "Class Levels" tab with columns: Class | Label | Age | Aliases | Display Order | Active');
     return DEFAULT_CLASS_LEVELS;
   }
+  return active;
 }
 
 // ── normalizeClass ────────────────────────────────────────────────────────────
@@ -319,88 +258,18 @@ export default async function handler(req, res) {
   // Resolve the Class Levels list first (cheap, tiny tab) — needed both to
   // normalise the incoming ?classLevel= param AND to send back to the client
   // so the UI can render class pills/dropdowns without hardcoding them.
-  // buildClassLevels() is now internally try/catch-guarded (see above) and
-  // will not throw, but requestedClass/cacheKey resolution below is cheap
-  // pure logic wrapped defensively too, so nothing before the main try
-  // block can 500 the whole route the way it did previously.
   const classLevels = await buildClassLevels();
 
-  let requestedClass = null;
-  let cacheKey = '__all__';
-  try {
-    const rawClass = req.query.classLevel || '';
-    requestedClass = normalizeClass(rawClass, classLevels); // null = no filter / unrecognised
-    cacheKey = requestedClass || '__all__';
-  } catch (err) {
-    console.error('[portal-config] ✗ Failed to normalise ?classLevel= param — treating as unfiltered:', err);
-  }
-
-  // ── classLevelsOnly short-circuit ────────────────────────────────────────
-  // Some callers (e.g. the Parent Portal's global chapterConfig fetch, which
-  // only ever reads chapterConfig.classLevels) don't need ANY subject/module/
-  // step data at all. Previously that call still went through the full path
-  // below — with no ?classLevel= filter, classMatches() treats every mapped
-  // sheet as visible, so it fetched EVERY class's EVERY subject sheet just
-  // to read a 12-row "Class Levels" tab. Skip all of that entirely here.
-  const classLevelsOnly = req.query.classLevelsOnly === '1' || req.query.classLevelsOnly === 'true';
-  if (classLevelsOnly) {
-    return safeJsonSend(res, { assignmentSubjects: [], learningModules: [], learningSteps: [], classLevels, config: {} }, { assignmentSubjects: [], learningModules: [], learningSteps: [], classLevels, config: {} });
-  }
-
-  // ── summary mode ──────────────────────────────────────────────────────────
-  // The Parent Portal's chapter-assignment builder only ever reads
-  // learningSteps[i]['Module ID'] (to COUNT steps per chapter — see
-  // stepCountByModule in ChapterAssignmentBuilder). It never needs question
-  // text, answer options, images, or any other column. For classes with a
-  // lot of content, shipping every full step row can produce a payload too
-  // large for JSON.stringify to build at all (RangeError: Invalid string
-  // length), which silently degrades to an empty response. When ?summary=1
-  // is passed, strip learningSteps down to just the fields the builder
-  // actually uses before it ever gets JSON-stringified. Full mode (used by
-  // whatever renders actual question content) is completely unaffected —
-  // and is cached separately from summary mode via the cache key below.
-  const summaryMode = req.query.summary === '1' || req.query.summary === 'true';
-
-  // ── NEW: drill-down scoping ───────────────────────────────────────────────
-  // This is the real, permanent fix for "payload too big to send" at scale
-  // (a class can now have 100,000+ step rows). Instead of always fetching
-  // and returning every mapped subject sheet's full Learning Modules +
-  // Learning Steps for the whole class, the response is scoped to exactly
-  // what the caller asked for:
-  //   ?classLevel=X                        → subjects list only (cheap —
-  //                                           read straight off "Class
-  //                                           Subject Map", no per-sheet
-  //                                           fetch at all)
-  //   ?classLevel=X&subject=Y              → chapters (Learning Modules) for
-  //                                           that ONE subject's sheet only
-  //                                           — Learning Steps not fetched
-  //   ?classLevel=X&subject=Y&moduleId=Z   → questions (Learning Steps) for
-  //                                           that ONE chapter only, from
-  //                                           that one sheet
-  // Payload size is now bounded by "one chapter's worth of questions",
-  // never by total rows in a class — so it can't blow past JSON.stringify's
-  // limit no matter how large the Sheet grows.
-  //
-  // Backward compatibility: if neither ?subject nor ?moduleId is passed,
-  // this falls through to the original "fetch every sheet for the class"
-  // behaviour further down (still summary-mode-aware), so any caller not
-  // yet migrated to the drill-down flow keeps working exactly as before.
-  const requestedSubject  = (req.query.subject  || '').trim() || null;
-  const requestedModuleId = (req.query.moduleId || '').trim() || null;
-  const subjectsOnly = req.query.subjectsOnly === '1' || req.query.subjectsOnly === 'true';
-  // 'legacy' is the safe default — a plain ?classLevel=X with none of the
-  // new params behaves EXACTLY as before (full fetch of every mapped sheet),
-  // so parent-portal's existing ?summary=1 calls and any other not-yet-
-  // migrated caller are completely unaffected by this change.
-  const drillMode = requestedModuleId ? 'questions' : requestedSubject ? 'chapters' : subjectsOnly ? 'subjects' : 'legacy';
-
-  const effectiveCacheKey = [cacheKey, requestedSubject || '', requestedModuleId || '', subjectsOnly ? 'subjectsOnly' : '', summaryMode ? 'summary' : ''].join('::');
+  // Resolve and normalise the requested class level
+  const rawClass      = req.query.classLevel || '';
+  const requestedClass = normalizeClass(rawClass, classLevels); // null = no filter / unrecognised
+  const cacheKey      = requestedClass || '__all__';
 
   // ── Serve from cache if still fresh ────────────────────────────────────────
-  const cached = RESPONSE_CACHE.get(effectiveCacheKey);
+  const cached = RESPONSE_CACHE.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
-    console.log(`[portal-config] ⚡ Cache hit — "${effectiveCacheKey}"`);
-    return safeJsonSend(res, cached.data, { assignmentSubjects: [], learningModules: [], learningSteps: [], classLevels, config: {} });
+    console.log(`[portal-config] ⚡ Cache hit — "${cacheKey}"`);
+    return res.status(200).json(cached.data);
   }
 
   try {
@@ -559,32 +428,6 @@ export default async function handler(req, res) {
         });
     }
 
-    console.log(`[portal-config] Sheets mapped for class "${requestedClass || 'all'}":`, sheetEntries.map(e => `${e.subject}${e.class ? ` (${e.class})` : ''}`).join(', ') || '(none)');
-
-    // ── 'subjects' drill-mode short-circuit ──────────────────────────────────
-    // Everything needed for a subject list is already sitting in
-    // assignmentSubjects above, built entirely from the small "Class Subject
-    // Map" tab — return now, before touching a single per-subject sheet.
-    if (drillMode === 'subjects') {
-      const payload = { assignmentSubjects, learningModules: [], learningSteps: [], classLevels, config };
-      RESPONSE_CACHE.set(effectiveCacheKey, { data: payload, expiresAt: Date.now() + CACHE_TTL_MS });
-      return safeJsonSend(res, payload, { assignmentSubjects: [], learningModules: [], learningSteps: [], classLevels, config: {} });
-    }
-
-    // ── 'chapters' / 'questions' drill-mode scoping ──────────────────────────
-    // Narrow sheetEntries down to just the sheet(s) mapped to the requested
-    // subject, so the fetch loop below only ever downloads ONE subject's
-    // content instead of all of them (usually exactly one sheet, since each
-    // class+subject combo maps to one Sheet ID — but handled as a list in
-    // case a subject is intentionally split across more than one sheet).
-    if (drillMode === 'chapters' || drillMode === 'questions') {
-      const wantSubject = requestedSubject.trim().toLowerCase();
-      sheetEntries = sheetEntries.filter(e => e.subject.trim().toLowerCase() === wantSubject);
-      if (sheetEntries.length === 0) {
-        console.warn(`[portal-config] ⚠ No sheet mapped for subject "${requestedSubject}" in class "${requestedClass || 'all'}" — check "Class Subject Map".`);
-      }
-    }
-
     console.log('[portal-config] Sheets to fetch:', sheetEntries.map(e => `${e.subject}${e.class ? ` (${e.class})` : ''}`).join(', ') || '(none)');
 
     if (sheetEntries.length === 0) {
@@ -605,15 +448,10 @@ export default async function handler(req, res) {
       return tabFetchCache.get(key);
     };
 
-    // In 'chapters' mode we only need the chapter list — never fetch/parse
-    // the (potentially 100,000-row) Learning Steps tab at all when all
-    // that's needed is a chapter picker.
-    const needSteps = drillMode !== 'chapters';
-
     const results = await Promise.all(
       sheetEntries.flatMap(entry => [
         fetchTabCached(entry.sheetId, 'Learning Modules'),
-        needSteps ? fetchTabCached(entry.sheetId, 'Learning Steps') : Promise.resolve([]),
+        fetchTabCached(entry.sheetId, 'Learning Steps'),
       ])
     );
 
@@ -627,42 +465,17 @@ export default async function handler(req, res) {
       results[i * 2 + 1].forEach(s => learningSteps.push({ ...s, Class: entry.class }));
     });
 
-    // In 'questions' mode, narrow down to exactly the requested chapter —
-    // this is what keeps the response bounded to "one chapter's worth of
-    // questions" regardless of how many rows the whole class/subject has.
-    if (drillMode === 'questions') {
-      const wantModule = requestedModuleId.trim().toLowerCase();
-      learningModules = learningModules.filter(m => (m['Module ID'] || '').trim().toLowerCase() === wantModule);
-      learningSteps   = learningSteps.filter(s => (s['Module ID'] || '').trim().toLowerCase() === wantModule);
-      if (learningSteps.length === 0) {
-        console.warn(`[portal-config] ⚠ No steps found for Module ID "${requestedModuleId}" (subject "${requestedSubject}", class "${requestedClass || 'all'}").`);
-      }
-    }
+    console.log(`[portal-config] ✓ ${learningModules.length} modules, ${learningSteps.length} steps loaded across ${sheetEntries.length} mapped sheet(s) (class: "${requestedClass || 'all'}")`);
 
-    console.log(`[portal-config] ✓ ${learningModules.length} modules, ${learningSteps.length} steps loaded across ${sheetEntries.length} mapped sheet(s) (class: "${requestedClass || 'all'}", mode: "${drillMode}")`);
-
-    // In summary mode, drop every column except the one thing counting
-    // needs — this is what keeps a content-heavy class (e.g. rows with
-    // large pasted answer/image content) from blowing past JSON.stringify's
-    // string-length limit when all a caller wants is a per-chapter count.
-    // (Summary mode and the new drill-down modes are orthogonal — summary
-    // is still useful for a caller that wants ALL subjects' counts at once,
-    // e.g. the Parent Portal builder, without switching to per-chapter
-    // fetches.)
-    const responseSteps = summaryMode
-      ? learningSteps.map(s => ({ 'Module ID': s['Module ID'], Class: s.Class }))
-      : learningSteps;
-
-    const payload = { assignmentSubjects, learningModules, learningSteps: responseSteps, classLevels, config };
-    const fallbackPayload = { assignmentSubjects: [], learningModules: [], learningSteps: [], classLevels, config: {} };
+    const payload = { assignmentSubjects, learningModules, learningSteps, classLevels, config };
 
     // ── Store in cache ────────────────────────────────────────────────────────
-    RESPONSE_CACHE.set(effectiveCacheKey, { data: payload, expiresAt: Date.now() + CACHE_TTL_MS });
+    RESPONSE_CACHE.set(cacheKey, { data: payload, expiresAt: Date.now() + CACHE_TTL_MS });
 
-    safeJsonSend(res, payload, fallbackPayload);
+    res.status(200).json(payload);
 
   } catch (err) {
     console.error('[portal-config] ✗ Unexpected error:', err);
-    safeJsonSend(res, { assignmentSubjects: [], learningModules: [], learningSteps: [], classLevels, config: {} }, { assignmentSubjects: [], learningModules: [], learningSteps: [], classLevels: [], config: {} });
+    res.status(200).json({ assignmentSubjects: [], learningModules: [], learningSteps: [], classLevels, config: {} });
   }
 }

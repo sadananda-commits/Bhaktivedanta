@@ -230,7 +230,7 @@ function ChapterAssignmentBuilder({ student, chapterConfig, chapterConfigLoading
     let cancelled = false;
     setClassConfigLoading(true);
     setClassConfigError(false);
-    fetch(`/api/portal-config?classLevel=${encodeURIComponent(selClass)}&summary=1`, { cache: 'no-store' })
+    fetch(`/api/portal-config?classLevel=${encodeURIComponent(selClass)}`, { cache: 'no-store' })
       .then(r => r.json())
       .then(data => {
         if (cancelled) return;
@@ -642,7 +642,7 @@ function ParentPortalInner() {
   useEffect(() => {
     if (!authed) return;
     setChapterConfigLoading(true);
-    fetch('/api/portal-config?classLevelsOnly=1', { cache: 'no-store' })
+    fetch('/api/portal-config', { cache: 'no-store' })
       .then(r => r.json())
       .then(data => setChapterConfig(data))
       .catch(() => setChapterConfig(null))

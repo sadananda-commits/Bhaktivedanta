@@ -28,36 +28,11 @@ import {
 // Pass the student's classLevel so the server can pre-filter modules/subjects.
 // Omit classLevel (or pass '') to receive the full unfiltered dataset — used
 // during the "set your class" onboarding flow, before a class is known.
-//
-// `summary: true` asks the server to return learningSteps trimmed to just
-// {Module ID, Class} instead of full question content. This is what keeps
-// this call safe no matter how large a class's question bank grows (a class
-// can now have 100,000+ rows) — every place that reads cfg.learningSteps
-// only ever calls `.length` or filters by Module ID to COUNT steps (grid
-// badges, progress %, the Completed Topics tab), never the actual question
-// text, so summary mode is a no-op for those and removes the one thing that
-// was blowing past the response-size limit.
-async function fetchAllSheetData(classLevel, { summary = false } = {}) {
-  const qs = new URLSearchParams();
-  if (classLevel) qs.set('classLevel', classLevel);
-  if (summary) qs.set('summary', '1');
-  const params = qs.toString();
-  const res = await fetch(`/api/portal-config${params ? `?${params}` : ''}`, { cache: 'no-store' });
+async function fetchAllSheetData(classLevel) {
+  const params = classLevel ? `?classLevel=${encodeURIComponent(classLevel)}` : '';
+  const res = await fetch(`/api/portal-config${params}`, { cache: 'no-store' });
   if (!res.ok) throw new Error(`portal-config API returned ${res.status}`);
   return res.json();
-}
-
-// Fetches FULL question content (Question/Options/Explanation/etc — the
-// fields summary mode strips out) for exactly ONE chapter. This is the
-// on-demand counterpart to the summary fetch above: it's only ever called
-// the moment a student actually opens a specific chapter to play it, so the
-// payload is always bounded by "one chapter's worth of questions" and can
-// never grow with the size of the rest of the class's question bank.
-async function fetchChapterSteps(classLevel, subject, moduleId) {
-  const qs = new URLSearchParams({ classLevel: classLevel || '', subject: subject || '', moduleId: moduleId || '' });
-  const res = await fetch(`/api/portal-config?${qs.toString()}`, { cache: 'no-store' });
-  if (!res.ok) throw new Error(`portal-config API returned ${res.status}`);
-  return res.json(); // { learningModules: [thatOneModule], learningSteps: [...fullSteps] }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1922,34 +1897,6 @@ function PortalInner({ initialProfile }) {
   const [activeModuleId, setActiveModuleId] = useState(null);
   const [activeAssignmentSubject, setActiveAssignmentSubject] = useState(null);
   const [shareCopied, setShareCopied] = useState(false); // "Copied!" flash on the quiz share button
-
-  // ── On-demand FULL question content for whichever chapter is currently
-  // open ──────────────────────────────────────────────────────────────────
-  // cfg.learningSteps only ever holds counts now (summary mode — see
-  // fetchAllSheetData above), so actually playing a chapter needs its own
-  // fetch for the real Question/Options/Explanation content. Cached by
-  // Module ID so re-opening the same chapter in one session doesn't refetch.
-  // This is what keeps a 100,000-row class from ever needing to be sent in
-  // one response — only the one chapter a student is actually looking at.
-  const [chapterStepsCache, setChapterStepsCache] = useState({}); // { [moduleId]: steps[] }
-  const [chapterStepsLoading, setChapterStepsLoading] = useState(null); // moduleId currently loading, or null
-  const [chapterStepsError, setChapterStepsError] = useState(null);
-
-  const loadChapterSteps = useCallback((classLevel, subject, moduleId) => {
-    if (!moduleId || chapterStepsCache[moduleId]) return;
-    setChapterStepsLoading(moduleId);
-    setChapterStepsError(null);
-    fetchChapterSteps(classLevel, subject, moduleId)
-      .then(data => {
-        setChapterStepsCache(prev => ({ ...prev, [moduleId]: data?.learningSteps || [] }));
-      })
-      .catch(err => {
-        console.error('[portal] Failed to load chapter questions:', err.message);
-        setChapterStepsError(moduleId);
-      })
-      .finally(() => setChapterStepsLoading(cur => (cur === moduleId ? null : cur)));
-  }, [chapterStepsCache]);
-
   // ── ASSIGNMENTS FOR YOU — chapter-specific homework a parent/teacher
   // assigned from the Parent Portal builder table. Kept entirely separate
   // from activeModuleId/activeAssignmentSubject (the open Question Bank
@@ -2050,7 +1997,7 @@ function PortalInner({ initialProfile }) {
     // profile.classLevel is '' until login (or localStorage restore), which
     // causes the API to return everything — that's fine because the onboarding
     // gate below already blocks the Assignments tab until a class is set.
-    fetchAllSheetData(profile.classLevel, { summary: true })
+    fetchAllSheetData(profile.classLevel)
       .then(data => {
         // Guard against a race: if the user switched language again while
         // this fetch was in flight, a stale response for the OLD language
@@ -2153,7 +2100,7 @@ function PortalInner({ initialProfile }) {
     if (crossClassCfg) return; // already loaded
     let cancelled = false;
     setCrossClassLoading(true);
-    fetchAllSheetData('', { summary: true }) // no classLevel param = full, unfiltered dataset, counts only
+    fetchAllSheetData('') // no classLevel param = full, unfiltered dataset
       .then(data => {
         if (cancelled) return;
         if (data && typeof data === 'object') setCrossClassCfg(data);
@@ -2167,23 +2114,6 @@ function PortalInner({ initialProfile }) {
   // populated in English and would otherwise leak stale English data into
   // a Danish session if the user previewed a class, then switched language.
   useEffect(() => { setCrossClassCfg(null); }, [lang]);
-
-  // ── Load FULL question content the moment a chapter is actually opened ──
-  // (Question Bank flow: subject picked, then a topic card clicked.)
-  useEffect(() => {
-    if (!activeModuleId) return;
-    loadChapterSteps(profile.classLevel, activeAssignmentSubject, activeModuleId);
-  }, [activeModuleId, activeAssignmentSubject, profile.classLevel, loadChapterSteps]);
-
-  // ── Same, for the "Assignments for you" flow (parent/teacher-assigned
-  // chapters) — uses the ClassLevel/Subject already present on the
-  // assignment row rather than the student's current profile, since a
-  // teacher can assign a chapter from any class.
-  useEffect(() => {
-    if (!activeMyAssignmentId) return;
-    const row = myAssignments.find(a => a.AssignmentID === activeMyAssignmentId);
-    if (row) loadChapterSteps(row.ClassLevel || profile.classLevel, row.Subject, row.ModuleID);
-  }, [activeMyAssignmentId, myAssignments, profile.classLevel, loadChapterSteps]);
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
   const S          = cfg.settings;
@@ -4647,39 +4577,20 @@ function PortalInner({ initialProfile }) {
                       <i className={`fa-solid ${shareCopied ? 'fa-check' : 'fa-share-nodes'}`} /> {shareCopied ? 'Copied!' : 'Share'}
                     </button>
                   </div>
-                  {(() => {
-                    const fullSteps = chapterStepsCache[activeModuleId];
-                    if (!fullSteps && chapterStepsLoading === activeModuleId) {
-                      return <div className="content"><div className="card" style={{textAlign:'center'}}>Loading questions…</div></div>;
-                    }
-                    if (!fullSteps && chapterStepsError === activeModuleId) {
-                      return (
-                        <div className="content">
-                          <div className="card" style={{textAlign:'center',borderColor:'rgba(239,68,68,.25)'}}>
-                            <i className="fa-solid fa-triangle-exclamation" style={{fontSize:'24px',color:'#f87171',marginBottom:'10px',display:'block'}} />
-                            Couldn't load this chapter's questions. <button className="lp-back" onClick={()=>loadChapterSteps(profile.classLevel, activeAssignmentSubject, activeModuleId)}>Try again</button>
-                          </div>
-                        </div>
-                      );
-                    }
-                    if (!fullSteps) return null; // effect hasn't kicked off the fetch yet
-                    return (
-                      <LearningModulePlayer
-                        key={activeModuleId}
-                        module={ASSIGN_LMOD.find(m=>m['Module ID']===activeModuleId)}
-                        steps={fullSteps}
-                        progress={learnProgress[activeModuleId]}
-                        onSave={patch=>saveLearnProgress(activeModuleId, patch)}
-                        onAnswer={recordAnswer}
-                        onExit={()=>setActiveModuleId(null)}
-                        backLabel={`${t('p_back_to')} ${activeAssignmentSubject} ${t('p_topics_suffix')}`}
-                        soundConfig={cfg.config || {}}
-                        timerConfig={cfg.config || {}}
-                        profile={profile}
-                        t={t}
-                      />
-                    );
-                  })()}
+                  <LearningModulePlayer
+                    key={activeModuleId}
+                    module={ASSIGN_LMOD.find(m=>m['Module ID']===activeModuleId)}
+                    steps={stepsFor(activeModuleId)}
+                    progress={learnProgress[activeModuleId]}
+                    onSave={patch=>saveLearnProgress(activeModuleId, patch)}
+                    onAnswer={recordAnswer}
+                    onExit={()=>setActiveModuleId(null)}
+                    backLabel={`${t('p_back_to')} ${activeAssignmentSubject} ${t('p_topics_suffix')}`}
+                    soundConfig={cfg.config || {}}
+                    timerConfig={cfg.config || {}}
+                    profile={profile}
+                    t={t}
+                  />
                 </>
               ))}
             </>)}
@@ -4697,15 +4608,12 @@ function PortalInner({ initialProfile }) {
                 const row = myAssignments.find(a => a.AssignmentID === activeMyAssignmentId);
                 if (!row) { setActiveMyAssignmentId(null); return null; }
                 const module = LMOD.find(m => m['Module ID'] === row.ModuleID);
-                // Cheap count check — cfg.learningSteps is summary-mode (Module
-                // ID + Class only), so .length is accurate without needing the
-                // full-content fetch just to check whether any questions exist.
-                const stepCount = stepsFor(row.ModuleID).length;
+                const steps  = stepsFor(row.ModuleID);
 
                 // Self-diagnosing guard: rather than diving into the quiz player
                 // and hitting its generic "no steps yet" message, explain exactly
                 // what's missing so the student/teacher knows what to fix.
-                if (!module || stepCount === 0) {
+                if (!module || steps.length === 0) {
                   return (
                     <>
                       <div className="asgn-breadcrumb">
@@ -4729,38 +4637,6 @@ function PortalInner({ initialProfile }) {
                     </>
                   );
                 }
-
-                const steps = chapterStepsCache[row.ModuleID];
-                if (!steps && chapterStepsLoading === row.ModuleID) {
-                  return (
-                    <>
-                      <div className="asgn-breadcrumb">
-                        <span className="asgn-crumb" onClick={()=>setActiveMyAssignmentId(null)}>Assignments for you</span>
-                        <i className="fa-solid fa-chevron-right asgn-crumb-sep" />
-                        <span className="asgn-crumb-current">{row.ChapterTitle || row.ModuleID}</span>
-                      </div>
-                      <div className="content"><div className="card" style={{textAlign:'center'}}>Loading questions…</div></div>
-                    </>
-                  );
-                }
-                if (!steps && chapterStepsError === row.ModuleID) {
-                  return (
-                    <>
-                      <div className="asgn-breadcrumb">
-                        <span className="asgn-crumb" onClick={()=>setActiveMyAssignmentId(null)}>Assignments for you</span>
-                        <i className="fa-solid fa-chevron-right asgn-crumb-sep" />
-                        <span className="asgn-crumb-current">{row.ChapterTitle || row.ModuleID}</span>
-                      </div>
-                      <div className="content">
-                        <div className="card" style={{textAlign:'center',borderColor:'rgba(239,68,68,.25)'}}>
-                          <i className="fa-solid fa-triangle-exclamation" style={{fontSize:'24px',color:'#f87171',marginBottom:'10px',display:'block'}} />
-                          Couldn't load this chapter's questions. <button className="lp-back" onClick={()=>loadChapterSteps(row.ClassLevel || profile.classLevel, row.Subject, row.ModuleID)}>Try again</button>
-                        </div>
-                      </div>
-                    </>
-                  );
-                }
-                if (!steps) return null; // effect hasn't kicked off the fetch yet
 
                 return (
                   <>
