@@ -25,6 +25,47 @@ const ICE_SERVERS = [
   },
 ];
 
+// Loops a simple tone pattern via the Web Audio API — no audio asset file
+// needed, so nothing to host or preload. Used for both the receiver's
+// incoming-call ring and the caller's ringback ("it's ringing on their
+// end"). Returns a stop() function; calling it tears down the AudioContext
+// cleanly so nothing keeps humming in the background after the call state
+// moves on.
+function startTonePattern({ freqs, onMs, offMs, gainLevel = 0.15 }) {
+  if (typeof window === 'undefined' || !(window.AudioContext || window.webkitAudioContext)) return () => {};
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  let stopped = false;
+  let timeoutId;
+
+  const ringOnce = () => {
+    if (stopped) return;
+    const now = ctx.currentTime;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(gainLevel, now + 0.05);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + onMs / 1000);
+    gain.connect(ctx.destination);
+
+    freqs.forEach(f => {
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = f;
+      osc.connect(gain);
+      osc.start(now);
+      osc.stop(now + onMs / 1000 + 0.02);
+    });
+
+    timeoutId = setTimeout(ringOnce, onMs + offMs);
+  };
+  ringOnce();
+
+  return () => {
+    stopped = true;
+    clearTimeout(timeoutId);
+    ctx.close().catch(() => {});
+  };
+}
+
 export default function CallManager({ profile, callRequest, onCallRequestHandled }) {
   const { updateOnlineUsers } = usePresence();
   
@@ -77,6 +118,30 @@ export default function CallManager({ profile, callRequest, onCallRequestHandled
       if (ws.readyState === 1) ws.close();
     };
   }, [profile?.id, profile?.name]);
+
+  // ─── Ringtone (receiver) + ringback (caller) ────────────────────────────
+  // Purely audio feedback tied to `phase` — starts the instant the phase
+  // enters 'incoming' or 'outgoing' and is torn down the instant it leaves
+  // (accepted, declined, answered, or timed out), so it can never keep
+  // playing after the call has moved on.
+  useEffect(() => {
+    let stopAudio = () => {};
+
+    if (phase === 'incoming') {
+      // Urgent-feeling ring for the person receiving the call.
+      stopAudio = startTonePattern({ freqs: [880], onMs: 700, offMs: 900, gainLevel: 0.18 });
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        navigator.vibrate([400, 200, 400, 200, 400]); // buzzes even if the phone's on silent-but-not-DND
+      }
+    } else if (phase === 'outgoing') {
+      // Classic ringback cadence (2s tone, 4s silence, dual 440/480Hz) so
+      // the caller knows the call actually reached the other side and is
+      // ringing there — not just sitting connecting silently.
+      stopAudio = startTonePattern({ freqs: [440, 480], onMs: 2000, offMs: 4000, gainLevel: 0.1 });
+    }
+
+    return () => stopAudio();
+  }, [phase]);
 
   function handleMessage(msg, ws) {
     const { type } = msg;

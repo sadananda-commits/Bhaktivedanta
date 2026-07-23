@@ -120,7 +120,13 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
   // Class and name are two SEPARATE filters (not one combined search box)
   // so a student can narrow "Class 4B" down to a short list first, then
   // find the name — much easier to scan than one long alphabetical roster.
+  //
+  // pickerMode toggles the same picker UI between two jobs: 'dm' (tap a
+  // name, start chatting immediately — old behaviour) and 'group' (check
+  // off several names, name the group, then Create). Same roster fetch,
+  // same filters, just a different footer action.
   const [showPicker, setShowPicker] = useState(false);
+  const [pickerMode, setPickerMode] = useState('dm'); // 'dm' | 'group'
   const [classmates, setClassmates] = useState([]); // merged roster across all classes, each tagged with .classLevel
   const [classmatesLoading, setClassmatesLoading] = useState(false);
   const [classmatesError, setClassmatesError] = useState('');
@@ -128,6 +134,12 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
   const [classmateFilter, setClassmateFilter] = useState(''); // name search text
   const [startingDmFor, setStartingDmFor] = useState(null);
   const [dmError, setDmError] = useState('');
+
+  const MAX_GROUP_MEMBERS = 10; // including the creator — mirrors the backend cap
+  const [selectedMemberIds, setSelectedMemberIds] = useState(new Set()); // group mode only
+  const [groupNameInput, setGroupNameInput] = useState('');
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const [groupError, setGroupError] = useState('');
 
   // ── Presence — "who's online right now"
   // First tries WebSocket-based presence from context (real-time, no polling)
@@ -196,18 +208,6 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
       setWidgetState('open');
     }
   }, [focusGroupId]);
-
-  // ── Imperative API for anything outside this component (nav bar, a
-  // notification toast, etc.) to pop the widget open/closed without going
-  // through props. This is the preferred integration point — see header. ──
-  useImperativeHandle(ref, () => ({
-    open: (groupId) => {
-      if (groupId) setActiveGroupId(groupId);
-      setWidgetState('open');
-    },
-    close: () => setWidgetState('closed'),
-    minimize: () => setWidgetState('minimized'),
-  }), []);
 
   // ── Fetch messages: full history on group switch, incremental after ──────
   const fetchMessages = useCallback((groupId, since) => {
@@ -287,11 +287,15 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
       .finally(() => setSending(false));
   };
 
-  const openPicker = () => {
-    setShowPicker(prev => !prev);
+  const openPicker = (mode = 'dm') => {
+    setPickerMode(mode);
+    setShowPicker(prev => (prev && pickerMode === mode) ? false : true);
     setDmError('');
+    setGroupError('');
     setClassmateFilter('');
     setClassFilter('');
+    setSelectedMemberIds(new Set());
+    setGroupNameInput('');
     if (classmates.length || !classLevelOptions.length) return; // already loaded, or nothing to look up
 
     setClassmatesLoading(true);
@@ -312,8 +316,51 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
       .finally(() => setClassmatesLoading(false));
   };
 
-  const startDm = (classmate) => {
-    setStartingDmFor(classmate.studentId);
+  const toggleMember = (studentId) => {
+    setSelectedMemberIds(prev => {
+      const next = new Set(prev);
+      if (next.has(studentId)) {
+        next.delete(studentId);
+      } else if (next.size + 1 < MAX_GROUP_MEMBERS) { // +1 accounts for the creator
+        next.add(studentId);
+      }
+      return next;
+    });
+  };
+
+  const createGroupChat = () => {
+    if (selectedMemberIds.size === 0) return;
+    setCreatingGroup(true);
+    setGroupError('');
+    fetch('/api/student/chat-dm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'createGroup',
+        studentId: profile.id,
+        studentName: profile.name,
+        groupName: groupNameInput.trim(),
+        memberIds: Array.from(selectedMemberIds),
+        classLevel: profile.classLevel,
+      }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.error || !data.groupId) {
+          setGroupError(data.error || 'Could not create the group — try again');
+          return;
+        }
+        setGroups(prev => [...prev, { groupId: data.groupId, groupName: data.groupName, type: 'Group', memberIds: [profile.id, ...Array.from(selectedMemberIds)] }]);
+        setActiveGroupId(data.groupId);
+        setShowPicker(false);
+        setWidgetState('open');
+      })
+      .catch(() => setGroupError('Could not create the group — try again'))
+      .finally(() => setCreatingGroup(false));
+  };
+
+  const startDm = useCallback((otherStudentId, otherStudentName) => {
+    setStartingDmFor(otherStudentId);
     setDmError('');
     fetch('/api/student/chat-dm', {
       method: 'POST',
@@ -321,8 +368,8 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
       body: JSON.stringify({
         studentId: profile.id,
         studentName: profile.name,
-        otherStudentId: classmate.studentId,
-        otherStudentName: classmate.studentName,
+        otherStudentId,
+        otherStudentName,
         classLevel: profile.classLevel,
       }),
     })
@@ -334,13 +381,34 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
         }
         setGroups(prev => prev.some(g => g.groupId === data.groupId)
           ? prev
-          : [...prev, { groupId: data.groupId, groupName: data.groupName || classmate.studentName, type: 'DM' }]);
+          : [...prev, { groupId: data.groupId, groupName: data.groupName || otherStudentName, type: 'DM' }]);
         setActiveGroupId(data.groupId);
         setShowPicker(false);
+        setWidgetState('open'); // in case this was called from outside while closed/minimized (e.g. the online-students list)
       })
       .catch(() => setDmError('Could not start that chat — try again'))
       .finally(() => setStartingDmFor(null));
-  };
+  }, [profile.id, profile.name, profile.classLevel]);
+
+  // ── Imperative API for anything outside this component (nav bar, a
+  // notification toast, etc.) to pop the widget open/closed without going
+  // through props. This is the preferred integration point — see header.
+  // Placed after startDm's definition (not right after focusGroupId's
+  // effect, where it was originally) since startDmWith references it —
+  // a const used inside a callback here still needs to exist by render
+  // time, even though the callback itself only runs later. ──────────────
+  useImperativeHandle(ref, () => ({
+    open: (groupId) => {
+      if (groupId) setActiveGroupId(groupId);
+      setWidgetState('open');
+    },
+    close: () => setWidgetState('closed'),
+    minimize: () => setWidgetState('minimized'),
+    // Lets anything outside (e.g. the online-students list) start or jump
+    // straight to a 1:1 chat with a specific student, without going through
+    // the picker UI — reuses the exact same find-or-create logic.
+    startDmWith: (otherId, otherName) => startDm(otherId, otherName),
+  }), [startDm]);
 
   const report = (messageId) => {
     if (reportedIds.has(messageId)) return;
@@ -373,12 +441,36 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
   const picker = showPicker && (
     <div className="gc-picker">
       <div className="gc-picker-head">
-        <span>Start a new chat</span>
+        <div className="gc-picker-tabs">
+          <button
+            className={`gc-picker-tab${pickerMode === 'dm' ? ' active' : ''}`}
+            onClick={() => openPicker('dm')}
+          >
+            1:1 chat
+          </button>
+          <button
+            className={`gc-picker-tab${pickerMode === 'group' ? ' active' : ''}`}
+            onClick={() => openPicker('group')}
+          >
+            New group
+          </button>
+        </div>
         <button className="gc-picker-close" onClick={() => setShowPicker(false)} aria-label="Close">
           <i className="fa-solid fa-xmark" />
         </button>
       </div>
       {multiClass && <div className="gc-picker-hint">Pick a class, then find their name</div>}
+
+      {pickerMode === 'group' && (
+        <input
+          className="gc-picker-groupname"
+          type="text"
+          value={groupNameInput}
+          onChange={e => setGroupNameInput(e.target.value)}
+          placeholder="Name this group (optional)"
+          maxLength={60}
+        />
+      )}
 
       {!classmatesLoading && !classmatesError && classmates.length > 0 && (
         <div className="gc-picker-filters">
@@ -400,7 +492,7 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
               value={classmateFilter}
               onChange={e => setClassmateFilter(e.target.value)}
               placeholder="Search by name…"
-              autoFocus={!multiClass}
+              autoFocus={!multiClass && pickerMode === 'dm'}
             />
             {classmateFilter && (
               <button className="gc-picker-search-clear" onClick={() => setClassmateFilter('')} aria-label="Clear search">
@@ -427,15 +519,35 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
         </div>
       ) : (
         <>
-          {(classFilter || classmateFilter) && (
-            <div className="gc-picker-count">{filteredClassmates.length} student{filteredClassmates.length === 1 ? '' : 's'}</div>
+          {(classFilter || classmateFilter || pickerMode === 'group') && (
+            <div className="gc-picker-count">
+              {pickerMode === 'group'
+                ? `${selectedMemberIds.size} of ${MAX_GROUP_MEMBERS - 1} selected`
+                : `${filteredClassmates.length} student${filteredClassmates.length === 1 ? '' : 's'}`}
+            </div>
           )}
           <div className="gc-picker-list">
-            {filteredClassmates.map(c => (
+            {filteredClassmates.map(c => pickerMode === 'group' ? (
+              <label key={c.studentId} className="gc-picker-item gc-picker-item-check">
+                <input
+                  type="checkbox"
+                  checked={selectedMemberIds.has(c.studentId)}
+                  onChange={() => toggleMember(c.studentId)}
+                  disabled={!selectedMemberIds.has(c.studentId) && selectedMemberIds.size + 1 >= MAX_GROUP_MEMBERS}
+                />
+                <span className="gc-picker-avatar"><i className="fa-solid fa-user" /></span>
+                <span
+                  className={`gc-status-dot${onlineIds.has(String(c.studentId)) ? ' online' : ''}`}
+                  title={onlineIds.has(String(c.studentId)) ? 'Online now' : 'Offline'}
+                />
+                <span className="gc-picker-name">{c.studentName}</span>
+                {c.classLevel && multiClass && !classFilter && <span className="gc-picker-class-badge">{c.classLevel}</span>}
+              </label>
+            ) : (
               <button
                 key={c.studentId}
                 className="gc-picker-item"
-                onClick={() => startDm(c)}
+                onClick={() => startDm(c.studentId, c.studentName)}
                 disabled={startingDmFor === c.studentId}
               >
                 <span className="gc-picker-avatar"><i className="fa-solid fa-user" /></span>
@@ -453,7 +565,21 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
           </div>
         </>
       )}
+      {pickerMode === 'group' && classmates.length > 0 && (
+        <div className="gc-picker-groupfooter">
+          <button
+            className="gc-create-group-btn"
+            onClick={createGroupChat}
+            disabled={selectedMemberIds.size === 0 || creatingGroup}
+          >
+            {creatingGroup
+              ? <><i className="fa-solid fa-spinner fa-spin" /> Creating…</>
+              : <><i className="fa-solid fa-people-group" /> Create group{selectedMemberIds.size ? ` (${selectedMemberIds.size + 1})` : ''}</>}
+          </button>
+        </div>
+      )}
       {dmError && <div className="gc-error" style={{ margin: '0 10px 10px' }}><i className="fa-solid fa-circle-exclamation" /> {dmError}</div>}
+      {groupError && <div className="gc-error" style={{ margin: '0 10px 10px' }}><i className="fa-solid fa-circle-exclamation" /> {groupError}</div>}
     </div>
   );
 
@@ -570,10 +696,16 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
             </>
           )}
           {canStartDm && (
-            <button className={`gc-newchat-btn${showPicker ? ' active' : ''}`} onClick={openPicker} aria-label="Start a new chat">
-              <i className="fa-solid fa-user-plus" />
-              <span className="gc-newchat-label">New chat</span>
-            </button>
+            <>
+              <button className={`gc-newchat-btn${showPicker && pickerMode === 'dm' ? ' active' : ''}`} onClick={() => openPicker('dm')} aria-label="Start a new chat">
+                <i className="fa-solid fa-user-plus" />
+                <span className="gc-newchat-label">New chat</span>
+              </button>
+              <button className={`gc-newchat-btn${showPicker && pickerMode === 'group' ? ' active' : ''}`} onClick={() => openPicker('group')} aria-label="Start a new group">
+                <i className="fa-solid fa-people-group" />
+                <span className="gc-newchat-label">New group</span>
+              </button>
+            </>
           )}
           <div className="gc-window-controls">
             <button className="gc-window-btn" onClick={() => setWidgetState('minimized')} aria-label="Minimize chat">
@@ -598,9 +730,14 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
             <>
               <div>You don't have any chats yet.</div>
               {canStartDm ? (
-                <button className="gc-empty-cta" onClick={openPicker}>
-                  <i className="fa-solid fa-user-plus" /> Start your first chat
-                </button>
+                <>
+                  <button className="gc-empty-cta" onClick={() => openPicker('dm')}>
+                    <i className="fa-solid fa-user-plus" /> Start your first chat
+                  </button>
+                  <button className="gc-empty-cta" style={{ marginLeft: 8 }} onClick={() => openPicker('group')}>
+                    <i className="fa-solid fa-people-group" /> Start a group
+                  </button>
+                </>
               ) : (
                 <div style={{ marginTop: 4 }}>Ask your teacher to add you to a chat group.</div>
               )}
@@ -795,6 +932,32 @@ const GroupChat = forwardRef(function GroupChat({ profile, t, focusGroupId, clas
           font-size: 13px; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
         }
         .gc-picker-close:hover { color: var(--ink); }
+
+        .gc-picker-tabs { display: flex; gap: 4px; }
+        .gc-picker-tab {
+          border: none; background: none; cursor: pointer;
+          font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+          color: var(--ink-muted); padding: 4px 10px; border-radius: 999px;
+        }
+        .gc-picker-tab.active { background: var(--brand); color: #fff; }
+
+        .gc-picker-groupname {
+          margin: 0 12px 8px; padding: 8px 12px; border: 1.5px solid var(--border); border-radius: 10px;
+          font-size: 13px; font-family: inherit; color: var(--ink); background: var(--paper);
+          outline: none; width: calc(100% - 24px);
+        }
+        .gc-picker-groupname:focus { border-color: var(--brand); }
+
+        .gc-picker-item-check { gap: 10px; }
+        .gc-picker-item-check input[type="checkbox"] { width: 15px; height: 15px; cursor: pointer; flex-shrink: 0; }
+
+        .gc-picker-groupfooter { padding: 4px 12px 12px; }
+        .gc-create-group-btn {
+          width: 100%; padding: 10px; border: none; border-radius: 10px;
+          background: var(--brand); color: #fff; font-weight: 800; font-size: 13.5px;
+          font-family: inherit; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
+        }
+        .gc-create-group-btn:disabled { background: #D7D3C9; cursor: default; }
 
         .gc-picker-hint {
           margin: -4px 16px 8px; font-size: 11.5px; color: var(--ink-muted);

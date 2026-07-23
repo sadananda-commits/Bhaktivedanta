@@ -50,6 +50,30 @@ export default async function handler(req, res) {
 
   if (req.method === 'POST') {
     if (!CHAT_SCRIPT_URL) return res.status(500).json({ error: 'CHAT_APPS_SCRIPT_URL is not configured' });
+
+    // Self-serve multi-person group creation — a separate action on this
+    // same route so the client doesn't need a third endpoint. Distinct from
+    // the DM path below (which always takes exactly one otherStudentId).
+    if (req.body?.action === 'createGroup') {
+      const { studentId, studentName, groupName, memberIds, classLevel } = req.body || {};
+      if (!studentId) return res.status(400).json({ error: 'studentId is required' });
+      if (!Array.isArray(memberIds) || memberIds.length === 0) {
+        return res.status(400).json({ error: 'Pick at least one classmate to add' });
+      }
+      try {
+        const r = await fetch(CHAT_SCRIPT_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'createGroup', studentId, studentName, groupName, memberIds, classLevel }),
+        });
+        const data = await r.json();
+        return res.status(200).json(data);
+      } catch (err) {
+        console.error('[chat-dm] createGroup error:', err.message);
+        return res.status(500).json({ error: 'Could not create group — try again' });
+      }
+    }
+
     const { studentId, studentName, otherStudentId, otherStudentName, classLevel } = req.body || {};
     if (!studentId || !otherStudentId) return res.status(400).json({ error: 'studentId and otherStudentId are required' });
     try {

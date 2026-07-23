@@ -1,7 +1,7 @@
 import { usePresence } from '../lib/PresenceContext';
 import { useRef, useState, useEffect } from 'react';
 
-export function OnlineStudents({ onCall, profile, onSignOut }) {
+export function OnlineStudents({ onCall, onChat, profile, onSignOut }) {
   const { onlineUsers } = usePresence();
   const [position, setPosition] = useState({ x: 5, y: typeof window !== 'undefined' ? window.innerHeight - 380 : 700 });
   const [isDragging, setIsDragging] = useState(false);
@@ -137,33 +137,44 @@ export function OnlineStudents({ onCall, profile, onSignOut }) {
                 <span style={styles.name}>{user.name || user.id}</span>
               </div>
               
-              {/* Call menu - show both audio and video options */}
-              {expandedUserId === user.id ? (
-                <div style={styles.callMenu} role="menu">
-                  <button 
-                    onClick={() => handleAudioCall(user.id, user.name || user.id)}
-                    style={styles.menuBtn}
-                    title="Audio call"
-                  >
-                    🎤
-                  </button>
-                  <button 
-                    onClick={() => handleVideoCall(user.id, user.name || user.id)}
-                    style={styles.menuBtn}
-                    title="Video call"
-                  >
-                    📹
-                  </button>
-                </div>
-              ) : (
-                <button 
-                  onClick={() => handleCallClick(user.id, user.name || user.id)}
-                  style={styles.callBtn}
-                  title="Call this student"
+              <div style={styles.itemActions}>
+                {/* Chat directly with this student — opens/creates their DM */}
+                <button
+                  onClick={() => onChat?.(user.id, user.name || user.id)}
+                  style={styles.chatBtn}
+                  title={`Chat with ${user.name || user.id}`}
                 >
-                  📞
+                  💬
                 </button>
-              )}
+
+                {/* Call menu - show both audio and video options */}
+                {expandedUserId === user.id ? (
+                  <div style={styles.callMenu} role="menu">
+                    <button 
+                      onClick={() => handleAudioCall(user.id, user.name || user.id)}
+                      style={styles.menuBtn}
+                      title="Audio call"
+                    >
+                      🎤
+                    </button>
+                    <button 
+                      onClick={() => handleVideoCall(user.id, user.name || user.id)}
+                      style={styles.menuBtn}
+                      title="Video call"
+                    >
+                      📹
+                    </button>
+                  </div>
+                ) : (
+                  <button 
+                    onClick={() => handleCallClick(user.id, user.name || user.id)}
+                    style={styles.callBtn}
+                    title="Call this student"
+                  >
+                    📞
+                  </button>
+                )}
+              </div>
             </div>
           ))
         )}
@@ -296,6 +307,24 @@ const styles = {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
+  },
+  itemActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    flexShrink: 0,
+  },
+  chatBtn: {
+    background: '#00C6A7',
+    color: '#fff',
+    border: 'none',
+    padding: '6px 10px',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontSize: '12px',
+    fontWeight: 'bold',
+    whiteSpace: 'nowrap',
+    transition: 'background-color 0.2s',
   },
   callBtn: {
     background: '#22c55e',

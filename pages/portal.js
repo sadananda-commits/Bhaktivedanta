@@ -3606,6 +3606,7 @@ function PortalInner({ initialProfile }) {
           {/* Online Students List */}
           <OnlineStudents 
             onCall={(id, name, mode) => setCallRequest({ calleeId: id, calleeName: name, mode: mode || 'audio' })}
+            onChat={(id, name) => chatRef.current?.startDmWith(id, name)}
             profile={profile}
 			onSignOut={handleLogout}  // ← ADD THIS
           />
