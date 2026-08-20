@@ -1038,7 +1038,8 @@ function ParentPortalInner() {
                   <LanguageToggle />
                 </div>
 
-                {ptUser?.role === 'Teacher' && (
+				
+                 {(ptUser?.role === 'Teacher' || ptUser?.role === 'Parent') && (
                   <button
                     className={`ptsb-student${mainView==='quizzes' ? ' active' : ''}`}
                     style={{ width: '100%', marginBottom: '10px' }}
