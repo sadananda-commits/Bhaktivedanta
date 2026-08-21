@@ -13,9 +13,10 @@
 //                  explicitly continues.
 // Plus lobby (QR code join) and final results (CSV export) — unchanged.
 //
-// hostEmail MUST be the actual logged-in teacher/parent's identity —
-// Code.gs re-validates it against the quiz's "Host Email" column on every
-// action, so a mismatch fails loudly rather than silently no-op.
+// hostCode MUST be the host code set for THIS quiz at creation time —
+// Code.gs re-validates it against the quiz's "Host Code" column on every
+// action, so a mismatch fails loudly rather than silently no-op. See
+// pages/quiz-host/[code].js for how it's collected (no email/login involved).
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { quizApi } from '../lib/quizApi';
@@ -23,7 +24,7 @@ import { subscribeToQuiz, onConnectionStateChange } from '../lib/quizPusher';
 import { quizSounds } from '../lib/quizSounds';
 import { QuizFonts, QuizThemeStyles, ShapeIcon, OPTION_LABELS, OPTION_COLORS } from '../lib/quizTheme';
 
-export default function OnlineQuizHost({ quizCode, hostEmail }) {
+export default function OnlineQuizHost({ quizCode, hostCode }) {
   const [status, setStatus] = useState('loading'); // loading | lobby | live | paused | ended
   const [title, setTitle] = useState('');
   const [participants, setParticipants] = useState([]);
@@ -53,10 +54,10 @@ export default function OnlineQuizHost({ quizCode, hostEmail }) {
   const lastTickPlayedRef = useRef(null);
 
   const refreshParticipants = useCallback(() => {
-    quizApi.getParticipants(quizCode, hostEmail)
+    quizApi.getParticipants(quizCode, hostCode)
       .then(res => setParticipants(res.participants))
       .catch(err => setError(err.message));
-  }, [quizCode, hostEmail]);
+  }, [quizCode, hostCode]);
 
   const refreshFullState = useCallback(() => {
     quizApi.getQuizState(quizCode)
@@ -160,9 +161,9 @@ export default function OnlineQuizHost({ quizCode, hostEmail }) {
     const timeUp = secondsLeft === 0;
     if (allAnswered || timeUp) {
       autoRevealedRef.current = true;
-      quizApi.revealAnswer(quizCode, hostEmail).catch(err => setError(err.message));
+      quizApi.revealAnswer(quizCode, hostCode).catch(err => setError(err.message));
     }
-  }, [status, revealPhase, secondsLeft, answeredCount, participants.length, quizCode, hostEmail]);
+  }, [status, revealPhase, secondsLeft, answeredCount, participants.length, quizCode, hostCode]);
 
   async function runAction(fn) {
     setBusy(true); setError('');
@@ -220,7 +221,7 @@ export default function OnlineQuizHost({ quizCode, hostEmail }) {
               {participants.length === 0 && <li className="qx-muted" style={{ padding: '10px 0' }}>Waiting for players to scan or type the code…</li>}
             </ul>
             <button className="qx-btn qx-btn-primary" disabled={busy || !participants.length}
-              onClick={() => runAction(() => quizApi.startQuiz(quizCode, hostEmail))}>
+              onClick={() => runAction(() => quizApi.startQuiz(quizCode, hostCode))}>
               <i className="fa-solid fa-play" /> {participants.length ? 'Start Quiz' : 'Waiting for players…'}
             </button>
           </div>
@@ -235,6 +236,19 @@ export default function OnlineQuizHost({ quizCode, hostEmail }) {
             <span className="qxh-answered-chip">{answeredCount}/{participants.length} answered</span>
           </div>
           <div className="qxh-question-text qxh-question-text-big">{question.questionText}</div>
+
+          {/* Big, projector-readable "how many have answered so far" summary —
+              the small chip above is easy to miss from across a classroom. */}
+          <div className="qxh-answered-big">
+            <span className="qxh-answered-big-num">{answeredCount}</span>
+            <span className="qxh-answered-big-of"> / {participants.length} answered</span>
+            <div className="qxh-answered-bar">
+              <div
+                className="qxh-answered-bar-fill"
+                style={{ width: `${participants.length ? Math.min(100, Math.round((answeredCount / participants.length) * 100)) : 0}%` }}
+              />
+            </div>
+          </div>
 
           <div className="qxh-giant-wheel">
             <svg width="240" height="240" viewBox="0 0 240 240">
@@ -254,9 +268,19 @@ export default function OnlineQuizHost({ quizCode, hostEmail }) {
 
           <div className="qxh-live-bottom-controls">
             {status === 'live'
-              ? <button className="qxh-btn" disabled={busy} onClick={() => runAction(() => quizApi.pauseQuiz(quizCode, hostEmail))}><i className="fa-solid fa-pause" /> Pause</button>
-              : <button className="qxh-btn" disabled={busy} onClick={() => runAction(() => quizApi.resumeQuiz(quizCode, hostEmail))}><i className="fa-solid fa-play" /> Resume</button>}
-            <button className="qxh-btn qxh-btn-danger" disabled={busy} onClick={() => runAction(() => quizApi.endQuiz(quizCode, hostEmail))}><i className="fa-solid fa-flag-checkered" /> End Quiz</button>
+              ? <button className="qxh-btn" disabled={busy} onClick={() => runAction(() => quizApi.pauseQuiz(quizCode, hostCode))}><i className="fa-solid fa-pause" /> Pause</button>
+              : <button className="qxh-btn" disabled={busy} onClick={() => runAction(() => quizApi.resumeQuiz(quizCode, hostCode))}><i className="fa-solid fa-play" /> Resume</button>}
+            {/* Manual override for the auto-reveal (timer hits zero, or every
+                joined participant has answered) — lets the host move on early,
+                e.g. once everyone who's actually still playing has answered
+                but a dropped/away device keeps the count from ever completing. */}
+            <button className="qxh-btn" disabled={busy || answeredCount === 0} onClick={() => {
+              autoRevealedRef.current = true;
+              runAction(() => quizApi.revealAnswer(quizCode, hostCode));
+            }}>
+              <i className="fa-solid fa-chart-column" /> Reveal Answers Now
+            </button>
+            <button className="qxh-btn qxh-btn-danger" disabled={busy} onClick={() => runAction(() => quizApi.endQuiz(quizCode, hostCode))}><i className="fa-solid fa-flag-checkered" /> End Quiz</button>
           </div>
         </div>
       )}
@@ -277,10 +301,10 @@ export default function OnlineQuizHost({ quizCode, hostEmail }) {
               <i className="fa-solid fa-ranking-star" /> View Standings
             </button>
             <button className="qxh-btn qx-btn-primary" style={{ marginTop: 0 }} disabled={busy}
-              onClick={() => runAction(() => quizApi.nextQuestion(quizCode, hostEmail))}>
+              onClick={() => runAction(() => quizApi.nextQuestion(quizCode, hostCode))}>
               <i className="fa-solid fa-forward" /> Next Question
             </button>
-            <button className="qxh-btn qxh-btn-danger" disabled={busy} onClick={() => runAction(() => quizApi.endQuiz(quizCode, hostEmail))}><i className="fa-solid fa-flag-checkered" /> End Quiz</button>
+            <button className="qxh-btn qxh-btn-danger" disabled={busy} onClick={() => runAction(() => quizApi.endQuiz(quizCode, hostCode))}><i className="fa-solid fa-flag-checkered" /> End Quiz</button>
           </div>
         </div>
       )}
@@ -301,10 +325,10 @@ export default function OnlineQuizHost({ quizCode, hostEmail }) {
               <i className="fa-solid fa-chart-column" /> Back to Results
             </button>
             <button className="qxh-btn qx-btn-primary" style={{ marginTop: 0 }} disabled={busy}
-              onClick={() => runAction(() => quizApi.nextQuestion(quizCode, hostEmail))}>
+              onClick={() => runAction(() => quizApi.nextQuestion(quizCode, hostCode))}>
               <i className="fa-solid fa-forward" /> Next Question
             </button>
-            <button className="qxh-btn qxh-btn-danger" disabled={busy} onClick={() => runAction(() => quizApi.endQuiz(quizCode, hostEmail))}><i className="fa-solid fa-flag-checkered" /> End Quiz</button>
+            <button className="qxh-btn qxh-btn-danger" disabled={busy} onClick={() => runAction(() => quizApi.endQuiz(quizCode, hostCode))}><i className="fa-solid fa-flag-checkered" /> End Quiz</button>
           </div>
         </div>
       )}
@@ -392,7 +416,14 @@ function HostStyles() {
       .qxh-live-card { max-width: 100%; text-align: center; }
       .qxh-live-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
       .qxh-answered-chip { font-family: var(--qx-font-mono); font-size: 12px; color: var(--qx-muted); background: var(--qx-surface-2); padding: 5px 12px; border-radius: 999px; }
-      .qxh-question-text-big { font-size: 24px; margin-bottom: 26px; }
+      .qxh-question-text-big { font-size: 24px; margin-bottom: 10px; }
+
+      /* Big projector-visible "answered so far" summary, sits above the wheel */
+      .qxh-answered-big { margin-bottom: 22px; }
+      .qxh-answered-big-num { font-family: var(--qx-font-display); font-size: 40px; font-weight: 600; color: var(--qx-accent); }
+      .qxh-answered-big-of { font-family: var(--qx-font-mono); font-size: 15px; color: var(--qx-muted); }
+      .qxh-answered-bar { height: 12px; border-radius: 999px; background: var(--qx-surface-2); overflow: hidden; margin-top: 8px; max-width: 420px; margin-left: auto; margin-right: auto; }
+      .qxh-answered-bar-fill { height: 100%; border-radius: 999px; background: var(--qx-accent); transition: width 0.4s ease-out; min-width: 4px; }
       .qxh-giant-wheel { position: relative; width: 240px; height: 240px; margin: 0 auto 26px; }
       .qxh-giant-num {
         position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -400,7 +431,7 @@ function HostStyles() {
       }
       .qxh-giant-num-urgent { color: var(--qx-danger); animation: qxh-giant-pulse 1s ease-in-out infinite; }
       @keyframes qxh-giant-pulse { 0%,100% { transform: scale(1);} 50% { transform: scale(1.08);} }
-      .qxh-live-bottom-controls { display: flex; justify-content: center; gap: 10px; }
+      .qxh-live-bottom-controls { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
 
       /* ── Summary (bar chart) screen ── */
       .qxh-summary-card { max-width: 100%; }

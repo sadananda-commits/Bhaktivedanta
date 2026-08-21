@@ -1,91 +1,101 @@
 // pages/quiz-host/[code].js
 //
-// Host control panel. Restricted to the teacher/parent who owns the quiz —
-// Code.gs enforces this server-side (Host Email must match), this page
-// just needs to know who's asking.
+// Host control panel. Access is gated by a per-quiz Host Code — a short
+// code the teacher/parent set themselves when creating the quiz in
+// Online Quizzes → New Quiz — NOT by Parent Portal login/email. Code.gs
+// re-validates the code server-side on every host action (see assertHost_
+// in Code.gs); this page just needs to collect it once.
 //
 // Preferred path: opened via "Open Host Panel" from inside Parent Portal's
-// Online Quizzes panel — already logged in, no prompt at all.
+// Online Quizzes panel. That link includes the quiz's own host code as a
+// ?hostCode= query param (the dashboard already knows it — it's the
+// teacher's own quiz), so the panel verifies it automatically and opens
+// with zero prompts, same as before.
 //
-// Fallback path (e.g. opened directly on a projector laptop with no active
-// Parent Portal session): a real sign-in prompt pointing at Parent Portal,
-// not a free-text box. A collapsed "advanced" manual-entry option is kept
-// underneath for testing/edge cases, but it's no longer the primary flow.
+// Fallback path (e.g. the host panel is opened directly on a projector
+// laptop, bookmarked, or the link is shared without the query param): a
+// short "Enter host code" form — no email, no active portal session
+// required, just the code for this specific quiz.
 
 import { useRouter } from 'next/router';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Head from 'next/head';
 import OnlineQuizHost from '../../components/OnlineQuizHost';
+import { quizApi } from '../../lib/quizApi';
 import { QuizFonts, QuizThemeStyles } from '../../lib/quizTheme';
 
 export default function QuizHostPage() {
   const router = useRouter();
-  const { code } = router.query;
-  const [hostEmail, setHostEmail] = useState(null);
-  const [checked, setChecked] = useState(false);
-  const [showManual, setShowManual] = useState(false);
-  const [manualEmail, setManualEmail] = useState('');
+  const { code, hostCode: hostCodeFromLink } = router.query;
 
+  const [hostCode, setHostCode] = useState(null);
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState('');
+  const [entry, setEntry] = useState('');
+  const autoTriedRef = useRef(false);
+
+  function verify(candidate) {
+    const value = String(candidate || '').trim();
+    if (!value) return;
+    setChecking(true);
+    setError('');
+    quizApi.verifyHostCode(String(code).toUpperCase(), value)
+      .then(() => setHostCode(value))
+      .catch(err => setError(err.message))
+      .finally(() => setChecking(false));
+  }
+
+  // Preferred path: a hostCode arrived via the dashboard's own link, so
+  // verify it silently — no form ever shows up for this case.
   useEffect(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('vedanta_profile') || 'null');
-      if (saved?.email) setHostEmail(saved.email);
-    } catch { /* ignore */ }
-    setChecked(true);
-  }, []);
+    if (!code || !hostCodeFromLink || autoTriedRef.current) return;
+    autoTriedRef.current = true;
+    verify(hostCodeFromLink);
+  }, [code, hostCodeFromLink]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!code || !checked) return null;
+  if (!code) return null;
 
-  if (!hostEmail) {
+  const autoChecking = checking && !hostCode && hostCodeFromLink && !error;
+
+  if (!hostCode) {
     return (
       <div className="qx-root qx-wrap">
         <QuizFonts /><QuizThemeStyles />
         <div className="qx-card qx-center">
-          <div className="qx-eyebrow">Host access needed</div>
-          <h1 className="qx-title">Sign in to host</h1>
-          <p className="qx-muted" style={{ margin: '0 0 22px' }}>
-            This quiz link opened without an active session. Sign in through
-            Parent Portal, then come back to <strong>Online Quizzes → Open Host Panel</strong> for
-            quiz <strong>{code}</strong>.
-          </p>
-          <a href="/parent-portal" className="qx-btn qx-btn-primary" style={{ textDecoration: 'none' }}>
-            <i className="fa-solid fa-right-to-bracket" /> Go to Parent Portal
-          </a>
-
-          <button
-            className="qxlogin-advanced-toggle"
-            onClick={() => setShowManual(v => !v)}
-          >
-            {showManual ? 'Hide advanced option' : 'Advanced: enter host identity manually'}
-          </button>
-
-          {showManual && (
-            <div className="qxlogin-manual">
-              <label className="qx-label">Host identity</label>
+          {autoChecking ? (
+            <>
+              <div className="qx-eyebrow">Opening host panel</div>
+              <p className="qx-muted"><i className="fa-solid fa-circle-notch fa-spin" /> Checking your host code…</p>
+            </>
+          ) : (
+            <>
+              <div className="qx-eyebrow">Host access needed</div>
+              <h1 className="qx-title">Enter the host code</h1>
+              <p className="qx-muted" style={{ margin: '0 0 22px' }}>
+                Enter the host code you set when creating quiz <strong>{code}</strong>.
+                You'll find it on that quiz's card in <strong>Online Quizzes</strong>.
+              </p>
               <input
                 className="qx-input"
-                value={manualEmail}
-                onChange={e => setManualEmail(e.target.value)}
-                placeholder="Must match this quiz's Host Email exactly"
+                value={entry}
+                onChange={e => setEntry(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') verify(entry); }}
+                placeholder="Host code"
+                autoFocus
               />
               <button
-                className="qx-btn"
-                style={{ background: 'var(--qx-surface-2)', color: 'var(--qx-text)' }}
-                disabled={!manualEmail.trim()}
-                onClick={() => setHostEmail(manualEmail.trim())}
+                className="qx-btn qx-btn-primary"
+                disabled={checking || !entry.trim()}
+                onClick={() => verify(entry)}
               >
-                Continue
+                {checking
+                  ? <><i className="fa-solid fa-circle-notch fa-spin" /> Checking…</>
+                  : <><i className="fa-solid fa-unlock" /> Launch Host Panel</>}
               </button>
-            </div>
+              {error && <div className="qx-error">⚠ {error}</div>}
+            </>
           )}
         </div>
-        <style jsx global>{`
-          .qxlogin-advanced-toggle {
-            background: none; border: none; color: var(--qx-muted); font-size: 12px;
-            margin-top: 18px; cursor: pointer; text-decoration: underline;
-          }
-          .qxlogin-manual { margin-top: 16px; text-align: left; }
-        `}</style>
       </div>
     );
   }
@@ -93,7 +103,7 @@ export default function QuizHostPage() {
   return (
     <>
       <Head><title>Host: Quiz {code}</title></Head>
-      <OnlineQuizHost quizCode={String(code).toUpperCase()} hostEmail={hostEmail} />
+      <OnlineQuizHost quizCode={String(code).toUpperCase()} hostCode={hostCode} />
     </>
   );
 }

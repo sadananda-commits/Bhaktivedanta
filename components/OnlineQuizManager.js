@@ -13,6 +13,16 @@
 import { useState, useEffect, useCallback } from 'react';
 import { quizApi } from '../lib/quizApi';
 import { QuizFonts } from '../lib/quizTheme';
+import QuizQuestionUploader from './QuizQuestionUploader';
+
+// Short, easy-to-read-aloud host code: no 0/O/1/I so it's unambiguous on a
+// projector or read out over a classroom.
+function randomHostCode() {
+  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  let out = '';
+  for (let i = 0; i < 6; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
+}
 
 const STATUS_COLORS = {
   draft: '#9296c4', lobby: '#6c7bff', live: '#22d3b0', paused: '#ffb020', ended: '#9296c4',
@@ -24,6 +34,8 @@ export default function OnlineQuizManager({ hostEmail }) {
   const [error, setError] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [copiedCode, setCopiedCode] = useState(null);
+  const [copiedHostCode, setCopiedHostCode] = useState(null);
+  const [uploaderForQuiz, setUploaderForQuiz] = useState(null);
 
   const load = useCallback(() => {
     if (!hostEmail) return;
@@ -41,6 +53,13 @@ export default function OnlineQuizManager({ hostEmail }) {
     navigator.clipboard.writeText(url).then(() => {
       setCopiedCode(code);
       setTimeout(() => setCopiedCode(null), 1800);
+    });
+  }
+
+  function copyHostCode(quizId, hostCode) {
+    navigator.clipboard.writeText(hostCode).then(() => {
+      setCopiedHostCode(quizId);
+      setTimeout(() => setCopiedHostCode(null), 1800);
     });
   }
 
@@ -90,14 +109,41 @@ export default function OnlineQuizManager({ hostEmail }) {
                 <span className="qxm-badge" style={{ background: STATUS_COLORS[q.status] || '#9296c4' }}>{q.status}</span>
               </div>
               {q.description && <div className="qxm-card-desc">{q.description}</div>}
+              {q.hostCode && (
+                <div className="qxm-hostcode-row">
+                  <span className="qx-muted" style={{ fontSize: 12 }}>Host code</span>
+                  <span className="qxm-hostcode">{q.hostCode}</span>
+                  <button className="qxm-hostcode-copy" onClick={() => copyHostCode(q.quizId, q.hostCode)} title="Copy host code">
+                    <i className="fa-solid fa-copy" /> {copiedHostCode === q.quizId ? 'Copied!' : 'Copy'}
+                  </button>
+                </div>
+              )}
               <div className="qxm-card-actions">
-                <a className="qxm-btn qxm-btn-primary qxm-btn-sm" href={`/quiz-host/${q.quizId}`} target="_blank" rel="noopener noreferrer">
+                <a
+                  className="qxm-btn qxm-btn-primary qxm-btn-sm"
+                  href={`/quiz-host/${q.quizId}${q.hostCode ? `?hostCode=${encodeURIComponent(q.hostCode)}` : ''}`}
+                  target="_blank" rel="noopener noreferrer"
+                >
                   <i className="fa-solid fa-tv" /> Open Host Panel
                 </a>
                 <button className="qxm-btn qxm-btn-outline" onClick={() => copyJoinLink(q.quizId)}>
                   <i className="fa-solid fa-link" /> {copiedCode === q.quizId ? 'Copied!' : 'Copy Join Link'}
                 </button>
+                <button
+                  className="qxm-btn qxm-btn-outline"
+                  onClick={() => setUploaderForQuiz(v => v === q.quizId ? null : q.quizId)}
+                >
+                  <i className="fa-solid fa-file-arrow-up" /> {uploaderForQuiz === q.quizId ? 'Close' : 'Upload Questions'}
+                </button>
               </div>
+
+              {uploaderForQuiz === q.quizId && (
+                <QuizQuestionUploader
+                  quizId={q.quizId}
+                  hostCode={q.hostCode}
+                  onDone={() => setUploaderForQuiz(null)}
+                />
+              )}
             </div>
           ))}
         </div>
@@ -111,6 +157,7 @@ function CreateQuizForm({ hostEmail, onCreated }) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [defaultTimeLimit, setDefaultTimeLimit] = useState(20);
+  const [hostCode, setHostCode] = useState(randomHostCode);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
@@ -119,9 +166,18 @@ function CreateQuizForm({ hostEmail, onCreated }) {
     setErr('');
     if (!quizId.trim()) { setErr('Enter a quiz code.'); return; }
     if (!/^[A-Za-z0-9]{3,12}$/.test(quizId.trim())) { setErr('Code should be 3–12 letters/numbers, no spaces.'); return; }
+    if (!hostCode.trim()) { setErr('Enter a host code (or click Generate).'); return; }
+    if (!/^[A-Za-z0-9]{4,10}$/.test(hostCode.trim())) { setErr('Host code should be 4–10 letters/numbers.'); return; }
     setSaving(true);
     try {
-      await quizApi.createQuiz(quizId.trim().toUpperCase(), title.trim() || quizId.trim().toUpperCase(), description.trim(), hostEmail, { defaultTimeLimit: Number(defaultTimeLimit) || 20 });
+      await quizApi.createQuiz(
+        quizId.trim().toUpperCase(),
+        title.trim() || quizId.trim().toUpperCase(),
+        description.trim(),
+        hostEmail,
+        hostCode.trim().toUpperCase(),
+        { defaultTimeLimit: Number(defaultTimeLimit) || 20 }
+      );
       onCreated();
     } catch (error) {
       setErr(error.message);
@@ -150,11 +206,32 @@ function CreateQuizForm({ hostEmail, onCreated }) {
         <label className="qxm-label">Description (optional)</label>
         <input className="qxm-input" value={description} onChange={e => setDescription(e.target.value)} placeholder="Shown to students in the lobby" />
       </div>
+      <div className="qxm-field">
+        <label className="qxm-label">Host Access Code</label>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            className="qxm-input"
+            value={hostCode}
+            onChange={e => setHostCode(e.target.value.toUpperCase())}
+            placeholder="e.g. K7QX4M"
+            maxLength={10}
+          />
+          <button type="button" className="qxm-btn qxm-btn-outline" style={{ whiteSpace: 'nowrap' }} onClick={() => setHostCode(randomHostCode())}>
+            <i className="fa-solid fa-shuffle" /> Generate
+          </button>
+        </div>
+        <p className="qxm-hint" style={{ marginBottom: 0 }}>
+          This is what unlocks the host/big-screen panel for this quiz — no portal login needed there.
+          Keep it, you'll type it in (or it'll be pre-filled) when you open the Host Panel.
+        </p>
+      </div>
       <p className="qxm-hint">
-        After creating, add your questions to the <strong>Quiz Questions</strong> tab in the Quiz System sheet
-        under this exact code. For a question with more than one correct answer, list them together in
-        <strong> Correct Answer</strong> separated by commas (e.g. <code>A,C</code>) — the quiz will automatically
-        let students pick multiple options for that question.
+        After creating, add questions from the <strong>Upload Questions</strong> button on the quiz card
+        (fill in the Excel template and upload it — no spreadsheet back-end editing needed), or add them
+        directly to the <strong>Quiz Questions</strong> tab in the Quiz System sheet under this exact code.
+        For a question with more than one correct answer, list them together in <strong>Correct Answer</strong>
+        separated by commas (e.g. <code>A,C</code>) — the quiz will automatically let students pick multiple
+        options for that question.
       </p>
       {err && <div className="qxm-error">⚠ {err}</div>}
       <button className="qxm-btn qxm-btn-primary" type="submit" disabled={saving}>
@@ -214,6 +291,9 @@ function QxmStyles() {
       .qxm-card-title { font-weight: 700; font-size: 15px; }
       .qxm-card-code { font-family: var(--qxm-font-mono); letter-spacing: 1px; color: var(--qxm-muted); font-size: 13px; margin-top: 2px; }
       .qxm-card-desc { font-size: 13px; color: var(--qxm-muted); margin: 8px 0; }
+      .qxm-hostcode-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding: 8px 10px; background: var(--qxm-bg-well); border-radius: 8px; }
+      .qxm-hostcode { font-family: var(--qxm-font-mono); font-weight: 700; letter-spacing: 1px; flex: 1; }
+      .qxm-hostcode-copy { background: none; border: none; color: var(--qxm-accent); font-weight: 700; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; padding: 2px 4px; }
       .qxm-badge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; padding: 4px 10px; border-radius: 100px; color: #0e0f24; height: fit-content; }
       .qxm-card-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
     `}</style>
