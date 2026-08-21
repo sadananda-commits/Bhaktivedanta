@@ -1,26 +1,29 @@
 // pages/quiz-host/[code].js
 //
-// Host control panel. Restricted to the teacher/admin who owns the quiz —
+// Host control panel. Restricted to the teacher/parent who owns the quiz —
 // Code.gs enforces this server-side (Host Email must match), this page
 // just needs to know who's asking.
 //
-// ⚠ TODO: this reads `vedanta_profile` from localStorage (the same key
-// portal.js uses) and looks for an `.email` field, since that's the only
-// session mechanism visible from portal.js/portal-config.js. If teacher/
-// admin login actually lives in a different profile object, a different
-// localStorage key, or a real server session/cookie, swap the `hostEmail`
-// source below accordingly — everything downstream (OnlineQuizHost) just
-// needs a verified email string, it doesn't care where it comes from.
+// Preferred path: opened via "Open Host Panel" from inside Parent Portal's
+// Online Quizzes panel — already logged in, no prompt at all.
+//
+// Fallback path (e.g. opened directly on a projector laptop with no active
+// Parent Portal session): a real sign-in prompt pointing at Parent Portal,
+// not a free-text box. A collapsed "advanced" manual-entry option is kept
+// underneath for testing/edge cases, but it's no longer the primary flow.
 
 import { useRouter } from 'next/router';
 import { useState, useEffect } from 'react';
 import Head from 'next/head';
 import OnlineQuizHost from '../../components/OnlineQuizHost';
+import { QuizFonts, QuizThemeStyles } from '../../lib/quizTheme';
 
 export default function QuizHostPage() {
   const router = useRouter();
   const { code } = router.query;
   const [hostEmail, setHostEmail] = useState(null);
+  const [checked, setChecked] = useState(false);
+  const [showManual, setShowManual] = useState(false);
   const [manualEmail, setManualEmail] = useState('');
 
   useEffect(() => {
@@ -28,30 +31,61 @@ export default function QuizHostPage() {
       const saved = JSON.parse(localStorage.getItem('vedanta_profile') || 'null');
       if (saved?.email) setHostEmail(saved.email);
     } catch { /* ignore */ }
+    setChecked(true);
   }, []);
 
-  if (!code) return null;
+  if (!code || !checked) return null;
 
   if (!hostEmail) {
     return (
-      <div style={{ maxWidth: 420, margin: '80px auto', padding: 24, color: '#fff' }}>
-        <h2>Host Login</h2>
-        <p style={{ color: '#94a3b8' }}>
-          No teacher/admin session was found automatically. Enter the email this quiz
-          was created with (must match the &quot;Host Email&quot; in the Quiz Config sheet).
-        </p>
-        <input
-          value={manualEmail}
-          onChange={e => setManualEmail(e.target.value)}
-          placeholder="teacher@example.com"
-          style={{ width: '100%', padding: 12, borderRadius: 8, marginBottom: 12 }}
-        />
-        <button
-          onClick={() => manualEmail.trim() && setHostEmail(manualEmail.trim())}
-          style={{ padding: '10px 20px', borderRadius: 8, background: '#14b8a6', color: '#fff', border: 'none' }}
-        >
-          Continue
-        </button>
+      <div className="qx-root qx-wrap">
+        <QuizFonts /><QuizThemeStyles />
+        <div className="qx-card qx-center">
+          <div className="qx-eyebrow">Host access needed</div>
+          <h1 className="qx-title">Sign in to host</h1>
+          <p className="qx-muted" style={{ margin: '0 0 22px' }}>
+            This quiz link opened without an active session. Sign in through
+            Parent Portal, then come back to <strong>Online Quizzes → Open Host Panel</strong> for
+            quiz <strong>{code}</strong>.
+          </p>
+          <a href="/parent-portal" className="qx-btn qx-btn-primary" style={{ textDecoration: 'none' }}>
+            <i className="fa-solid fa-right-to-bracket" /> Go to Parent Portal
+          </a>
+
+          <button
+            className="qxlogin-advanced-toggle"
+            onClick={() => setShowManual(v => !v)}
+          >
+            {showManual ? 'Hide advanced option' : 'Advanced: enter host identity manually'}
+          </button>
+
+          {showManual && (
+            <div className="qxlogin-manual">
+              <label className="qx-label">Host identity</label>
+              <input
+                className="qx-input"
+                value={manualEmail}
+                onChange={e => setManualEmail(e.target.value)}
+                placeholder="Must match this quiz's Host Email exactly"
+              />
+              <button
+                className="qx-btn"
+                style={{ background: 'var(--qx-surface-2)', color: 'var(--qx-text)' }}
+                disabled={!manualEmail.trim()}
+                onClick={() => setHostEmail(manualEmail.trim())}
+              >
+                Continue
+              </button>
+            </div>
+          )}
+        </div>
+        <style jsx global>{`
+          .qxlogin-advanced-toggle {
+            background: none; border: none; color: var(--qx-muted); font-size: 12px;
+            margin-top: 18px; cursor: pointer; text-decoration: underline;
+          }
+          .qxlogin-manual { margin-top: 16px; text-align: left; }
+        `}</style>
       </div>
     );
   }

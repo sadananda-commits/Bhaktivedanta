@@ -1,20 +1,21 @@
 // components/OnlineQuizManager.js
 //
-// Lets a logged-in teacher create a new quiz (Quiz Config row) and see the
-// quizzes they've already created, with quick links to the host panel and
-// the student join link. Rendered inside parent-portal.js's main content
-// area when the teacher clicks "Online Quizzes" in the sidebar.
+// Lets a logged-in teacher or parent create a new quiz (Quiz Config row)
+// and see the quizzes they've already created, with quick links to the
+// host panel and the student join link. Rendered inside parent-portal.js's
+// main content area.
 //
-// hostEmail is whatever identity string parent-portal.js's login captured
-// (see INTEGRATION note) — it must match Code.gs's Host Email comparisons
-// exactly (case-insensitive) for start/next/end actions on quizzes created
-// here to work later.
+// Styled with the same color/type tokens as the live-quiz screens (see
+// lib/quizTheme.js) but scoped locally rather than taking over the page —
+// this panel lives inside Parent Portal's existing chrome, not a
+// standalone full-bleed screen.
 
 import { useState, useEffect, useCallback } from 'react';
 import { quizApi } from '../lib/quizApi';
+import { QuizFonts } from '../lib/quizTheme';
 
 const STATUS_COLORS = {
-  draft: '#94a3b8', lobby: '#60a5fa', live: '#4ade80', paused: '#fbbf24', ended: '#94a3b8',
+  draft: '#9296c4', lobby: '#6c7bff', live: '#22d3b0', paused: '#ffb020', ended: '#9296c4',
 };
 
 export default function OnlineQuizManager({ hostEmail }) {
@@ -45,59 +46,55 @@ export default function OnlineQuizManager({ hostEmail }) {
 
   if (!hostEmail) {
     return (
-      <div className="oqm-empty">
-        <i className="fa-solid fa-triangle-exclamation" />
-        Could not determine your host identity — quizzes need a stable login
-        email/username to know which ones are yours. Try signing out and back in.
+      <div className="qxm-scope">
+        <QuizFonts /><QxmStyles />
+        <div className="qxm-empty"><i className="fa-solid fa-triangle-exclamation" /> Could not determine your login identity — try signing out and back in.</div>
       </div>
     );
   }
 
   return (
-    <div className="oqm-wrap">
-      <div className="oqm-header">
+    <div className="qxm-scope">
+      <QuizFonts /><QxmStyles />
+      <div className="qxm-header">
         <div>
-          <div className="pt-ph">Online Quizzes</div>
-          <div className="pt-ps">Create a Kahoot-style quiz and host it live for your class</div>
+          <div className="qxm-eyebrow">Live quizzes</div>
+          <div className="qxm-h1">Online Quizzes</div>
+          <div className="qxm-sub">Create a quiz and host it live for your class</div>
         </div>
-        <button className="ptbtn" style={{ width: 'auto', padding: '10px 18px' }} onClick={() => setShowCreate(v => !v)}>
+        <button className="qxm-btn qxm-btn-primary" onClick={() => setShowCreate(v => !v)}>
           <i className={`fa-solid ${showCreate ? 'fa-xmark' : 'fa-plus'}`} /> {showCreate ? 'Cancel' : 'New Quiz'}
         </button>
       </div>
 
-      {showCreate && (
-        <CreateQuizForm
-          hostEmail={hostEmail}
-          onCreated={() => { setShowCreate(false); load(); }}
-        />
-      )}
+      {showCreate && <CreateQuizForm hostEmail={hostEmail} onCreated={() => { setShowCreate(false); load(); }} />}
 
-      {error && <div style={{ background: 'rgba(239,68,68,.1)', border: '1px solid rgba(239,68,68,.25)', borderRadius: 12, padding: 16, color: '#f87171', marginBottom: 16 }}>⚠ {error}</div>}
+      {error && <div className="qxm-error">⚠ {error}</div>}
 
       {loading ? (
-        <div className="pt-empty"><i className="fa-solid fa-circle-notch fa-spin" /> Loading your quizzes…</div>
+        <div className="qxm-empty"><i className="fa-solid fa-circle-notch fa-spin" /> Loading your quizzes…</div>
       ) : quizzes.length === 0 ? (
-        <div className="pt-empty">
-          <i className="fa-solid fa-gamepad" style={{ fontSize: 32, color: 'var(--muted)', display: 'block', marginBottom: 12 }} />
-          You haven't created any quizzes yet.
+        <div className="qxm-empty">
+          <i className="fa-solid fa-gamepad" style={{ fontSize: 30, opacity: .5, display: 'block', marginBottom: 10 }} />
+          No quizzes yet — create one to get started.
         </div>
       ) : (
-        <div className="oqm-list">
+        <div className="qxm-list">
           {quizzes.map(q => (
-            <div key={q.quizId} className="oqm-card">
-              <div className="oqm-card-top">
+            <div key={q.quizId} className="qxm-card">
+              <div className="qxm-card-top">
                 <div>
-                  <div className="oqm-card-title">{q.title}</div>
-                  <div className="oqm-card-code">{q.quizId}</div>
+                  <div className="qxm-card-title">{q.title}</div>
+                  <div className="qxm-card-code">{q.quizId}</div>
                 </div>
-                <span className="oqm-badge" style={{ background: STATUS_COLORS[q.status] || '#94a3b8' }}>{q.status}</span>
+                <span className="qxm-badge" style={{ background: STATUS_COLORS[q.status] || '#9296c4' }}>{q.status}</span>
               </div>
-              {q.description && <div className="oqm-card-desc">{q.description}</div>}
-              <div className="oqm-card-actions">
-                <a className="ptbtn oqm-btn-sm" href={`/quiz-host/${q.quizId}`} target="_blank" rel="noopener noreferrer">
+              {q.description && <div className="qxm-card-desc">{q.description}</div>}
+              <div className="qxm-card-actions">
+                <a className="qxm-btn qxm-btn-primary qxm-btn-sm" href={`/quiz-host/${q.quizId}`} target="_blank" rel="noopener noreferrer">
                   <i className="fa-solid fa-tv" /> Open Host Panel
                 </a>
-                <button className="oqm-btn-outline" onClick={() => copyJoinLink(q.quizId)}>
+                <button className="qxm-btn qxm-btn-outline" onClick={() => copyJoinLink(q.quizId)}>
                   <i className="fa-solid fa-link" /> {copiedCode === q.quizId ? 'Copied!' : 'Copy Join Link'}
                 </button>
               </div>
@@ -105,8 +102,6 @@ export default function OnlineQuizManager({ hostEmail }) {
           ))}
         </div>
       )}
-
-      <OqmStyles />
     </div>
   );
 }
@@ -136,56 +131,91 @@ function CreateQuizForm({ hostEmail, onCreated }) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="pt-card oqm-create-form">
-      <div className="oqm-form-row">
-        <div className="oqm-field">
-          <label className="ptll">Quiz Code</label>
-          <input className="pt-input" value={quizId} onChange={e => setQuizId(e.target.value.toUpperCase())} placeholder="e.g. MATH7A" maxLength={12} />
+    <form onSubmit={handleSubmit} className="qxm-form">
+      <div className="qxm-form-row">
+        <div className="qxm-field">
+          <label className="qxm-label">Quiz Code</label>
+          <input className="qxm-input" value={quizId} onChange={e => setQuizId(e.target.value.toUpperCase())} placeholder="e.g. MATH7A" maxLength={12} />
         </div>
-        <div className="oqm-field">
-          <label className="ptll">Default time per question (sec)</label>
-          <input className="pt-input" type="number" min="5" max="120" value={defaultTimeLimit} onChange={e => setDefaultTimeLimit(e.target.value)} />
+        <div className="qxm-field">
+          <label className="qxm-label">Default time per question (sec)</label>
+          <input className="qxm-input" type="number" min="5" max="120" value={defaultTimeLimit} onChange={e => setDefaultTimeLimit(e.target.value)} />
         </div>
       </div>
-      <div className="oqm-field">
-        <label className="ptll">Title</label>
-        <input className="pt-input" value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Chapter 7 Recap" />
+      <div className="qxm-field">
+        <label className="qxm-label">Title</label>
+        <input className="qxm-input" value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Chapter 7 Recap" />
       </div>
-      <div className="oqm-field">
-        <label className="ptll">Description (optional)</label>
-        <input className="pt-input" value={description} onChange={e => setDescription(e.target.value)} placeholder="Shown to students in the lobby" />
+      <div className="qxm-field">
+        <label className="qxm-label">Description (optional)</label>
+        <input className="qxm-input" value={description} onChange={e => setDescription(e.target.value)} placeholder="Shown to students in the lobby" />
       </div>
-      <p style={{ fontSize: 12, color: 'var(--muted)', margin: '4px 0 12px' }}>
-        After creating, add your questions to the <strong>Quiz Questions</strong> tab in the Quiz System
-        sheet under this exact code before starting the quiz.
+      <p className="qxm-hint">
+        After creating, add your questions to the <strong>Quiz Questions</strong> tab in the Quiz System sheet
+        under this exact code. For a question with more than one correct answer, list them together in
+        <strong> Correct Answer</strong> separated by commas (e.g. <code>A,C</code>) — the quiz will automatically
+        let students pick multiple options for that question.
       </p>
-      {err && <div className="pterr">⚠ {err}</div>}
-      <button className="ptbtn" type="submit" disabled={saving} style={{ width: 'auto', padding: '10px 20px' }}>
+      {err && <div className="qxm-error">⚠ {err}</div>}
+      <button className="qxm-btn qxm-btn-primary" type="submit" disabled={saving}>
         {saving ? <><i className="fa-solid fa-circle-notch fa-spin" /> Creating…</> : <><i className="fa-solid fa-check" /> Create Quiz</>}
       </button>
     </form>
   );
 }
 
-function OqmStyles() {
+function QxmStyles() {
   return (
     <style jsx global>{`
-      .oqm-wrap { padding: 4px; }
-      .oqm-header { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
-      .oqm-empty { padding: 24px; color: #f87171; }
-      .oqm-create-form { margin-bottom: 24px; }
-      .oqm-form-row { display: flex; gap: 16px; flex-wrap: wrap; }
-      .oqm-field { flex: 1; min-width: 180px; margin-bottom: 12px; }
-      .oqm-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
-      .oqm-card { background: var(--surf, #1e293b); border: 1px solid var(--border, #334155); border-radius: 14px; padding: 16px; }
-      .oqm-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
-      .oqm-card-title { font-weight: 700; font-size: 15px; }
-      .oqm-card-code { font-family: monospace; letter-spacing: 1px; color: var(--muted, #94a3b8); font-size: 13px; margin-top: 2px; }
-      .oqm-card-desc { font-size: 13px; color: var(--muted, #94a3b8); margin: 8px 0; }
-      .oqm-badge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; padding: 3px 9px; border-radius: 100px; color: #0f172a; height: fit-content; }
-      .oqm-card-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
-      .oqm-btn-sm { padding: 8px 14px !important; font-size: 13px !important; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
-      .oqm-btn-outline { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border, #334155); background: transparent; color: var(--text, #fff); font-size: 13px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+      .qxm-scope {
+        --qxm-bg-card: #1d1f42; --qxm-bg-well: #262a52; --qxm-border: #383c6e;
+        --qxm-accent: #22d3b0; --qxm-accent-2: #ffb020; --qxm-danger: #ff5c7a;
+        --qxm-text: #f5f6ff; --qxm-muted: #9296c4;
+        --qxm-font-display: 'Fredoka', ui-rounded, sans-serif;
+        --qxm-font-mono: 'Space Mono', ui-monospace, monospace;
+        font-family: 'Manrope', -apple-system, sans-serif;
+        color: var(--qxm-text);
+      }
+      .qxm-header { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 14px; margin-bottom: 22px; }
+      .qxm-eyebrow { font-family: var(--qxm-font-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--qxm-accent); font-weight: 700; margin-bottom: 4px; }
+      .qxm-h1 { font-family: var(--qxm-font-display); font-size: 26px; font-weight: 600; }
+      .qxm-sub { color: var(--qxm-muted); font-size: 14px; margin-top: 2px; }
+
+      .qxm-btn {
+        padding: 12px 20px; border-radius: 12px; border: 1px solid var(--qxm-border);
+        background: var(--qxm-bg-well); color: var(--qxm-text); font-weight: 700; cursor: pointer;
+        display: inline-flex; align-items: center; gap: 8px; font-size: 14px;
+        text-decoration: none; white-space: nowrap;
+      }
+      .qxm-btn-primary { background: var(--qxm-accent); border-color: var(--qxm-accent); color: #072922; }
+      .qxm-btn-outline { background: transparent; }
+      .qxm-btn-sm { padding: 9px 14px; font-size: 13px; }
+      .qxm-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+      .qxm-empty { padding: 30px 20px; text-align: center; color: var(--qxm-muted); background: var(--qxm-bg-card); border: 1px solid var(--qxm-border); border-radius: 18px; }
+      .qxm-error { background: rgba(255,92,122,.12); border: 1px solid rgba(255,92,122,.3); color: var(--qxm-danger); padding: 12px 16px; border-radius: 12px; margin-bottom: 16px; font-weight: 600; font-size: 13px; }
+
+      .qxm-form { background: var(--qxm-bg-card); border: 1px solid var(--qxm-border); border-radius: 18px; padding: 22px; margin-bottom: 22px; }
+      .qxm-form-row { display: flex; gap: 16px; flex-wrap: wrap; }
+      .qxm-field { flex: 1; min-width: 180px; margin-bottom: 14px; }
+      .qxm-label { display: block; font-size: 12px; color: var(--qxm-muted); margin-bottom: 6px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+      .qxm-input {
+        width: 100%; padding: 12px 14px; border-radius: 10px; border: 1.5px solid var(--qxm-border);
+        background: var(--qxm-bg-well); color: var(--qxm-text); font-size: 15px; box-sizing: border-box;
+        font-family: inherit;
+      }
+      .qxm-input:focus { outline: none; border-color: var(--qxm-accent); }
+      .qxm-hint { font-size: 12px; color: var(--qxm-muted); margin: 4px 0 14px; line-height: 1.5; }
+      .qxm-hint code { background: var(--qxm-bg-well); padding: 1px 6px; border-radius: 4px; font-family: var(--qxm-font-mono); }
+
+      .qxm-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+      .qxm-card { background: var(--qxm-bg-card); border: 1px solid var(--qxm-border); border-radius: 16px; padding: 18px; }
+      .qxm-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+      .qxm-card-title { font-weight: 700; font-size: 15px; }
+      .qxm-card-code { font-family: var(--qxm-font-mono); letter-spacing: 1px; color: var(--qxm-muted); font-size: 13px; margin-top: 2px; }
+      .qxm-card-desc { font-size: 13px; color: var(--qxm-muted); margin: 8px 0; }
+      .qxm-badge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; padding: 4px 10px; border-radius: 100px; color: #0e0f24; height: fit-content; }
+      .qxm-card-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
     `}</style>
   );
 }

@@ -1,19 +1,22 @@
 // components/OnlineQuizParticipant.js
 //
 // Handles the full student-side flow for one quiz: join → lobby → live
-// question → between-question reveal → final leaderboard. Rendered by
-// pages/quiz/[code].js. Real-time updates come from Pusher; getQuizState
-// is only called once, on join/reload, as a snapshot fallback.
+// question → between-question reveal+standings → final leaderboard.
+// Rendered by pages/quiz/[code].js.
+//
+// Answering flow: tap to build a selection (single-select behaves like a
+// radio, multi-select toggles independently), then press Submit. If the
+// timer hits zero first, whatever is currently selected is auto-submitted
+// as-is — nothing is lost, it's just locked in.
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { quizApi } from '../lib/quizApi';
-import { subscribeToQuiz } from '../lib/quizPusher';
-
-const OPTION_LABELS = ['A', 'B', 'C', 'D'];
-const OPTION_COLORS = { A: '#e21b3c', B: '#1368ce', C: '#d89e00', D: '#26890c' };
+import { subscribeToQuiz, onConnectionStateChange } from '../lib/quizPusher';
+import { quizSounds, isMuted, setMuted } from '../lib/quizSounds';
+import { QuizFonts, QuizThemeStyles, ShapeIcon, OPTION_LABELS, OPTION_COLORS } from '../lib/quizTheme';
 
 export default function OnlineQuizParticipant({ quizCode }) {
-  const [phase, setPhase] = useState('join'); // join | lobby | live | between | ended | error
+  const [phase, setPhase] = useState('join');
   const [name, setName] = useState('');
   const [age, setAge] = useState('');
   const [joinError, setJoinError] = useState('');
@@ -23,18 +26,29 @@ export default function OnlineQuizParticipant({ quizCode }) {
   const [quizTitle, setQuizTitle] = useState('');
   const [participantCount, setParticipantCount] = useState(0);
 
-  const [question, setQuestion] = useState(null); // { qNum, questionText, options, mediaUrl, timeLimitSec, startedAt }
-  const [deadline, setDeadline] = useState(null); // epoch ms
+  const [question, setQuestion] = useState(null);
+  const [deadline, setDeadline] = useState(null);
   const [secondsLeft, setSecondsLeft] = useState(0);
-  const [selected, setSelected] = useState(null);
+  const [totalSeconds, setTotalSeconds] = useState(1);
+  const [selectedLetters, setSelectedLetters] = useState([]);
   const [hasAnswered, setHasAnswered] = useState(false);
-  const [answerFeedback, setAnswerFeedback] = useState(null); // { isCorrect, pointsEarned }
-  const [reveal, setReveal] = useState(null); // { correctAnswer, answerCounts }
+  const [answerFeedback, setAnswerFeedback] = useState(null);
+  const [pointsDisplay, setPointsDisplay] = useState(0);
+  const [reveal, setReveal] = useState(null); // { correctAnswer, answerCounts, standings }
 
   const [leaderboard, setLeaderboard] = useState(null);
   const [paused, setPaused] = useState(false);
+  const [muted, setMutedState] = useState(false);
+  const [connectionLost, setConnectionLost] = useState(false);
 
   const storageKey = 'quiz_participant_' + quizCode;
+  const wasDisconnectedRef = useRef(false);
+  const lastTickPlayedRef = useRef(null);
+  const submittedRef = useRef(false); // guards against manual + auto-submit racing
+  const timeUpPlayedRef = useRef(false);
+
+  useEffect(() => { setMutedState(isMuted()); }, []);
+  function toggleMute() { const next = !muted; setMuted(next); setMutedState(next); }
 
   // ── Restore identity on reload ──────────────────────────────────────
   useEffect(() => {
@@ -57,11 +71,20 @@ export default function OnlineQuizParticipant({ quizCode }) {
       setPhase('ended');
       quizApi.getResults(quizCode).then(r => setLeaderboard(r.leaderboard)).catch(() => {});
     } else if (state.status === 'live' && state.currentQuestion) {
-      setQuestion(state.currentQuestion);
+      setQuestion(prev => {
+        if (prev && prev.qNum === state.currentQuestion.qNum) return prev;
+        setHasAnswered(false);
+        setAnswerFeedback(null);
+        setSelectedLetters([]);
+        submittedRef.current = false;
+        timeUpPlayedRef.current = false;
+        return state.currentQuestion;
+      });
       setDeadline(Date.parse(state.currentQuestion.startedAt || Date.now()) + state.currentQuestion.timeLimitSec * 1000);
-      setPhase('live');
+      setTotalSeconds(state.currentQuestion.timeLimitSec);
+      setPhase(p => (p === 'between' ? p : 'live'));
     } else {
-      setPhase('lobby');
+      setPhase(p => (p === 'join' ? p : 'lobby'));
     }
   }, [quizCode]);
 
@@ -69,13 +92,14 @@ export default function OnlineQuizParticipant({ quizCode }) {
   async function handleJoin(e) {
     e.preventDefault();
     setJoinError('');
-    if (!name.trim()) { setJoinError('Enter your name.'); return; }
+    if (!name.trim()) { setJoinError('Enter your name to continue.'); return; }
     setJoining(true);
     try {
       const res = await quizApi.joinQuiz(quizCode, name.trim(), age ? Number(age) : '');
       setParticipantId(res.participantId);
       sessionStorage.setItem(storageKey, JSON.stringify({ participantId: res.participantId, name: name.trim() }));
       setPhase('lobby');
+      quizSounds.join();
       const state = await quizApi.getQuizState(quizCode);
       applyState(state);
     } catch (err) {
@@ -85,7 +109,7 @@ export default function OnlineQuizParticipant({ quizCode }) {
     }
   }
 
-  // ── Pusher subscription (once we have a participantId) ────────────────
+  // ── Pusher subscription ────────────────────────────────────────────
   useEffect(() => {
     if (!participantId) return;
     const unsubscribe = subscribeToQuiz(quizCode, {
@@ -94,262 +118,440 @@ export default function OnlineQuizParticipant({ quizCode }) {
       'question-started': (data) => {
         setQuestion(data);
         setDeadline(Date.parse(data.startedAt) + data.timeLimitSec * 1000);
-        setSelected(null);
+        setTotalSeconds(data.timeLimitSec);
+        setSelectedLetters([]);
         setHasAnswered(false);
         setAnswerFeedback(null);
+        setPointsDisplay(0);
         setReveal(null);
+        submittedRef.current = false;
+        timeUpPlayedRef.current = false;
         setPhase('live');
+        quizSounds.questionStart();
       },
       'question-ended': (data) => {
         setReveal(data);
         setPhase('between');
+        quizSounds.standingsReveal();
       },
       'quiz-paused': () => setPaused(true),
       'quiz-resumed': () => setPaused(false),
       'quiz-ended': (data) => {
         setLeaderboard(data.leaderboard);
         setPhase('ended');
+        quizSounds.quizEnd();
       },
     });
     return unsubscribe;
   }, [participantId, quizCode]);
 
-  // ── Countdown ────────────────────────────────────────────────────────
+  // ── Connection-drop recovery ─────────────────────────────────────────
   useEffect(() => {
-    if (phase !== 'live' || !deadline) return;
-    const tick = () => setSecondsLeft(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
-    tick();
-    const id = setInterval(tick, 250);
-    return () => clearInterval(id);
-  }, [phase, deadline]);
+    if (!participantId) return;
+    const unsubscribe = onConnectionStateChange((state) => {
+      if (state === 'connected') {
+        setConnectionLost(false);
+        if (wasDisconnectedRef.current) quizApi.getQuizState(quizCode).then(applyState).catch(() => {});
+        wasDisconnectedRef.current = false;
+      } else if (state === 'unavailable' || state === 'failed' || state === 'disconnected') {
+        wasDisconnectedRef.current = true;
+        setConnectionLost(true);
+      }
+    });
+    return unsubscribe;
+  }, [participantId, quizCode, applyState]);
 
-  // ── Answer ───────────────────────────────────────────────────────────
-  async function handleAnswer(letter) {
-    if (hasAnswered || secondsLeft <= 0 || !question) return;
-    setSelected(letter);
-    setHasAnswered(true); // optimistic lock — prevents double-submit even on slow network
+  // ── Submit (manual or auto-on-timeout) ────────────────────────────────
+  const doSubmit = useCallback(async (letters) => {
+    if (submittedRef.current || !question) return;
+    submittedRef.current = true;
+    setHasAnswered(true);
     try {
-      const res = await quizApi.submitAnswer(quizCode, participantId, question.qNum, letter);
+      const res = await quizApi.submitAnswer(quizCode, participantId, question.qNum, letters.join(','));
       setAnswerFeedback({ isCorrect: res.isCorrect, pointsEarned: res.pointsEarned });
+      if (res.isCorrect) quizSounds.correct(); else quizSounds.incorrect();
     } catch (err) {
       setAnswerFeedback({ error: err.message });
     }
+  }, [question, quizCode, participantId]);
+
+  function toggleOption(letter) {
+    if (hasAnswered || secondsLeft <= 0) return;
+    setSelectedLetters(prev => {
+      if (question?.multiSelect) {
+        return prev.includes(letter) ? prev.filter(l => l !== letter) : [...prev, letter];
+      }
+      return prev.includes(letter) ? [] : [letter];
+    });
   }
+
+  function handleManualSubmit() {
+    if (selectedLetters.length === 0) return;
+    doSubmit(selectedLetters);
+  }
+
+  // ── Countdown + tick + time's-up + auto-submit ────────────────────────
+  useEffect(() => {
+    if (phase !== 'live' || !deadline) return;
+    const tick = () => {
+      const s = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      setSecondsLeft(s);
+      if (!hasAnswered && s <= 5 && s > 0 && lastTickPlayedRef.current !== s) {
+        lastTickPlayedRef.current = s;
+        quizSounds.tick();
+      }
+      if (s === 0) {
+        if (!timeUpPlayedRef.current) { timeUpPlayedRef.current = true; quizSounds.timeUp(); }
+        if (!submittedRef.current) doSubmit(selectedLetters);
+      }
+    };
+    tick();
+    const id = setInterval(tick, 250);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, deadline, hasAnswered, selectedLetters, doSubmit]);
+
+  // ── Score count-up animation ──────────────────────────────────────────
+  useEffect(() => {
+    if (!answerFeedback || answerFeedback.error || typeof answerFeedback.pointsEarned !== 'number') return;
+    const target = answerFeedback.pointsEarned;
+    if (target === 0) { setPointsDisplay(0); return; }
+    const start = performance.now();
+    const durationMs = 500;
+    let raf;
+    const step = (now) => {
+      const t = Math.min(1, (now - start) / durationMs);
+      setPointsDisplay(Math.round(target * (1 - Math.pow(1 - t, 3))));
+      if (t < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [answerFeedback]);
+
+  const MuteToggle = () => (
+    <button className="qx-mute-btn" onClick={toggleMute} aria-label={muted ? 'Unmute' : 'Mute'}>
+      <i className={`fa-solid ${muted ? 'fa-volume-xmark' : 'fa-volume-high'}`} />
+    </button>
+  );
+  const ConnectionBanner = () => connectionLost ? (
+    <div className="qx-connbanner"><i className="fa-solid fa-triangle-exclamation" /> Reconnecting…</div>
+  ) : null;
 
   // ── Render ───────────────────────────────────────────────────────────
 
   if (phase === 'join') {
     return (
-      <div className="oq-wrap">
-        <div className="oq-card">
-          <h1 className="oq-title">Join Quiz</h1>
-          <div className="oq-code">{quizCode}</div>
+      <div className="qx-root qx-wrap">
+        <QuizFonts /><QuizThemeStyles /><ParticipantStyles />
+        <MuteToggle />
+        <div className="qx-card">
+          <div className="qx-eyebrow">You're invited to</div>
+          <h1 className="qx-title">Join Quiz</h1>
+          <div className="qx-code">{quizCode}</div>
           <form onSubmit={handleJoin}>
-            <label className="oq-label">Your name</label>
-            <input className="oq-input" value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Priya" autoFocus />
-            <label className="oq-label">Your age</label>
-            <input className="oq-input" type="number" min="1" max="120" value={age} onChange={e => setAge(e.target.value)} placeholder="e.g. 10" />
-            {joinError && <div className="oq-error">{joinError}</div>}
-            <button className="oq-btn oq-btn-primary" type="submit" disabled={joining}>
+            <label className="qx-label">Your name</label>
+            <input className="qx-input" value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Priya" autoFocus />
+            <label className="qx-label">Your age</label>
+            <input className="qx-input" type="number" min="1" max="120" value={age} onChange={e => setAge(e.target.value)} placeholder="e.g. 10" />
+            {joinError && <div className="qx-error">{joinError}</div>}
+            <button className="qx-btn qx-btn-primary" type="submit" disabled={joining}>
               {joining ? 'Joining…' : 'Join Quiz'}
             </button>
           </form>
         </div>
-        <QuizStyles />
       </div>
     );
   }
 
   if (phase === 'lobby') {
     return (
-      <div className="oq-wrap">
-        <div className="oq-card oq-center">
-          <h1 className="oq-title">{quizTitle || quizCode}</h1>
-          <p className="oq-muted">You're in! Waiting for the host to start…</p>
-          <div className="oq-pulse-dot" />
-          <div className="oq-participant-count">{participantCount} joined</div>
-          <div className="oq-name-chip">Playing as <strong>{name}</strong></div>
+      <div className="qx-root qx-wrap">
+        <QuizFonts /><QuizThemeStyles /><ParticipantStyles />
+        <MuteToggle />
+        <ConnectionBanner />
+        <div className="qx-card qx-center">
+          <h1 className="qx-title">{quizTitle || quizCode}</h1>
+          <p className="qx-muted">You're in! Waiting for the host to start…</p>
+          <div className="qx-pulse-dot" />
+          <div className="qx-participant-count">{participantCount}</div>
+          <div className="qx-muted" style={{ marginTop: -8 }}>players joined</div>
+          <div className="qx-name-chip">Playing as <strong>{name}</strong></div>
         </div>
-        <QuizStyles />
       </div>
     );
   }
 
   if (phase === 'live' && question) {
+    const pct = totalSeconds > 0 ? secondsLeft / totalSeconds : 0;
+    const circumference = 2 * Math.PI * 26;
     return (
-      <div className="oq-wrap">
-        <div className="oq-live-header">
-          <div className="oq-qnum">Question {question.qNum}</div>
-          <div className={'oq-timer' + (secondsLeft <= 5 ? ' oq-timer-urgent' : '')}>{secondsLeft}</div>
+      <div className="qx-root qx-wrap qx-live">
+        <QuizFonts /><QuizThemeStyles /><ParticipantStyles />
+        <ConnectionBanner />
+        <div className="qx-live-header">
+          <div className="qx-qnum">Question {question.qNum}{question.multiSelect && <span className="qx-multi-tag">select all that apply</span>}</div>
+          <div className={'qx-ring-wrap' + (secondsLeft <= 5 ? ' qx-ring-urgent' : '')}>
+            <svg width="60" height="60" viewBox="0 0 60 60">
+              <circle cx="30" cy="30" r="26" fill="none" stroke="var(--qx-surface-2)" strokeWidth="5" />
+              <circle
+                cx="30" cy="30" r="26" fill="none"
+                stroke={secondsLeft <= 5 ? 'var(--qx-danger)' : 'var(--qx-accent)'}
+                strokeWidth="5" strokeLinecap="round"
+                strokeDasharray={circumference}
+                strokeDashoffset={circumference * (1 - pct)}
+                transform="rotate(-90 30 30)"
+                style={{ transition: 'stroke-dashoffset 0.25s linear' }}
+              />
+            </svg>
+            <span className="qx-ring-num">{secondsLeft}</span>
+          </div>
+          <MuteToggle />
         </div>
-        {paused && <div className="oq-banner">Quiz paused by host</div>}
-        {question.mediaUrl && <img src={question.mediaUrl} alt="" className="oq-media" />}
-        <div className="oq-question-text">{question.questionText}</div>
+        {paused && <div className="qx-banner">Quiz paused by host</div>}
+        {question.mediaUrl && <img src={question.mediaUrl} alt="" className="qx-media" />}
+        <div className="qx-question-text">{question.questionText}</div>
 
         {!hasAnswered ? (
-          <div className="oq-options">
-            {OPTION_LABELS.filter(l => question.options[l]).map(letter => (
-              <button
-                key={letter}
-                className="oq-option"
-                style={{ background: OPTION_COLORS[letter] }}
-                onClick={() => handleAnswer(letter)}
-                disabled={secondsLeft <= 0}
-              >
-                <span className="oq-option-letter">{letter}</span>
-                <span>{question.options[letter]}</span>
-              </button>
-            ))}
-          </div>
+          <>
+            <div className="qx-options">
+              {OPTION_LABELS.filter(l => question.options[l]).map(letter => {
+                const active = selectedLetters.includes(letter);
+                return (
+                  <button
+                    key={letter}
+                    className={'qx-option' + (active ? ' qx-option-active' : '')}
+                    style={{ '--tile-color': OPTION_COLORS[letter] }}
+                    onClick={() => toggleOption(letter)}
+                    disabled={secondsLeft <= 0}
+                  >
+                    <span className="qx-option-shape"><ShapeIcon letter={letter} /></span>
+                    <span>{question.options[letter]}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              className="qx-btn qx-btn-primary qx-submit-btn"
+              disabled={selectedLetters.length === 0}
+              onClick={handleManualSubmit}
+            >
+              <i className="fa-solid fa-paper-plane" /> Submit Answer
+            </button>
+          </>
         ) : (
-          <div className="oq-card oq-center">
+          <div className="qx-card qx-center">
             {answerFeedback?.error ? (
-              <p className="oq-error">{answerFeedback.error}</p>
+              <p className="qx-error">{answerFeedback.error}</p>
             ) : answerFeedback ? (
               <>
-                <div className={'oq-feedback ' + (answerFeedback.isCorrect ? 'oq-correct' : 'oq-incorrect')}>
+                <div className={'qx-feedback ' + (answerFeedback.isCorrect ? 'qx-correct qx-bounce-in' : 'qx-incorrect qx-shake')}>
                   {answerFeedback.isCorrect ? '✓ Correct!' : '✗ Not quite'}
                 </div>
-                <div className="oq-points">+{answerFeedback.pointsEarned} pts</div>
+                <div className="qx-points">+{pointsDisplay} pts</div>
               </>
             ) : (
-              <p className="oq-muted">Answer submitted — waiting for scoring…</p>
+              <p className="qx-muted">Answer locked in — scoring…</p>
             )}
-            <p className="oq-muted">Waiting for other players…</p>
+            <p className="qx-muted">Waiting for other players…</p>
           </div>
         )}
-        <QuizStyles />
       </div>
     );
   }
 
   if (phase === 'between' && reveal) {
+    const mine = reveal.standings?.find(s => s.participantId === participantId);
     return (
-      <div className="oq-wrap">
-        <div className="oq-card oq-center">
-          <h2 className="oq-title">Correct answer: {reveal.correctAnswer}</h2>
-          <div className="oq-answer-bars">
+      <div className="qx-root qx-wrap">
+        <QuizFonts /><QuizThemeStyles /><ParticipantStyles />
+        <MuteToggle />
+        <div className="qx-card qx-center">
+          <div className="qx-eyebrow">Correct answer</div>
+          <h2 className="qx-title">{reveal.correctAnswer}</h2>
+          <div className="qx-answer-bars">
             {OPTION_LABELS.map(letter => (
               reveal.answerCounts[letter] !== undefined && (
-                <div key={letter} className="oq-answer-bar-row">
-                  <span className="oq-option-letter" style={{ background: OPTION_COLORS[letter] }}>{letter}</span>
+                <div key={letter} className="qx-answer-bar-row">
+                  <span className="qx-option-shape qx-shape-sm" style={{ background: OPTION_COLORS[letter] }}><ShapeIcon letter={letter} size={14} /></span>
                   <span>{reveal.answerCounts[letter]}</span>
                 </div>
               )
             ))}
           </div>
-          <p className="oq-muted">Get ready for the next question…</p>
+
+          {answerFeedback && !answerFeedback.error && (
+            <div className={'qx-round-result ' + (answerFeedback.isCorrect ? 'qx-correct' : 'qx-incorrect')}>
+              {answerFeedback.isCorrect ? '✓' : '✗'} This round: +{answerFeedback.pointsEarned} pts
+            </div>
+          )}
+
+          {reveal.standings?.length > 0 && (
+            <>
+              <h3 className="qx-leaderboard-title">Standings so far</h3>
+              <ol className="qx-leaderboard">
+                {reveal.standings.map(r => (
+                  <li key={r.participantId} className={r.participantId === participantId ? 'qx-me' : ''}>
+                    <span className="qx-lb-rank">#{r.rank}</span>
+                    <span className="qx-lb-name">{r.name}</span>
+                    <span className="qx-lb-score">{r.totalScore}</span>
+                  </li>
+                ))}
+              </ol>
+              {mine && !reveal.standings.find(s => s.participantId === participantId) && (
+                <p className="qx-muted">You're currently outside the top 8.</p>
+              )}
+            </>
+          )}
+          <p className="qx-muted" style={{ marginTop: 12 }}>Get ready for the next question…</p>
         </div>
-        <QuizStyles />
       </div>
     );
   }
 
   if (phase === 'ended') {
     const mine = leaderboard?.find(r => r.participantId === participantId);
+    const isTopThree = mine && mine.rank <= 3;
     return (
-      <div className="oq-wrap">
-        <div className="oq-card oq-center">
-          <h1 className="oq-title">🏁 Quiz Complete!</h1>
+      <div className="qx-root qx-wrap">
+        <QuizFonts /><QuizThemeStyles /><ParticipantStyles />
+        <MuteToggle />
+        {isTopThree && <Confetti />}
+        <div className="qx-card qx-center">
+          <h1 className="qx-title">🏁 Quiz Complete!</h1>
           {mine && (
-            <div className="oq-my-result">
-              <div className="oq-my-rank">Rank #{mine.rank}</div>
-              <div className="oq-my-score">{mine.totalScore} points</div>
-              <div className="oq-muted">{mine.correctAnswers} correct · {mine.incorrectAnswers} incorrect</div>
+            <div className="qx-my-result">
+              <div className={'qx-my-rank' + (isTopThree ? ' qx-rank-glow' : '')}>
+                {mine.rank === 1 ? '🥇' : mine.rank === 2 ? '🥈' : mine.rank === 3 ? '🥉' : ''} Rank #{mine.rank}
+              </div>
+              <div className="qx-my-score">{mine.totalScore} points</div>
+              <div className="qx-muted">{mine.correctAnswers} correct · {mine.incorrectAnswers} incorrect</div>
             </div>
           )}
-          <h3 className="oq-leaderboard-title">Leaderboard</h3>
-          <ol className="oq-leaderboard">
+          <h3 className="qx-leaderboard-title">Leaderboard</h3>
+          <ol className="qx-leaderboard">
             {(leaderboard || []).slice(0, 10).map(r => (
-              <li key={r.participantId} className={r.participantId === participantId ? 'oq-me' : ''}>
-                <span className="oq-lb-rank">#{r.rank}</span>
-                <span className="oq-lb-name">{r.name}</span>
-                <span className="oq-lb-score">{r.totalScore}</span>
+              <li key={r.participantId} className={r.participantId === participantId ? 'qx-me' : ''}>
+                <span className="qx-lb-rank">#{r.rank}</span>
+                <span className="qx-lb-name">{r.name}</span>
+                <span className="qx-lb-score">{r.totalScore}</span>
               </li>
             ))}
           </ol>
         </div>
-        <QuizStyles />
       </div>
     );
   }
 
   return (
-    <div className="oq-wrap">
-      <div className="oq-card oq-center"><p className="oq-muted">Loading…</p></div>
-      <QuizStyles />
+    <div className="qx-root qx-wrap">
+      <QuizFonts /><QuizThemeStyles /><ParticipantStyles />
+      <div className="qx-card qx-center"><p className="qx-muted">Loading…</p></div>
     </div>
   );
 }
 
-function QuizStyles() {
+function Confetti() {
+  const pieces = Array.from({ length: 40 }, (_, i) => ({
+    id: i, left: Math.random() * 100, delay: Math.random() * 0.6,
+    duration: 2.2 + Math.random() * 1.2,
+    color: ['#ff5c7a', '#22d3b0', '#ffb020', '#6c7bff', '#34e7b4'][i % 5],
+    rotate: Math.random() * 360,
+  }));
+  return (
+    <div className="qx-confetti-wrap" aria-hidden="true">
+      {pieces.map(p => (
+        <span key={p.id} className="qx-confetti-piece" style={{
+          left: `${p.left}%`, background: p.color, animationDelay: `${p.delay}s`,
+          animationDuration: `${p.duration}s`, transform: `rotate(${p.rotate}deg)`,
+        }} />
+      ))}
+    </div>
+  );
+}
+
+function ParticipantStyles() {
   return (
     <style jsx global>{`
-      .oq-wrap {
-        min-height: 100vh;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        padding: 20px;
-        background: var(--navy, #0f172a);
-        color: var(--text, #fff);
+      .qx-live { justify-content: flex-start; padding-top: max(12px, env(safe-area-inset-top)); }
+      .qx-code {
+        font-family: var(--qx-font-mono); font-size: 34px; font-weight: 700; letter-spacing: 6px;
+        color: var(--qx-accent); text-align: center; margin-bottom: 22px;
       }
-      .oq-card {
-        background: var(--surf, #1e293b);
-        border: 1px solid var(--border, #334155);
-        border-radius: var(--r, 16px);
-        padding: 32px 24px;
-        max-width: 420px;
-        width: 100%;
+      .qx-pulse-dot {
+        width: 14px; height: 14px; border-radius: 50%; background: var(--qx-accent);
+        margin: 22px auto 10px; animation: qx-pulse 1.4s ease-in-out infinite;
       }
-      .oq-center { text-align: center; }
-      .oq-title { font-size: 22px; font-weight: 700; margin: 0 0 12px; }
-      .oq-code { font-size: 32px; font-weight: 800; letter-spacing: 4px; color: var(--accent, #14b8a6); text-align: center; margin-bottom: 20px; }
-      .oq-label { display: block; font-size: 13px; color: var(--muted, #94a3b8); margin: 14px 0 6px; }
-      .oq-input {
-        width: 100%; padding: 12px 14px; border-radius: 10px;
-        border: 1px solid var(--border, #334155); background: var(--surf2, #0f172a);
-        color: var(--text, #fff); font-size: 16px; box-sizing: border-box;
-      }
-      .oq-btn { width: 100%; padding: 14px; border-radius: 10px; border: none; font-size: 16px; font-weight: 700; cursor: pointer; margin-top: 20px; }
-      .oq-btn-primary { background: var(--accent, #14b8a6); color: #fff; }
-      .oq-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-      .oq-error { color: #f87171; font-size: 13px; margin-top: 8px; }
-      .oq-muted { color: var(--muted, #94a3b8); font-size: 14px; }
-      .oq-pulse-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--accent, #14b8a6); margin: 20px auto; animation: oq-pulse 1.4s ease-in-out infinite; }
-      @keyframes oq-pulse { 0%,100% { opacity: 0.3; transform: scale(0.8);} 50% { opacity: 1; transform: scale(1.2);} }
-      .oq-participant-count { font-size: 28px; font-weight: 800; margin: 8px 0; }
-      .oq-name-chip { display: inline-block; margin-top: 12px; padding: 6px 14px; border-radius: 999px; background: var(--surf2, #0f172a); font-size: 13px; }
+      @keyframes qx-pulse { 0%,100% { opacity: 0.3; transform: scale(0.8);} 50% { opacity: 1; transform: scale(1.2);} }
+      .qx-participant-count { font-family: var(--qx-font-display); font-size: 44px; font-weight: 600; margin: 4px 0 0; }
+      .qx-name-chip { display: inline-block; margin-top: 16px; padding: 7px 16px; border-radius: 999px; background: var(--qx-surface-2); font-size: 13px; }
 
-      .oq-live-header { display: flex; justify-content: space-between; align-items: center; width: 100%; max-width: 600px; margin-bottom: 16px; }
-      .oq-qnum { font-size: 15px; color: var(--muted, #94a3b8); }
-      .oq-timer { font-size: 28px; font-weight: 800; width: 56px; height: 56px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--surf2, #0f172a); }
-      .oq-timer-urgent { color: #f87171; }
-      .oq-banner { width: 100%; max-width: 600px; text-align: center; padding: 8px; margin-bottom: 12px; border-radius: 8px; background: #d89e00; color: #000; font-weight: 700; }
-      .oq-media { max-width: 600px; width: 100%; border-radius: 12px; margin-bottom: 16px; }
-      .oq-question-text { font-size: 22px; font-weight: 700; text-align: center; max-width: 600px; margin-bottom: 24px; }
-      .oq-options { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 100%; max-width: 600px; }
-      @media (max-width: 480px) { .oq-options { grid-template-columns: 1fr; } }
-      .oq-option { display: flex; align-items: center; gap: 12px; padding: 20px; border: none; border-radius: 12px; color: #fff; font-size: 17px; font-weight: 600; cursor: pointer; text-align: left; }
-      .oq-option:disabled { opacity: 0.5; cursor: not-allowed; }
-      .oq-option-letter { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: rgba(255,255,255,0.25); font-weight: 800; flex-shrink: 0; }
-      .oq-feedback { font-size: 24px; font-weight: 800; margin-bottom: 8px; }
-      .oq-correct { color: #4ade80; }
-      .oq-incorrect { color: #f87171; }
-      .oq-points { font-size: 18px; font-weight: 700; color: var(--accent, #14b8a6); margin-bottom: 16px; }
-      .oq-answer-bars { display: flex; flex-direction: column; gap: 8px; margin: 20px 0; }
-      .oq-answer-bar-row { display: flex; align-items: center; gap: 12px; }
-      .oq-my-result { margin: 16px 0 24px; }
-      .oq-my-rank { font-size: 28px; font-weight: 800; color: var(--accent, #14b8a6); }
-      .oq-my-score { font-size: 20px; font-weight: 700; margin: 4px 0; }
-      .oq-leaderboard-title { margin: 20px 0 10px; font-size: 16px; }
-      .oq-leaderboard { list-style: none; padding: 0; margin: 0; text-align: left; }
-      .oq-leaderboard li { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px; margin-bottom: 6px; background: var(--surf2, #0f172a); }
-      .oq-leaderboard li.oq-me { border: 2px solid var(--accent, #14b8a6); }
-      .oq-lb-rank { width: 32px; font-weight: 700; color: var(--muted, #94a3b8); }
-      .oq-lb-name { flex: 1; }
-      .oq-lb-score { font-weight: 700; }
+      .qx-live-header { display: flex; justify-content: space-between; align-items: center; width: 100%; max-width: 620px; margin-bottom: 18px; gap: 10px; }
+      .qx-qnum { font-size: 14px; color: var(--qx-muted); font-weight: 600; display: flex; flex-direction: column; gap: 2px; }
+      .qx-multi-tag {
+        font-family: var(--qx-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+        color: var(--qx-accent-2); font-weight: 700;
+      }
+      .qx-ring-wrap { position: relative; width: 60px; height: 60px; flex-shrink: 0; }
+      .qx-ring-num {
+        position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+        font-family: var(--qx-font-mono); font-size: 20px; font-weight: 700;
+      }
+      .qx-ring-urgent .qx-ring-num { color: var(--qx-danger); animation: qx-ring-pulse 1s ease-in-out infinite; }
+      @keyframes qx-ring-pulse { 0%,100% { transform: scale(1);} 50% { transform: scale(1.15);} }
+
+      .qx-media { max-width: 620px; width: 100%; border-radius: var(--qx-radius); margin-bottom: 16px; }
+      .qx-question-text {
+        font-family: var(--qx-font-display); font-weight: 500; font-size: 24px; text-align: center;
+        max-width: 620px; margin: 0 auto 26px; padding: 0 8px; line-height: 1.3;
+      }
+      .qx-options { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; width: 100%; max-width: 620px; margin: 0 auto; padding: 0 4px; box-sizing: border-box; }
+      @media (max-width: 480px) { .qx-options { grid-template-columns: 1fr; } .qx-question-text { font-size: 20px; } }
+      .qx-option {
+        position: relative; display: flex; align-items: center; gap: 12px; padding: 20px;
+        min-height: 68px; border: 2px solid transparent; border-radius: var(--qx-radius);
+        background: var(--qx-surface); color: var(--qx-text); font-size: 16px; font-weight: 600;
+        cursor: pointer; text-align: left; -webkit-tap-highlight-color: transparent;
+        transition: transform 0.08s, border-color 0.15s, background 0.15s;
+      }
+      .qx-option:active:not(:disabled) { transform: scale(0.97); }
+      .qx-option:disabled { opacity: 0.5; cursor: not-allowed; }
+      .qx-option-active {
+        border-color: var(--tile-color);
+        background: var(--tile-color);
+        color: #0e0f24;
+      }
+      .qx-option-active .qx-option-shape { background: rgba(14,15,36,0.18); color: #0e0f24; }
+      .qx-option-shape {
+        display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px;
+        border-radius: 9px; background: var(--tile-color); color: #0e0f24; flex-shrink: 0;
+      }
+      .qx-submit-btn { max-width: 620px; margin-left: auto; margin-right: auto; margin-top: 18px; }
+
+      .qx-feedback { font-family: var(--qx-font-display); font-size: 26px; font-weight: 600; margin-bottom: 8px; }
+      .qx-correct { color: var(--qx-success); }
+      .qx-incorrect { color: var(--qx-danger); }
+      .qx-bounce-in { animation: qx-bounce-in 0.4s ease-out; }
+      @keyframes qx-bounce-in { 0% { transform: scale(0.5); opacity: 0; } 60% { transform: scale(1.15); opacity: 1; } 100% { transform: scale(1); } }
+      .qx-shake { animation: qx-shake 0.4s ease-in-out; }
+      @keyframes qx-shake { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-8px); } 75% { transform: translateX(8px); } }
+      .qx-points { font-family: var(--qx-font-mono); font-size: 20px; font-weight: 700; color: var(--qx-accent); margin-bottom: 16px; }
+
+      .qx-answer-bars { display: flex; flex-direction: column; gap: 10px; margin: 20px 0; }
+      .qx-answer-bar-row { display: flex; align-items: center; gap: 12px; }
+      .qx-shape-sm { width: 26px; height: 26px; border-radius: 7px; display: flex; align-items: center; justify-content: center; color: #0e0f24; }
+      .qx-round-result {
+        font-weight: 700; padding: 10px 16px; border-radius: var(--qx-radius-sm);
+        background: var(--qx-surface-2); display: inline-block; margin: 6px 0 4px;
+      }
+
+      .qx-my-result { margin: 16px 0 24px; }
+      .qx-my-rank { font-family: var(--qx-font-display); font-size: 28px; font-weight: 600; color: var(--qx-accent); }
+      .qx-rank-glow { text-shadow: 0 0 24px rgba(255, 176, 32, 0.55); }
+      .qx-my-score { font-family: var(--qx-font-mono); font-size: 20px; font-weight: 700; margin: 4px 0; }
+
+      .qx-confetti-wrap { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 40; }
+      .qx-confetti-piece { position: absolute; top: -20px; width: 8px; height: 14px; animation-name: qx-confetti-fall; animation-timing-function: ease-in; animation-fill-mode: forwards; }
+      @keyframes qx-confetti-fall { 0% { top: -20px; opacity: 1; } 100% { top: 110vh; opacity: 0.7; } }
     `}</style>
   );
 }
