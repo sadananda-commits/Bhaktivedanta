@@ -171,12 +171,22 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
   useEffect(() => {
     if (status !== 'live' || revealPhase || autoRevealedRef.current) return;
     const allAnswered = participants.length > 0 && answeredCount >= participants.length;
-    const timeUp = secondsLeft === 0;
+    // Require an actual live question+deadline before treating secondsLeft
+    // as meaningful. Starting a quiz fires 'quiz-started' (status -> 'live')
+    // and 'question-started' (sets deadline/secondsLeft) as two separate
+    // realtime events — any gap between them is a render where status is
+    // already 'live' but deadline/secondsLeft haven't been set yet, and
+    // secondsLeft's stale initial 0 would otherwise be misread as "time's
+    // up" and reveal the very first question instantly. Every question
+    // after the first only ever fires 'question-started' on its own, so
+    // deadline and secondsLeft always land together — this gap only exists
+    // right after Start Quiz.
+    const timeUp = !!question && !!deadline && secondsLeft === 0;
     if (allAnswered || timeUp) {
       autoRevealedRef.current = true;
       quizApi.revealAnswer(quizCode, hostCode).catch(err => setError(err.message));
     }
-  }, [status, revealPhase, secondsLeft, answeredCount, participants.length, quizCode, hostCode]);
+  }, [status, revealPhase, secondsLeft, answeredCount, participants.length, quizCode, hostCode, question, deadline]);
 
   async function runAction(fn) {
     setBusy(true); setError('');
