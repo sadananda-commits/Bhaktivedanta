@@ -379,6 +379,12 @@ export default function OnlineQuizParticipant({ quizCode }) {
         <div className="qx-card qx-center">
           <div className="qx-eyebrow">Correct answer</div>
           <h2 className="qx-title">{reveal.correctAnswer}</h2>
+          {(reveal.correctCount !== undefined) && (
+            <div className="qx-tally-row">
+              <span className="qx-tally qx-tally-correct"><i className="fa-solid fa-check" /> {reveal.correctCount} correct</span>
+              <span className="qx-tally qx-tally-incorrect"><i className="fa-solid fa-xmark" /> {reveal.incorrectCount} incorrect</span>
+            </div>
+          )}
           <div className="qx-answer-bars">
             {OPTION_LABELS.map(letter => (
               reveal.answerCounts[letter] !== undefined && (
@@ -548,6 +554,10 @@ function ParticipantStyles() {
       .qx-points { font-family: var(--qx-font-mono); font-size: 20px; font-weight: 700; color: var(--qx-accent); margin-bottom: 16px; }
 
       .qx-answer-bars { display: flex; flex-direction: column; gap: 10px; margin: 20px 0; }
+      .qx-tally-row { display: flex; gap: 8px; justify-content: center; margin: 10px 0 4px; flex-wrap: wrap; }
+      .qx-tally { font-family: var(--qx-font-mono); font-size: 12px; font-weight: 700; padding: 6px 12px; border-radius: 999px; display: inline-flex; align-items: center; gap: 6px; }
+      .qx-tally-correct { background: rgba(52,231,180,0.14); color: var(--qx-success); }
+      .qx-tally-incorrect { background: var(--qx-danger-dim); color: var(--qx-danger); }
       .qx-answer-bar-row { display: flex; align-items: center; gap: 12px; }
       .qx-shape-sm { width: 26px; height: 26px; border-radius: 7px; display: flex; align-items: center; justify-content: center; color: #0e0f24; }
       .qx-round-result {

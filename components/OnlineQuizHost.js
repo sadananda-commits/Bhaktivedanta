@@ -1,8 +1,17 @@
 // components/OnlineQuizHost.js
 //
-// Host control panel: lobby (QR code + scoreboard-style joining list +
-// Start), live view (question, radial timer, answered-count, controls),
-// and final leaderboard with CSV export.
+// Host control panel with three distinct question-cycle screens:
+//   1. LIVE      — question + a large ticking countdown wheel, no manual
+//                  action needed; this screen ends itself.
+//   2. SUMMARY   — auto-shown the instant the timer hits zero OR every
+//                  participant has answered (whichever comes first). Bar
+//                  chart of how many picked each option (correct one
+//                  highlighted), plus total correct/incorrect counts —
+//                  no participant names, ever. Two options from here:
+//                  "View Standings" or skip straight to "Next Question".
+//   3. STANDINGS — the running leaderboard, stays on screen until the host
+//                  explicitly continues.
+// Plus lobby (QR code join) and final results (CSV export) — unchanged.
 //
 // hostEmail MUST be the actual logged-in teacher/parent's identity —
 // Code.gs re-validates it against the quiz's "Host Email" column on every
@@ -15,7 +24,7 @@ import { quizSounds } from '../lib/quizSounds';
 import { QuizFonts, QuizThemeStyles, ShapeIcon, OPTION_LABELS, OPTION_COLORS } from '../lib/quizTheme';
 
 export default function OnlineQuizHost({ quizCode, hostEmail }) {
-  const [status, setStatus] = useState('loading');
+  const [status, setStatus] = useState('loading'); // loading | lobby | live | paused | ended
   const [title, setTitle] = useState('');
   const [participants, setParticipants] = useState([]);
   const [error, setError] = useState('');
@@ -25,6 +34,9 @@ export default function OnlineQuizHost({ quizCode, hostEmail }) {
   const [question, setQuestion] = useState(null);
   const [answeredCount, setAnsweredCount] = useState(0);
   const [reveal, setReveal] = useState(null);
+  // null while the question is actually live; 'summary' once auto-revealed;
+  // 'standings' once the host chooses to look at the leaderboard.
+  const [revealPhase, setRevealPhase] = useState(null);
   const [secondsLeft, setSecondsLeft] = useState(0);
   const [totalSeconds, setTotalSeconds] = useState(1);
   const [deadline, setDeadline] = useState(null);
@@ -37,6 +49,8 @@ export default function OnlineQuizHost({ quizCode, hostEmail }) {
   const statusRef = useRef(status);
   statusRef.current = status;
   const wasDisconnectedRef = useRef(false);
+  const autoRevealedRef = useRef(false); // guards against firing revealAnswer more than once per question
+  const lastTickPlayedRef = useRef(null);
 
   const refreshParticipants = useCallback(() => {
     quizApi.getParticipants(quizCode, hostEmail)
@@ -75,11 +89,18 @@ export default function OnlineQuizHost({ quizCode, hostEmail }) {
         setTotalSeconds(data.timeLimitSec);
         setAnsweredCount(0);
         setReveal(null);
+        setRevealPhase(null);
+        autoRevealedRef.current = false;
+        lastTickPlayedRef.current = null;
         setStatus('live');
         quizSounds.questionStart();
       },
       'answer-count-updated': (data) => setAnsweredCount(data.answeredCount),
-      'question-ended': (data) => { setReveal(data); quizSounds.standingsReveal(); },
+      'question-ended': (data) => {
+        setReveal(data);
+        setRevealPhase('summary'); // always lands on the bar-chart summary first
+        quizSounds.standingsReveal();
+      },
       'quiz-paused': () => setStatus('paused'),
       'quiz-resumed': (data) => {
         setStatus('live');
@@ -111,13 +132,37 @@ export default function OnlineQuizHost({ quizCode, hostEmail }) {
     return unsubscribe;
   }, [refreshFullState]);
 
+  // ── Countdown — ticks every second the whole way through (the "giant
+  // wheel" is the host/projector's clock, so a continuous tick makes sense
+  // here even though individual student phones only tick in the last 5s) ──
   useEffect(() => {
-    if (status !== 'live' || !deadline) return;
-    const tick = () => setSecondsLeft(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
+    if (status !== 'live' || !deadline || revealPhase) return;
+    const tick = () => {
+      const s = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      setSecondsLeft(s);
+      if (s > 0 && lastTickPlayedRef.current !== s) {
+        lastTickPlayedRef.current = s;
+        quizSounds.tick();
+      }
+    };
     tick();
     const id = setInterval(tick, 250);
     return () => clearInterval(id);
-  }, [status, deadline]);
+  }, [status, deadline, revealPhase]);
+
+  // ── Auto-reveal: the summary screen appears on its own, no button needed
+  // — the instant the timer hits zero, or every joined participant has
+  // answered, whichever happens first. Only the host's browser triggers
+  // this (not each of N student devices), so there's exactly one caller. ──
+  useEffect(() => {
+    if (status !== 'live' || revealPhase || autoRevealedRef.current) return;
+    const allAnswered = participants.length > 0 && answeredCount >= participants.length;
+    const timeUp = secondsLeft === 0;
+    if (allAnswered || timeUp) {
+      autoRevealedRef.current = true;
+      quizApi.revealAnswer(quizCode, hostEmail).catch(err => setError(err.message));
+    }
+  }, [status, revealPhase, secondsLeft, answeredCount, participants.length, quizCode, hostEmail]);
 
   async function runAction(fn) {
     setBusy(true); setError('');
@@ -135,7 +180,6 @@ export default function OnlineQuizHost({ quizCode, hostEmail }) {
     URL.revokeObjectURL(url);
   }
 
-  const answeredPct = participants.length ? Math.min(100, Math.round((answeredCount / participants.length) * 100)) : 0;
   const ConnectionBanner = () => connectionLost ? <div className="qx-connbanner"><i className="fa-solid fa-triangle-exclamation" /> Reconnecting…</div> : null;
 
   if (status === 'loading') {
@@ -183,59 +227,83 @@ export default function OnlineQuizHost({ quizCode, hostEmail }) {
         </div>
       )}
 
-      {(status === 'live' || status === 'paused') && question && (
+      {/* ── 1. LIVE: question + giant countdown wheel, no reveal yet ── */}
+      {(status === 'live' || status === 'paused') && question && !revealPhase && (
         <div className="qx-card qxh-live-card">
-          <div className="qxh-live-stats">
-            <Stat label="Question" value={question.qNum} />
-            <Stat label="Answered" value={`${answeredCount}/${participants.length}`} />
-            <RingStat secondsLeft={secondsLeft} totalSeconds={totalSeconds} />
+          <div className="qxh-live-top">
+            <span className="qx-eyebrow">Question {question.qNum}</span>
+            <span className="qxh-answered-chip">{answeredCount}/{participants.length} answered</span>
           </div>
-          <div className="qxh-progress-track"><div className="qxh-progress-fill" style={{ width: `${answeredPct}%` }} /></div>
-          <div className="qxh-question-text">{question.questionText}</div>
+          <div className="qxh-question-text qxh-question-text-big">{question.questionText}</div>
 
-          {reveal && (
-            <div className="qxh-reveal">
-              <div className="qxh-reveal-top">
-                <span className="qx-muted">Correct answer</span>
-                <strong>{reveal.correctAnswer}</strong>
-              </div>
-              <div className="qxh-answer-counts">
-                {OPTION_LABELS.map(letter => reveal.answerCounts[letter] !== undefined && (
-                  <span key={letter} className="qxh-count-chip">
-                    <span className="qxh-mini-shape" style={{ background: OPTION_COLORS[letter] }}><ShapeIcon letter={letter} size={12} /></span>
-                    {reveal.answerCounts[letter]}
-                  </span>
-                ))}
-              </div>
-              {reveal.standings?.length > 0 && (
-                <div className="qxh-standings">
-                  <div className="qx-eyebrow" style={{ marginTop: 14 }}>Standings so far</div>
-                  <ol className="qx-leaderboard">
-                    {reveal.standings.slice(0, 5).map(r => (
-                      <li key={r.participantId}><span className="qx-lb-rank">#{r.rank}</span><span className="qx-lb-name">{r.name}</span><span className="qx-lb-score">{r.totalScore}</span></li>
-                    ))}
-                  </ol>
-                </div>
-              )}
-            </div>
-          )}
+          <div className="qxh-giant-wheel">
+            <svg width="240" height="240" viewBox="0 0 240 240">
+              <circle cx="120" cy="120" r="104" fill="none" stroke="var(--qx-surface-2)" strokeWidth="14" />
+              <circle cx="120" cy="120" r="104" fill="none"
+                stroke={secondsLeft <= 5 ? 'var(--qx-danger)' : 'var(--qx-accent)'}
+                strokeWidth="14" strokeLinecap="round"
+                strokeDasharray={2 * Math.PI * 104}
+                strokeDashoffset={2 * Math.PI * 104 * (1 - (totalSeconds > 0 ? secondsLeft / totalSeconds : 0))}
+                transform="rotate(-90 120 120)"
+                style={{ transition: 'stroke-dashoffset 0.25s linear' }} />
+            </svg>
+            <span className={'qxh-giant-num' + (secondsLeft <= 5 ? ' qxh-giant-num-urgent' : '')}>{secondsLeft}</span>
+          </div>
 
-          <div className="qxh-controls">
+          {status === 'paused' && <div className="qx-banner" style={{ maxWidth: 300, margin: '0 auto' }}>Paused</div>}
+
+          <div className="qxh-live-bottom-controls">
             {status === 'live'
               ? <button className="qxh-btn" disabled={busy} onClick={() => runAction(() => quizApi.pauseQuiz(quizCode, hostEmail))}><i className="fa-solid fa-pause" /> Pause</button>
               : <button className="qxh-btn" disabled={busy} onClick={() => runAction(() => quizApi.resumeQuiz(quizCode, hostEmail))}><i className="fa-solid fa-play" /> Resume</button>}
+            <button className="qxh-btn qxh-btn-danger" disabled={busy} onClick={() => runAction(() => quizApi.endQuiz(quizCode, hostEmail))}><i className="fa-solid fa-flag-checkered" /> End Quiz</button>
+          </div>
+        </div>
+      )}
 
-            {!reveal ? (
-              <button className="qxh-btn qx-btn-primary" style={{ marginTop: 0 }} disabled={busy}
-                onClick={() => runAction(() => quizApi.revealAnswer(quizCode, hostEmail))}>
-                <i className="fa-solid fa-eye" /> Show Results
-              </button>
-            ) : (
-              <button className="qxh-btn qx-btn-primary" style={{ marginTop: 0 }} disabled={busy}
-                onClick={() => runAction(() => quizApi.nextQuestion(quizCode, hostEmail))}>
-                <i className="fa-solid fa-forward" /> Next Question
-              </button>
-            )}
+      {/* ── 2. SUMMARY: auto-shown bar chart, correct answer highlighted, no names ── */}
+      {revealPhase === 'summary' && reveal && question && (
+        <div className="qx-card qxh-summary-card">
+          <span className="qx-eyebrow">Question {reveal.qNum} results</span>
+          <div className="qxh-tally-row">
+            <span className="qxh-tally qxh-tally-correct"><i className="fa-solid fa-check" /> {reveal.correctCount ?? 0} correct</span>
+            <span className="qxh-tally qxh-tally-incorrect"><i className="fa-solid fa-xmark" /> {reveal.incorrectCount ?? 0} incorrect</span>
+          </div>
+
+          <BarChart question={question} reveal={reveal} />
+
+          <div className="qxh-controls">
+            <button className="qxh-btn" disabled={busy} onClick={() => setRevealPhase('standings')}>
+              <i className="fa-solid fa-ranking-star" /> View Standings
+            </button>
+            <button className="qxh-btn qx-btn-primary" style={{ marginTop: 0 }} disabled={busy}
+              onClick={() => runAction(() => quizApi.nextQuestion(quizCode, hostEmail))}>
+              <i className="fa-solid fa-forward" /> Next Question
+            </button>
+            <button className="qxh-btn qxh-btn-danger" disabled={busy} onClick={() => runAction(() => quizApi.endQuiz(quizCode, hostEmail))}><i className="fa-solid fa-flag-checkered" /> End Quiz</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── 3. STANDINGS: stays until the host explicitly continues ── */}
+      {revealPhase === 'standings' && reveal && (
+        <div className="qx-card qxh-standings-card">
+          <span className="qx-eyebrow">Standings so far</span>
+          <h2 className="qx-title" style={{ marginTop: 4 }}>Current Rankings</h2>
+          <ol className="qx-leaderboard">
+            {(reveal.standings || []).map(r => (
+              <li key={r.participantId}><span className="qx-lb-rank">#{r.rank}</span><span className="qx-lb-name">{r.name}</span><span className="qx-lb-score">{r.totalScore}</span></li>
+            ))}
+            {(!reveal.standings || reveal.standings.length === 0) && <li className="qx-muted">No scores yet.</li>}
+          </ol>
+          <div className="qxh-controls">
+            <button className="qxh-btn" disabled={busy} onClick={() => setRevealPhase('summary')}>
+              <i className="fa-solid fa-chart-column" /> Back to Results
+            </button>
+            <button className="qxh-btn qx-btn-primary" style={{ marginTop: 0 }} disabled={busy}
+              onClick={() => runAction(() => quizApi.nextQuestion(quizCode, hostEmail))}>
+              <i className="fa-solid fa-forward" /> Next Question
+            </button>
             <button className="qxh-btn qxh-btn-danger" disabled={busy} onClick={() => runAction(() => quizApi.endQuiz(quizCode, hostEmail))}><i className="fa-solid fa-flag-checkered" /> End Quiz</button>
           </div>
         </div>
@@ -264,32 +332,32 @@ export default function OnlineQuizHost({ quizCode, hostEmail }) {
   );
 }
 
-function Stat({ label, value }) {
-  return (
-    <div className="qxh-stat">
-      <div className="qxh-stat-num">{value}</div>
-      <div className="qx-muted">{label}</div>
-    </div>
-  );
-}
+// Per-option bar chart: bar length reflects how many picked that option,
+// the correct option (or options, for multi-select) gets a highlighted
+// border + check mark. No names anywhere — counts only.
+function BarChart({ question, reveal }) {
+  const counts = reveal.answerCounts || {};
+  const maxCount = Math.max(1, ...OPTION_LABELS.map(l => counts[l] || 0));
+  const correctSet = String(reveal.correctAnswer || '').split(',').map(s => s.trim().toUpperCase());
 
-function RingStat({ secondsLeft, totalSeconds }) {
-  const pct = totalSeconds > 0 ? secondsLeft / totalSeconds : 0;
-  const circumference = 2 * Math.PI * 22;
   return (
-    <div className="qxh-stat">
-      <div className="qxh-ring-wrap">
-        <svg width="52" height="52" viewBox="0 0 52 52">
-          <circle cx="26" cy="26" r="22" fill="none" stroke="var(--qx-surface-2)" strokeWidth="4" />
-          <circle cx="26" cy="26" r="22" fill="none"
-            stroke={secondsLeft <= 5 ? 'var(--qx-danger)' : 'var(--qx-accent)'}
-            strokeWidth="4" strokeLinecap="round" strokeDasharray={circumference}
-            strokeDashoffset={circumference * (1 - pct)} transform="rotate(-90 26 26)"
-            style={{ transition: 'stroke-dashoffset 0.25s linear' }} />
-        </svg>
-        <span className="qxh-ring-num">{secondsLeft}</span>
-      </div>
-      <div className="qx-muted">Time Left</div>
+    <div className="qxh-barchart">
+      {OPTION_LABELS.filter(l => question.options[l]).map(letter => {
+        const count = counts[letter] || 0;
+        const pct = Math.round((count / maxCount) * 100);
+        const isCorrect = correctSet.includes(letter);
+        return (
+          <div key={letter} className={'qxh-bar-row' + (isCorrect ? ' qxh-bar-row-correct' : '')}>
+            <span className="qxh-bar-shape" style={{ background: OPTION_COLORS[letter] }}><ShapeIcon letter={letter} size={16} /></span>
+            <span className="qxh-bar-label">{question.options[letter]}</span>
+            <div className="qxh-bar-track">
+              <div className="qxh-bar-fill" style={{ width: `${pct}%`, background: OPTION_COLORS[letter] }} />
+            </div>
+            <span className="qxh-bar-count">{count}</span>
+            {isCorrect && <i className="fa-solid fa-circle-check qxh-bar-check" />}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -320,23 +388,37 @@ function HostStyles() {
       @keyframes qxh-slide-in { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: translateX(0); } }
       .qxh-avatar { width: 26px; height: 26px; border-radius: 50%; background: var(--qx-accent); color: #072922; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; flex-shrink: 0; }
 
-      .qxh-live-card { max-width: 100%; }
-      .qxh-live-stats { display: flex; gap: 16px; margin-bottom: 16px; }
-      .qxh-stat { flex: 1; text-align: center; background: var(--qx-surface-2); border-radius: var(--qx-radius-sm); padding: 14px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
-      .qxh-stat-num { font-family: var(--qx-font-display); font-size: 26px; font-weight: 600; }
-      .qxh-ring-wrap { position: relative; width: 52px; height: 52px; }
-      .qxh-ring-num { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: var(--qx-font-mono); font-size: 17px; font-weight: 700; }
+      /* ── Live screen: giant wheel ── */
+      .qxh-live-card { max-width: 100%; text-align: center; }
+      .qxh-live-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+      .qxh-answered-chip { font-family: var(--qx-font-mono); font-size: 12px; color: var(--qx-muted); background: var(--qx-surface-2); padding: 5px 12px; border-radius: 999px; }
+      .qxh-question-text-big { font-size: 24px; margin-bottom: 26px; }
+      .qxh-giant-wheel { position: relative; width: 240px; height: 240px; margin: 0 auto 26px; }
+      .qxh-giant-num {
+        position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+        font-family: var(--qx-font-mono); font-size: 76px; font-weight: 700;
+      }
+      .qxh-giant-num-urgent { color: var(--qx-danger); animation: qxh-giant-pulse 1s ease-in-out infinite; }
+      @keyframes qxh-giant-pulse { 0%,100% { transform: scale(1);} 50% { transform: scale(1.08);} }
+      .qxh-live-bottom-controls { display: flex; justify-content: center; gap: 10px; }
 
-      .qxh-progress-track { width: 100%; height: 8px; border-radius: 4px; background: var(--qx-surface-2); overflow: hidden; margin-bottom: 20px; }
-      .qxh-progress-fill { height: 100%; background: var(--qx-accent); transition: width 0.3s ease-out; }
-      .qxh-question-text { font-family: var(--qx-font-display); font-size: 20px; font-weight: 500; margin-bottom: 18px; }
+      /* ── Summary (bar chart) screen ── */
+      .qxh-summary-card { max-width: 100%; }
+      .qxh-tally-row { display: flex; gap: 12px; margin: 10px 0 22px; }
+      .qxh-tally { font-family: var(--qx-font-display); font-size: 18px; font-weight: 600; padding: 10px 18px; border-radius: var(--qx-radius-sm); display: inline-flex; align-items: center; gap: 8px; }
+      .qxh-tally-correct { background: rgba(52,231,180,0.14); color: var(--qx-success); }
+      .qxh-tally-incorrect { background: var(--qx-danger-dim); color: var(--qx-danger); }
+      .qxh-barchart { display: flex; flex-direction: column; gap: 12px; margin-bottom: 22px; }
+      .qxh-bar-row { display: grid; grid-template-columns: 28px auto 1fr 32px 20px; align-items: center; gap: 10px; padding: 4px 0; }
+      .qxh-bar-row-correct { background: rgba(52,231,180,0.06); border-radius: 10px; }
+      .qxh-bar-shape { width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #0e0f24; flex-shrink: 0; }
+      .qxh-bar-label { font-size: 13px; font-weight: 600; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .qxh-bar-track { height: 20px; background: var(--qx-surface-2); border-radius: 6px; overflow: hidden; }
+      .qxh-bar-fill { height: 100%; border-radius: 6px; transition: width 0.5s ease-out; min-width: 4px; }
+      .qxh-bar-count { font-family: var(--qx-font-mono); font-weight: 700; text-align: right; }
+      .qxh-bar-check { color: var(--qx-success); }
 
-      .qxh-reveal { background: var(--qx-surface-2); padding: 16px; border-radius: var(--qx-radius-sm); margin-bottom: 18px; }
-      .qxh-reveal-top { display: flex; justify-content: space-between; align-items: center; font-size: 15px; }
-      .qxh-answer-counts { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
-      .qxh-count-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--qx-surface); padding: 5px 10px; border-radius: 999px; font-family: var(--qx-font-mono); font-size: 13px; font-weight: 700; }
-      .qxh-mini-shape { width: 18px; height: 18px; border-radius: 5px; display: flex; align-items: center; justify-content: center; color: #0e0f24; }
-      .qxh-standings { margin-top: 4px; }
+      .qxh-standings-card { max-width: 100%; }
 
       .qxh-controls { display: flex; flex-wrap: wrap; gap: 10px; }
       .qxh-btn {
@@ -356,7 +438,11 @@ function HostStyles() {
 
       @media (max-width: 520px) {
         .qxh-wrap { padding: 16px 12px; }
-        .qxh-live-stats { flex-direction: column; }
+        .qxh-giant-wheel { width: 180px; height: 180px; }
+        .qxh-giant-wheel svg { width: 180px; height: 180px; }
+        .qxh-giant-num { font-size: 56px; }
+        .qxh-bar-row { grid-template-columns: 22px auto 1fr 28px 16px; }
+        .qxh-bar-label { max-width: 90px; }
         .qxh-controls { flex-direction: column; }
         .qxh-controls .qxh-btn, .qxh-controls .qx-btn-primary { width: 100%; }
       }
