@@ -66,8 +66,14 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
         setStatus(state.status === 'lobby' ? 'lobby' : state.status);
         if (state.currentQuestion) {
           setQuestion(state.currentQuestion);
-          setDeadline(Date.parse(state.currentQuestion.startedAt) + state.currentQuestion.timeLimitSec * 1000);
+          const dl = Date.parse(state.currentQuestion.startedAt) + state.currentQuestion.timeLimitSec * 1000;
+          setDeadline(dl);
           setTotalSeconds(state.currentQuestion.timeLimitSec);
+          // Same fix as question-started below: seed secondsLeft right away
+          // (from actual remaining time, since some may have already
+          // elapsed) instead of leaving it at its stale initial 0, which the
+          // auto-reveal effect would otherwise misread as "time's up".
+          setSecondsLeft(Math.max(0, Math.ceil((dl - Date.now()) / 1000)));
           setAnsweredCount(state.answeredCount || 0);
         }
       })
@@ -88,6 +94,13 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
         setQuestion(data);
         setDeadline(Date.parse(data.startedAt) + data.timeLimitSec * 1000);
         setTotalSeconds(data.timeLimitSec);
+        // Seed this synchronously (not just via the tick effect) — otherwise
+        // secondsLeft sits at its stale initial value of 0 for one render,
+        // which the auto-reveal effect below misreads as "time's up" and
+        // reveals the very first question almost instantly. Every question
+        // after the first is unaffected because secondsLeft already holds a
+        // real leftover number by then.
+        setSecondsLeft(data.timeLimitSec);
         setAnsweredCount(0);
         setReveal(null);
         setRevealPhase(null);
