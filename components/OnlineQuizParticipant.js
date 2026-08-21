@@ -70,7 +70,7 @@ export default function OnlineQuizParticipant({ quizCode }) {
     if (state.status === 'ended') {
       setPhase('ended');
       quizApi.getResults(quizCode).then(r => setLeaderboard(r.leaderboard)).catch(() => {});
-    } else if (state.status === 'live' && state.currentQuestion) {
+    } else if ((state.status === 'live' || state.status === 'paused') && state.currentQuestion) {
       setQuestion(prev => {
         if (prev && prev.qNum === state.currentQuestion.qNum) return prev;
         setHasAnswered(false);
@@ -82,6 +82,7 @@ export default function OnlineQuizParticipant({ quizCode }) {
       });
       setDeadline(Date.parse(state.currentQuestion.startedAt || Date.now()) + state.currentQuestion.timeLimitSec * 1000);
       setTotalSeconds(state.currentQuestion.timeLimitSec);
+      setPaused(state.status === 'paused');
       setPhase(p => (p === 'between' ? p : 'live'));
     } else {
       setPhase(p => (p === 'join' ? p : 'lobby'));
@@ -135,7 +136,17 @@ export default function OnlineQuizParticipant({ quizCode }) {
         quizSounds.standingsReveal();
       },
       'quiz-paused': () => setPaused(true),
-      'quiz-resumed': () => setPaused(false),
+      'quiz-resumed': (data) => {
+        setPaused(false);
+        // Recompute against the server's shifted deadline (pause duration
+        // excluded) rather than trusting whatever this device's local timer
+        // was doing — every participant ends up counting down to the exact
+        // same moment.
+        if (data?.startedAt && data?.timeLimitSec) {
+          setDeadline(Date.parse(data.startedAt) + data.timeLimitSec * 1000);
+          setTotalSeconds(data.timeLimitSec);
+        }
+      },
       'quiz-ended': (data) => {
         setLeaderboard(data.leaderboard);
         setPhase('ended');
@@ -192,7 +203,7 @@ export default function OnlineQuizParticipant({ quizCode }) {
 
   // ── Countdown + tick + time's-up + auto-submit ────────────────────────
   useEffect(() => {
-    if (phase !== 'live' || !deadline) return;
+    if (phase !== 'live' || !deadline || paused) return; // frozen while paused — no interval runs at all
     const tick = () => {
       const s = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
       setSecondsLeft(s);
@@ -209,7 +220,7 @@ export default function OnlineQuizParticipant({ quizCode }) {
     const id = setInterval(tick, 250);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, deadline, hasAnswered, selectedLetters, doSubmit]);
+  }, [phase, deadline, hasAnswered, selectedLetters, doSubmit, paused]);
 
   // ── Score count-up animation ──────────────────────────────────────────
   useEffect(() => {

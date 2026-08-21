@@ -81,7 +81,13 @@ export default function OnlineQuizHost({ quizCode, hostEmail }) {
       'answer-count-updated': (data) => setAnsweredCount(data.answeredCount),
       'question-ended': (data) => { setReveal(data); quizSounds.standingsReveal(); },
       'quiz-paused': () => setStatus('paused'),
-      'quiz-resumed': () => setStatus('live'),
+      'quiz-resumed': (data) => {
+        setStatus('live');
+        if (data?.startedAt && data?.timeLimitSec) {
+          setDeadline(Date.parse(data.startedAt) + data.timeLimitSec * 1000);
+          setTotalSeconds(data.timeLimitSec);
+        }
+      },
       'quiz-ended': (data) => {
         setLeaderboard(data.leaderboard);
         setStatus('ended');
@@ -218,10 +224,18 @@ export default function OnlineQuizHost({ quizCode, hostEmail }) {
             {status === 'live'
               ? <button className="qxh-btn" disabled={busy} onClick={() => runAction(() => quizApi.pauseQuiz(quizCode, hostEmail))}><i className="fa-solid fa-pause" /> Pause</button>
               : <button className="qxh-btn" disabled={busy} onClick={() => runAction(() => quizApi.resumeQuiz(quizCode, hostEmail))}><i className="fa-solid fa-play" /> Resume</button>}
-            {!reveal && <button className="qxh-btn" disabled={busy} onClick={() => runAction(() => quizApi.revealAnswer(quizCode, hostEmail))}><i className="fa-solid fa-eye" /> Reveal Answer</button>}
-            <button className="qxh-btn qx-btn-primary" style={{ marginTop: 0 }} disabled={busy} onClick={() => runAction(() => quizApi.nextQuestion(quizCode, hostEmail))}>
-              <i className="fa-solid fa-forward" /> Next Question
-            </button>
+
+            {!reveal ? (
+              <button className="qxh-btn qx-btn-primary" style={{ marginTop: 0 }} disabled={busy}
+                onClick={() => runAction(() => quizApi.revealAnswer(quizCode, hostEmail))}>
+                <i className="fa-solid fa-eye" /> Show Results
+              </button>
+            ) : (
+              <button className="qxh-btn qx-btn-primary" style={{ marginTop: 0 }} disabled={busy}
+                onClick={() => runAction(() => quizApi.nextQuestion(quizCode, hostEmail))}>
+                <i className="fa-solid fa-forward" /> Next Question
+              </button>
+            )}
             <button className="qxh-btn qxh-btn-danger" disabled={busy} onClick={() => runAction(() => quizApi.endQuiz(quizCode, hostEmail))}><i className="fa-solid fa-flag-checkered" /> End Quiz</button>
           </div>
         </div>
