@@ -32,6 +32,9 @@ const ACTIONS = {
   createQuiz: createQuiz,
   verifyHostCode: verifyHostCode,
   addQuestions: addQuestions,
+  getQuestions: getQuestions,
+  updateQuestion: updateQuestion,
+  deleteQuestion: deleteQuestion,
   joinQuiz: joinQuiz,
   getQuizState: getQuizState,
   getParticipants: getParticipants,
@@ -41,6 +44,7 @@ const ACTIONS = {
   submitAnswer: submitAnswer,
   pauseQuiz: pauseQuiz,
   resumeQuiz: resumeQuiz,
+  resetQuiz: resetQuiz,
   endQuiz: endQuiz,
   getMyQuizzes: getMyQuizzes,
   getResults: getResults,
@@ -225,6 +229,57 @@ async function verifyHostCode(p) {
 }
 
 // Bulk-adds questions parsed client-side from the teacher's uploaded Excel
+// Shared by addQuestions (bulk Excel import) and updateQuestion (single edit
+// from the front-end question manager) — same rules either way: Question
+// Text + at least Option A/B required, and every letter in Correct Answer
+// must have a matching option filled in.
+function validateQuestionFields(q, label) {
+  const questionText = String(q.questionText || '').trim();
+  if (!questionText) throw new Error(label + ': Question Text is required.');
+
+  const options = {
+    A: String(q.optionA || '').trim(),
+    B: String(q.optionB || '').trim(),
+    C: String(q.optionC || '').trim(),
+    D: String(q.optionD || '').trim(),
+  };
+  if (!options.A || !options.B) {
+    throw new Error(label + ' ("' + questionText + '"): needs at least Option A and Option B.');
+  }
+
+  const correctAnswer = normalizeAnswer(q.correctAnswer);
+  if (!correctAnswer) {
+    throw new Error(label + ' ("' + questionText + '"): Correct Answer is required.');
+  }
+  const badLetter = correctAnswer.split(',').find(letter => !options[letter]);
+  if (badLetter) {
+    throw new Error(label + ' ("' + questionText + '"): Correct Answer "' + badLetter + '" has no matching option filled in.');
+  }
+
+  return {
+    questionText,
+    optionA: options.A,
+    optionB: options.B,
+    optionC: options.C,
+    optionD: options.D,
+    correctAnswer,
+    timeLimitSec: q.timeLimitSec || null,
+    points: q.points || null,
+    mediaUrl: String(q.mediaUrl || '').trim(),
+  };
+}
+
+// Question-bank edits (add/update/delete/reorder-via-delete) are only
+// allowed before the quiz has started — editing a question mid-quiz while
+// it's live on a projector is a can of worms (renumbering, an already-active
+// question changing under students' feet) that's out of scope here. Once
+// status leaves 'lobby', the question bank is frozen.
+function assertEditableQuestions(quizData) {
+  if (quizData.status !== 'lobby') {
+    throw new Error('Questions can only be added, edited, or deleted before the quiz is started (it\'s currently ' + quizData.status + ').');
+  }
+}
+
 // file (see components/QuizQuestionUploader.js). Ignores any "Q Num" the
 // sheet/template had — questions are numbered by appending after whatever
 // already exists for this quiz, so two uploads back-to-back can never
@@ -236,51 +291,19 @@ async function addQuestions(p) {
   const { id: quizId, data: quizData } = await getQuizDoc(p.quizId);
   const secret = await getSecretDoc(quizId);
   assertHost(secret, p.hostCode);
+  assertEditableQuestions(quizData);
   if (!Array.isArray(p.questions) || !p.questions.length) throw new Error('No questions to add.');
 
   const existingTotal = Number(quizData.totalQuestions) || 0;
   const questionsRef = db.collection('quizzes').doc(quizId).collection('questions');
 
-  const rowsToAdd = p.questions.map((q, i) => {
-    const questionText = String(q.questionText || '').trim();
-    if (!questionText) throw new Error('Row ' + (i + 1) + ': Question Text is required.');
+  // validateQuestionFields throws on the first bad row, so nothing is
+  // written until every row in this batch has passed.
+  const rowsToAdd = p.questions.map((q, i) => ({
+    qNum: existingTotal + i + 1,
+    ...validateQuestionFields(q, 'Row ' + (i + 1)),
+  }));
 
-    const options = {
-      A: String(q.optionA || '').trim(),
-      B: String(q.optionB || '').trim(),
-      C: String(q.optionC || '').trim(),
-      D: String(q.optionD || '').trim(),
-    };
-    if (!options.A || !options.B) {
-      throw new Error('Row ' + (i + 1) + ' ("' + questionText + '"): needs at least Option A and Option B.');
-    }
-
-    const correctAnswer = normalizeAnswer(q.correctAnswer);
-    if (!correctAnswer) {
-      throw new Error('Row ' + (i + 1) + ' ("' + questionText + '"): Correct Answer is required.');
-    }
-    const badLetter = correctAnswer.split(',').find(letter => !options[letter]);
-    if (badLetter) {
-      throw new Error('Row ' + (i + 1) + ' ("' + questionText + '"): Correct Answer "' + badLetter + '" has no matching option filled in.');
-    }
-
-    return {
-      qNum: existingTotal + i + 1,
-      questionText,
-      optionA: options.A,
-      optionB: options.B,
-      optionC: options.C,
-      optionD: options.D,
-      correctAnswer,
-      timeLimitSec: q.timeLimitSec || null,
-      points: q.points || null,
-      mediaUrl: String(q.mediaUrl || '').trim(),
-    };
-  });
-
-  // Validate every row BEFORE writing any of them (already done above via
-  // the .map that throws), so a bad row further down the sheet can't leave a
-  // half-imported set of questions behind.
   const batch = db.batch();
   rowsToAdd.forEach(row => {
     batch.set(questionsRef.doc(String(row.qNum)), row);
@@ -296,6 +319,76 @@ async function addQuestions(p) {
     firstQNum: existingTotal + 1,
     lastQNum: existingTotal + rowsToAdd.length,
   };
+}
+
+// Lists the full question bank (INCLUDING correct answers) for the
+// front-end question manager — host-only, since this is exactly the data
+// participants must never see directly.
+async function getQuestions(p) {
+  const { id: quizId } = await getQuizDoc(p.quizId);
+  const secret = await getSecretDoc(quizId);
+  assertHost(secret, p.hostCode);
+
+  const snap = await db.collection('quizzes').doc(quizId).collection('questions').get();
+  const questions = snap.docs
+    .map(d => d.data())
+    .sort((a, b) => Number(a.qNum) - Number(b.qNum));
+
+  return { questions };
+}
+
+// Edits one existing question in place — same validation as adding one,
+// just overwriting the doc at that qNum instead of appending a new one.
+async function updateQuestion(p) {
+  const { id: quizId, data: quizData } = await getQuizDoc(p.quizId);
+  const secret = await getSecretDoc(quizId);
+  assertHost(secret, p.hostCode);
+  assertEditableQuestions(quizData);
+
+  const qNum = Number(p.qNum);
+  if (!qNum) throw new Error('qNum required');
+  const questionRef = db.collection('quizzes').doc(quizId).collection('questions').doc(String(qNum));
+  const existing = await questionRef.get();
+  if (!existing.exists) throw new Error('Question ' + qNum + ' not found.');
+
+  const validated = validateQuestionFields(p, 'Question ' + qNum);
+  await questionRef.set({ qNum, ...validated });
+
+  return { ok: true, qNum };
+}
+
+// Deletes one question and renumbers everything after it so the question
+// bank stays gap-free (1, 2, 3... with no holes) — startQuiz/nextQuestion
+// depend on that contiguous numbering to find "the next doc" by number.
+// Small collection, so a full read-and-rewrite is simpler and safer than
+// trying to patch just the affected range.
+async function deleteQuestion(p) {
+  const { id: quizId, ref: quizRef, data: quizData } = await getQuizDoc(p.quizId);
+  const secret = await getSecretDoc(quizId);
+  assertHost(secret, p.hostCode);
+  assertEditableQuestions(quizData);
+
+  const targetQNum = Number(p.qNum);
+  if (!targetQNum) throw new Error('qNum required');
+
+  const questionsRef = quizRef.collection('questions');
+  const snap = await questionsRef.get();
+  const remaining = snap.docs
+    .map(d => d.data())
+    .filter(q => Number(q.qNum) !== targetQNum)
+    .sort((a, b) => Number(a.qNum) - Number(b.qNum));
+
+  const batch = db.batch();
+  // Clear every existing doc first, then rewrite 1..N fresh — avoids any
+  // ambiguity about which old doc IDs to reuse vs delete.
+  snap.docs.forEach(d => batch.delete(d.ref));
+  remaining.forEach((q, i) => {
+    batch.set(questionsRef.doc(String(i + 1)), { ...q, qNum: i + 1 });
+  });
+  batch.update(quizRef, { totalQuestions: remaining.length });
+  await batch.commit();
+
+  return { ok: true, remaining: remaining.length };
 }
 
 async function joinQuiz(p) {
@@ -502,6 +595,43 @@ async function submitAnswer(p) {
   // same rule the old Pusher-based setup followed.
   return { ok: true, isCorrect, pointsEarned };
 }
+
+// Resets a paused-or-ended quiz back to a fresh lobby so it can be run again
+// from Question 1 — for a re-run with a new group, or a redo with the same
+// one. Deliberately keeps the participant roster (so already-joined devices
+// don't need to re-enter the join code) and the question bank untouched —
+// only wipes the THINGS THAT WERE PRODUCED BY RUNNING IT: every submitted
+// answer, the running/final leaderboard, and the quiz's own progress
+// pointers (currentQuestionIndex, reveal, etc). Deliberately only allowed
+// from 'paused' or 'ended' — never mid-'live' — so a reset can't be fired
+// out from under a question that's actively counting down on a projector.
+async function resetQuiz(p) {
+  const { id: quizId, ref: quizRef, data: quizData } = await getQuizDoc(p.quizId);
+  const secret = await getSecretDoc(quizId);
+  assertHost(secret, p.hostCode);
+
+  if (quizData.status !== 'paused' && quizData.status !== 'ended') {
+    throw new Error('Quiz can only be reset while paused or ended (it\'s currently ' + quizData.status + ').');
+  }
+
+  const answersSnap = await quizRef.collection('answers').get();
+  const batch = db.batch();
+  answersSnap.docs.forEach(d => batch.delete(d.ref));
+  batch.update(quizRef, {
+    status: 'lobby',
+    currentQuestionIndex: -1,
+    currentQuestionStartedAt: null,
+    currentQuestion: null,
+    pausedAt: null,
+    answeredCount: 0,
+    reveal: null,
+    leaderboard: null,
+  });
+  await batch.commit();
+
+  return { ok: true };
+}
+
 
 async function pauseQuiz(p) {
   const { id: quizId, ref: quizRef } = await getQuizDoc(p.quizId);

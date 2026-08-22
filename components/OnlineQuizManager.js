@@ -14,6 +14,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { quizApi } from '../lib/quizApi';
 import { QuizFonts } from '../lib/quizTheme';
 import QuizQuestionUploader from './QuizQuestionUploader';
+import QuizQuestionManager from './QuizQuestionManager';
 
 // Short, easy-to-read-aloud host code: no 0/O/1/I so it's unambiguous on a
 // projector or read out over a classroom.
@@ -36,6 +37,7 @@ export default function OnlineQuizManager({ hostEmail }) {
   const [copiedCode, setCopiedCode] = useState(null);
   const [copiedHostCode, setCopiedHostCode] = useState(null);
   const [uploaderForQuiz, setUploaderForQuiz] = useState(null);
+  const [questionsRefreshKey, setQuestionsRefreshKey] = useState(0);
 
   const load = useCallback(() => {
     if (!hostEmail) return;
@@ -133,16 +135,24 @@ export default function OnlineQuizManager({ hostEmail }) {
                   className="qxm-btn qxm-btn-outline"
                   onClick={() => setUploaderForQuiz(v => v === q.quizId ? null : q.quizId)}
                 >
-                  <i className="fa-solid fa-file-arrow-up" /> {uploaderForQuiz === q.quizId ? 'Close' : 'Upload Questions'}
+                  <i className="fa-solid fa-list-check" /> {uploaderForQuiz === q.quizId ? 'Close' : 'Manage Questions'}
                 </button>
               </div>
 
               {uploaderForQuiz === q.quizId && (
-                <QuizQuestionUploader
-                  quizId={q.quizId}
-                  hostCode={q.hostCode}
-                  onDone={() => setUploaderForQuiz(null)}
-                />
+                <>
+                  <QuizQuestionUploader
+                    quizId={q.quizId}
+                    hostCode={q.hostCode}
+                    onDone={() => setQuestionsRefreshKey(k => k + 1)}
+                  />
+                  <QuizQuestionManager
+                    key={questionsRefreshKey}
+                    quizId={q.quizId}
+                    hostCode={q.hostCode}
+                    quizStatus={q.status}
+                  />
+                </>
               )}
             </div>
           ))}

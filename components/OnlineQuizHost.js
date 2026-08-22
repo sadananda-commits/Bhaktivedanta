@@ -131,6 +131,19 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
         setStatus('ended');
         quizSounds.quizEnd();
       },
+      'quiz-reset': () => {
+        setStatus('lobby');
+        setQuestion(null);
+        setDeadline(null);
+        setSecondsLeft(0);
+        setTotalSeconds(1);
+        setAnsweredCount(0);
+        setReveal(null);
+        setRevealPhase(null);
+        setLeaderboard(null);
+        autoRevealedRef.current = false;
+        refreshParticipants(); // roster survives a reset — pull the current list back in
+      },
     });
     return unsubscribe;
   }, [quizCode, refreshParticipants]);
@@ -307,6 +320,14 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
               <i className="fa-solid fa-chart-column" /> Reveal Answers Now
             </button>
             <button className="qxh-btn qxh-btn-danger" disabled={busy} onClick={() => runAction(() => quizApi.endQuiz(quizCode, hostCode))}><i className="fa-solid fa-flag-checkered" /> End Quiz</button>
+            {status === 'paused' && (
+              <button className="qxh-btn qxh-btn-danger" disabled={busy} onClick={() => {
+                if (!window.confirm('Reset this quiz back to the start? Every submitted answer and the leaderboard will be cleared — participants stay joined and can play again from Question 1.')) return;
+                runAction(() => quizApi.resetQuiz(quizCode, hostCode));
+              }}>
+                <i className="fa-solid fa-rotate-left" /> Reset Quiz
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -376,6 +397,12 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
             </table>
           </div>
           <button className="qx-btn qx-btn-primary" style={{ maxWidth: 240 }} onClick={exportCsv}><i className="fa-solid fa-download" /> Export CSV</button>
+          <button className="qx-btn" style={{ maxWidth: 240, background: 'var(--qx-danger)', color: '#2a0007' }} disabled={busy} onClick={() => {
+            if (!window.confirm('Reset this quiz back to the start? Every submitted answer and this leaderboard will be cleared — participants stay joined and can play again from Question 1.')) return;
+            runAction(() => quizApi.resetQuiz(quizCode, hostCode));
+          }}>
+            <i className="fa-solid fa-rotate-left" /> Reset Quiz (Start Over)
+          </button>
         </div>
       )}
 

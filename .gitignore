@@ -28,3 +28,5 @@ yarn-error.log*
 
 
 node_modules .next .env.local *.env.local *firebase-adminsdk*.json 
+
+*.local .env*

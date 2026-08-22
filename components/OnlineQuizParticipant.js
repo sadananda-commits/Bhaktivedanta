@@ -152,6 +152,22 @@ export default function OnlineQuizParticipant({ quizCode }) {
         setPhase('ended');
         quizSounds.quizEnd();
       },
+      'quiz-reset': () => {
+        setQuestion(null);
+        setDeadline(null);
+        setSecondsLeft(0);
+        setTotalSeconds(1);
+        setSelectedLetters([]);
+        setHasAnswered(false);
+        setAnswerFeedback(null);
+        setPointsDisplay(0);
+        setReveal(null);
+        setLeaderboard(null);
+        setPaused(false);
+        submittedRef.current = false;
+        timeUpPlayedRef.current = false;
+        setPhase('lobby'); // still joined — no need to re-enter the code, just waiting again
+      },
     });
     return unsubscribe;
   }, [participantId, quizCode]);
