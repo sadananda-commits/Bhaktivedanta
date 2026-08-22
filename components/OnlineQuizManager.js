@@ -38,6 +38,7 @@ export default function OnlineQuizManager({ hostEmail }) {
   const [copiedHostCode, setCopiedHostCode] = useState(null);
   const [uploaderForQuiz, setUploaderForQuiz] = useState(null);
   const [questionsRefreshKey, setQuestionsRefreshKey] = useState(0);
+  const [resettingQuizId, setResettingQuizId] = useState(null);
 
   const load = useCallback(() => {
     if (!hostEmail) return;
@@ -137,6 +138,29 @@ export default function OnlineQuizManager({ hostEmail }) {
                 >
                   <i className="fa-solid fa-list-check" /> {uploaderForQuiz === q.quizId ? 'Close' : 'Manage Questions'}
                 </button>
+                {(q.status === 'paused' || q.status === 'ended') && (
+                  <button
+                    className="qxm-btn qxm-btn-outline qxm-btn-danger"
+                    disabled={resettingQuizId === q.quizId}
+                    onClick={async () => {
+                      if (!window.confirm('Reset this quiz back to the start? Every submitted answer and the leaderboard will be cleared — participants stay joined and can play again from Question 1.')) return;
+                      setResettingQuizId(q.quizId);
+                      setError('');
+                      try {
+                        await quizApi.resetQuiz(q.quizId, q.hostCode);
+                        load();
+                      } catch (err) {
+                        setError(err.message);
+                      } finally {
+                        setResettingQuizId(null);
+                      }
+                    }}
+                  >
+                    {resettingQuizId === q.quizId
+                      ? <i className="fa-solid fa-circle-notch fa-spin" />
+                      : <i className="fa-solid fa-rotate-left" />} Reset Quiz
+                  </button>
+                )}
               </div>
 
               {uploaderForQuiz === q.quizId && (
@@ -276,6 +300,7 @@ function QxmStyles() {
       }
       .qxm-btn-primary { background: var(--qxm-accent); border-color: var(--qxm-accent); color: #072922; }
       .qxm-btn-outline { background: transparent; }
+      .qxm-btn-danger { color: var(--qxm-danger); border-color: rgba(255,92,122,.4); }
       .qxm-btn-sm { padding: 9px 14px; font-size: 13px; }
       .qxm-btn:disabled { opacity: .5; cursor: not-allowed; }
 

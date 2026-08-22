@@ -168,7 +168,8 @@ export default function OnlineQuizParticipant({ quizCode }) {
         timeUpPlayedRef.current = false;
         setPhase('lobby'); // still joined — no need to re-enter the code, just waiting again
       },
-    });
+      'removed': () => setPhase('removed'),
+    }, { participantId });
     return unsubscribe;
   }, [participantId, quizCode]);
 
@@ -285,6 +286,30 @@ export default function OnlineQuizParticipant({ quizCode }) {
               {joining ? 'Joining…' : 'Join Quiz'}
             </button>
           </form>
+        </div>
+      </div>
+    );
+  }
+
+  if (phase === 'removed') {
+    return (
+      <div className="qx-root qx-wrap">
+        <QuizFonts /><QuizThemeStyles /><ParticipantStyles />
+        <MuteToggle />
+        <div className="qx-card qx-center">
+          <div className="qx-eyebrow" style={{ color: 'var(--qx-danger)' }}>Removed</div>
+          <h1 className="qx-title">You've been removed from this quiz</h1>
+          <p className="qx-muted">The host removed you from {quizTitle || quizCode}. If this was a mistake, you can rejoin with the same join code.</p>
+          <button
+            className="qx-btn qx-btn-primary"
+            onClick={() => {
+              sessionStorage.removeItem(storageKey);
+              setParticipantId(null);
+              setPhase('join');
+            }}
+          >
+            <i className="fa-solid fa-arrow-rotate-right" /> Rejoin
+          </button>
         </div>
       </div>
     );

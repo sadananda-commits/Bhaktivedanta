@@ -30,6 +30,8 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
   const [participants, setParticipants] = useState([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [showParticipants, setShowParticipants] = useState(false);
+  const [removingId, setRemovingId] = useState(null);
   const [connectionLost, setConnectionLost] = useState(false);
 
   const [question, setQuestion] = useState(null);
@@ -91,6 +93,7 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
         refreshParticipants();
         if (statusRef.current === 'lobby') quizSounds.join();
       },
+      'participant-removed': () => refreshParticipants(),
       'quiz-started': () => setStatus('live'),
       'question-started': (data) => {
         setQuestion(data);
@@ -231,9 +234,49 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
       <QuizFonts /><QuizThemeStyles /><HostStyles />
       <ConnectionBanner />
       <div className="qxh-header">
-        <div className="qx-eyebrow">Hosting</div>
-        <h1 className="qx-title">{title}</h1>
+        <div>
+          <div className="qx-eyebrow">Hosting</div>
+          <h1 className="qx-title">{title}</h1>
+        </div>
+        {/* Available at ANY quiz status (lobby/live/paused/ended) — removing
+            someone shouldn't require pausing first. */}
+        <button className="qxh-btn qxh-participants-toggle" onClick={() => setShowParticipants(v => !v)}>
+          <i className="fa-solid fa-users" /> Participants ({participants.length})
+        </button>
       </div>
+
+      {showParticipants && (
+        <div className="qx-card qxh-participants-panel">
+          <div className="qxh-participants-panel-title">Participants</div>
+          <ul className="qxh-participant-list">
+            {participants.map(p => (
+              <li key={p.participantId} className="qxh-participant-row qxh-participant-row-manage">
+                <span className="qxh-avatar">{p.name?.[0]?.toUpperCase() || '?'}</span>
+                <span style={{ flex: 1 }}>{p.name}{p.age ? <span className="qx-muted"> ({p.age})</span> : ''}</span>
+                <button
+                  className="qxh-btn qxh-btn-sm"
+                  disabled={removingId === p.participantId}
+                  onClick={async () => {
+                    if (!window.confirm(`Remove ${p.name} from this quiz? They'll be kicked out immediately.`)) return;
+                    setRemovingId(p.participantId);
+                    try {
+                      await quizApi.removeParticipant(quizCode, hostCode, p.participantId);
+                      refreshParticipants();
+                    } catch (err) {
+                      setError(err.message);
+                    } finally {
+                      setRemovingId(null);
+                    }
+                  }}
+                >
+                  {removingId === p.participantId ? <i className="fa-solid fa-circle-notch fa-spin" /> : <i className="fa-solid fa-user-xmark" />} Remove
+                </button>
+              </li>
+            ))}
+            {participants.length === 0 && <li className="qx-muted" style={{ padding: '10px 0' }}>No one has joined yet.</li>}
+          </ul>
+        </div>
+      )}
 
       {error && <div className="qxh-error">⚠ {error}</div>}
 
@@ -453,7 +496,11 @@ function HostStyles() {
   return (
     <style jsx global>{`
       .qxh-wrap { max-width: 900px; margin: 0 auto; padding: 28px 20px; align-items: stretch; min-height: auto; }
-      .qxh-header { margin-bottom: 20px; }
+      .qxh-header { margin-bottom: 20px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+      .qxh-participants-toggle { white-space: nowrap; }
+      .qxh-participants-panel { margin-bottom: 20px; }
+      .qxh-participants-panel-title { font-weight: 700; margin-bottom: 10px; }
+      .qxh-participant-row-manage { padding-right: 8px; }
       .qxh-error { background: var(--qx-danger-dim); border: 1px solid rgba(255,92,122,.3); color: var(--qx-danger); padding: 12px 16px; border-radius: var(--qx-radius-sm); margin-bottom: 16px; font-weight: 600; }
       .qxh-qcount-footer {
         text-align: center; font-family: var(--qx-font-mono); font-size: 13px; color: var(--qx-muted);
@@ -526,6 +573,7 @@ function HostStyles() {
         font-family: var(--qx-font-body);
       }
       .qxh-btn-danger { background: var(--qx-danger-dim); border-color: rgba(255,92,122,.4); color: var(--qx-danger); }
+      .qxh-btn-sm { padding: 7px 12px; font-size: 12px; }
       .qxh-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
       .qxh-results-card { max-width: 100%; }

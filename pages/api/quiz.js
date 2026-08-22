@@ -38,6 +38,7 @@ const ACTIONS = {
   joinQuiz: joinQuiz,
   getQuizState: getQuizState,
   getParticipants: getParticipants,
+  removeParticipant: removeParticipant,
   startQuiz: startQuiz,
   nextQuestion: nextQuestion,
   revealAnswer: revealAnswer,
@@ -157,12 +158,14 @@ async function computeStandings(quizId) {
   ]);
   const answers = answersSnap.docs.map(d => d.data());
 
-  const standings = participantsSnap.docs.map(pDoc => {
-    const participant = pDoc.data();
-    const mine = answers.filter(a => a.participantId === pDoc.id);
-    const totalScore = mine.reduce((sum, a) => sum + (Number(a.pointsEarned) || 0), 0);
-    return { participantId: pDoc.id, name: participant.name, totalScore };
-  });
+  const standings = participantsSnap.docs
+    .filter(pDoc => pDoc.data().status !== 'left')
+    .map(pDoc => {
+      const participant = pDoc.data();
+      const mine = answers.filter(a => a.participantId === pDoc.id);
+      const totalScore = mine.reduce((sum, a) => sum + (Number(a.pointsEarned) || 0), 0);
+      return { participantId: pDoc.id, name: participant.name, totalScore };
+    });
 
   standings.sort((a, b) => b.totalScore - a.totalScore);
   standings.forEach((r, i) => { r.rank = i + 1; });
@@ -436,6 +439,34 @@ async function getParticipants(p) {
   };
 }
 
+// Removes one participant — allowed at ANY quiz status (lobby, live, paused,
+// ended), unlike question edits or reset which are restricted to specific
+// states. A soft delete (status: 'left'), not an actual doc delete, so their
+// past answers/scores stay intact for anything already computed (results
+// tables, CSV export) — they just stop counting going forward: excluded
+// from participantCount, the live "X of Y answered" tally, and the
+// standings/leaderboard the next time either is recomputed. The participant
+// themselves gets kicked to a "removed" screen (see lib/quizFirestore.js's
+// optional self-participant listener) rather than being silently forgotten
+// while still sitting in the quiz.
+async function removeParticipant(p) {
+  const { id: quizId, ref: quizRef } = await getQuizDoc(p.quizId);
+  const secret = await getSecretDoc(quizId);
+  assertHost(secret, p.hostCode);
+  if (!p.participantId) throw new Error('participantId required');
+
+  const participantRef = quizRef.collection('participants').doc(p.participantId);
+  await db.runTransaction(async (txn) => {
+    const snap = await txn.get(participantRef);
+    if (!snap.exists) throw new Error('Participant not found.');
+    if (snap.data().status === 'left') return; // already removed — no-op, not an error
+    txn.update(participantRef, { status: 'left' });
+    txn.update(quizRef, { participantCount: FieldValue.increment(-1) });
+  });
+
+  return { ok: true };
+}
+
 async function startQuiz(p) {
   const { id: quizId, ref: quizRef, data: quizData } = await getQuizDoc(p.quizId);
   const secret = await getSecretDoc(quizId);
@@ -697,28 +728,30 @@ async function endQuiz(p) {
   const answers = answersSnap.docs.map(d => d.data());
   const totalQuestions = Number(quizData.totalQuestions) || 0;
 
-  const results = participantsSnap.docs.map(pDoc => {
-    const participant = pDoc.data();
-    const mine = answers.filter(a => a.participantId === pDoc.id);
-    const correct = mine.filter(a => a.isCorrect === true).length;
-    const totalScore = mine.reduce((sum, a) => sum + (Number(a.pointsEarned) || 0), 0);
-    const avgResponseMs = mine.length
-      ? Math.round(mine.reduce((s, a) => s + (Number(a.responseDurationMs) || 0), 0) / mine.length)
-      : 0;
-    return {
-      participantId: pDoc.id,
-      // Matches what OnlineQuizHost.js's Final Results screen and CSV
-      // export actually read (r.name / r.rank) — same shape getResults
-      // below returns.
-      name: participant.name,
-      totalScore,
-      // Counted against the total question count, not just answered ones —
-      // a skipped/timed-out question is still an incorrect, not invisible.
-      correctAnswers: correct,
-      incorrectAnswers: Math.max(0, totalQuestions - correct),
-      avgResponseMs,
-    };
-  });
+  const results = participantsSnap.docs
+    .filter(pDoc => pDoc.data().status !== 'left')
+    .map(pDoc => {
+      const participant = pDoc.data();
+      const mine = answers.filter(a => a.participantId === pDoc.id);
+      const correct = mine.filter(a => a.isCorrect === true).length;
+      const totalScore = mine.reduce((sum, a) => sum + (Number(a.pointsEarned) || 0), 0);
+      const avgResponseMs = mine.length
+        ? Math.round(mine.reduce((s, a) => s + (Number(a.responseDurationMs) || 0), 0) / mine.length)
+        : 0;
+      return {
+        participantId: pDoc.id,
+        // Matches what OnlineQuizHost.js's Final Results screen and CSV
+        // export actually read (r.name / r.rank) — same shape getResults
+        // below returns.
+        name: participant.name,
+        totalScore,
+        // Counted against the total question count, not just answered ones —
+        // a skipped/timed-out question is still an incorrect, not invisible.
+        correctAnswers: correct,
+        incorrectAnswers: Math.max(0, totalQuestions - correct),
+        avgResponseMs,
+      };
+    });
 
   results.sort((a, b) => b.totalScore - a.totalScore || a.avgResponseMs - b.avgResponseMs);
   results.forEach((r, i) => { r.rank = i + 1; });
