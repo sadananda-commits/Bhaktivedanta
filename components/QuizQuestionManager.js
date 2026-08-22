@@ -2,11 +2,14 @@
 //
 // Lets the host list, add, edit, and delete individual questions directly
 // from the front end — no spreadsheet editing needed, and no re-uploading a
-// whole Excel file just to fix one typo or swap a correct answer. Sits
-// alongside QuizQuestionUploader.js (bulk Excel import) in the same "Upload
-// Questions" panel on each quiz card — use either, or both, in any order:
-// upload a batch, then hand-tweak a few; or start from nothing and add
-// questions one at a time here.
+// whole Excel file just to fix one typo or swap a correct answer. Rendered
+// as a full-width table (one row per question, one column per option) so a
+// whole question bank is scannable at a glance — mounted full-page-width by
+// OnlineQuizManager.js (outside the card grid), not squeezed into one card's
+// column. Sits alongside QuizQuestionUploader.js (bulk Excel import) in the
+// same panel — use either, or both, in any order: upload a batch, then
+// hand-tweak a few; or start from nothing and add questions one at a time
+// here.
 //
 // Only usable while the quiz is still in the lobby (hasn't been started) —
 // enforced server-side too (assertEditableQuestions in pages/api/quiz.js).
@@ -123,129 +126,202 @@ export default function QuizQuestionManager({ quizId, hostCode, quizStatus }) {
   }
 
   return (
-    <div className="qxu-scope" style={{ marginTop: 14 }}>
+    <div className="qqm-scope">
       <QqmStyles />
-      <div className="qxu-preview-title" style={{ marginBottom: 10 }}>
-        Manage Questions{questions.length > 0 ? ` (${questions.length})` : ''}
+      <div className="qqm-toolbar">
+        <div className="qqm-title">Manage Questions{questions.length > 0 ? ` (${questions.length})` : ''}</div>
+        {editable && editingQNum === null && (
+          <button className="qqm-btn qqm-btn-primary" onClick={startAdd}>
+            <i className="fa-solid fa-plus" /> Add Question
+          </button>
+        )}
       </div>
 
       {!editable && (
-        <div className="qxm-error" style={{ marginBottom: 12 }}>
-          ⚠ This quiz has already started ({quizStatus}) — questions are locked and can no longer be added, edited, or deleted.
-        </div>
+        <div className="qqm-banner">⚠ This quiz has already started ({quizStatus}) — questions are locked and can no longer be added, edited, or deleted.</div>
       )}
-
-      {error && <div className="qxm-error" style={{ marginBottom: 12 }}>⚠ {error}</div>}
+      {error && <div className="qqm-banner qqm-banner-error">⚠ {error}</div>}
 
       {loading ? (
-        <div className="qx-muted" style={{ fontSize: 13 }}><i className="fa-solid fa-circle-notch fa-spin" /> Loading questions…</div>
+        <div className="qqm-loading"><i className="fa-solid fa-circle-notch fa-spin" /> Loading questions…</div>
       ) : (
-        <div className="qqm-list">
-          {questions.map(q => (
-            <div key={q.qNum} className="qqm-row">
-              {editingQNum === q.qNum ? (
-                <QuestionForm form={form} setForm={setForm} toggleLetter={toggleLetter} saving={saving} onSave={save} onCancel={cancelEdit} />
-              ) : (
-                <>
-                  <div className="qqm-row-main">
-                    <span className="qqm-qnum">Q{q.qNum}</span>
-                    <span className="qqm-qtext">{q.questionText}</span>
-                    <span className="qqm-correct-badge">{q.correctAnswer}</span>
-                  </div>
-                  {editable && (
-                    <div className="qqm-row-actions">
-                      <button className="qxm-btn qxm-btn-outline qxu-btn-sm" onClick={() => startEdit(q)}><i className="fa-solid fa-pen" /> Edit</button>
-                      <button className="qxm-btn qxm-btn-outline qxu-btn-sm" disabled={deletingQNum === q.qNum} onClick={() => remove(q.qNum)}>
-                        {deletingQNum === q.qNum ? <i className="fa-solid fa-circle-notch fa-spin" /> : <i className="fa-solid fa-trash" />} Delete
-                      </button>
-                    </div>
-                  )}
-                </>
+        <div className="qqm-table-wrap">
+          <table className="qqm-table">
+            <thead>
+              <tr>
+                <th className="qqm-col-num">#</th>
+                <th className="qqm-col-question">Question</th>
+                <th>Option A</th>
+                <th>Option B</th>
+                <th>Option C</th>
+                <th>Option D</th>
+                <th className="qqm-col-narrow">Time (s)</th>
+                <th className="qqm-col-narrow">Points</th>
+                <th className="qqm-col-narrow">Media</th>
+                {editable && <th className="qqm-col-actions">Actions</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {questions.map(q => (
+                editingQNum === q.qNum ? (
+                  <EditableRow key={q.qNum} qNum={q.qNum} form={form} setForm={setForm} toggleLetter={toggleLetter}
+                    saving={saving} onSave={save} onCancel={cancelEdit} />
+                ) : (
+                  <ReadRow key={q.qNum} q={q} editable={editable} onEdit={() => startEdit(q)}
+                    onDelete={() => remove(q.qNum)} deleting={deletingQNum === q.qNum} />
+                )
+              ))}
+              {editingQNum === 'new' && (
+                <EditableRow qNum="new" form={form} setForm={setForm} toggleLetter={toggleLetter}
+                  saving={saving} onSave={save} onCancel={cancelEdit} />
               )}
-            </div>
-          ))}
-
-          {editingQNum === 'new' && (
-            <div className="qqm-row">
-              <QuestionForm form={form} setForm={setForm} toggleLetter={toggleLetter} saving={saving} onSave={save} onCancel={cancelEdit} />
-            </div>
-          )}
-
-          {editable && editingQNum === null && (
-            <button className="qxm-btn qxm-btn-primary qxu-btn-sm" style={{ marginTop: 10 }} onClick={startAdd}>
-              <i className="fa-solid fa-plus" /> Add Question
-            </button>
-          )}
+              {questions.length === 0 && editingQNum !== 'new' && (
+                <tr><td colSpan={editable ? 10 : 9} className="qqm-empty">No questions yet — upload an Excel file above, or click "Add Question".</td></tr>
+              )}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
   );
 }
 
-function QuestionForm({ form, setForm, toggleLetter, saving, onSave, onCancel }) {
-  const set = (key) => (e) => setForm(f => ({ ...f, [key]: e.target.value }));
+function ReadRow({ q, editable, onEdit, onDelete, deleting }) {
+  const correct = new Set((q.correctAnswer || '').split(',').map(s => s.trim()));
   return (
-    <div className="qqm-form">
-      <label className="qxm-label">Question Text</label>
-      <textarea className="qxm-input qqm-textarea" value={form.questionText} onChange={set('questionText')} rows={2} />
+    <tr>
+      <td className="qqm-col-num">{q.qNum}</td>
+      <td className="qqm-td-question">{q.questionText}</td>
+      <td className={correct.has('A') ? 'qqm-td-correct' : ''}>{q.optionA}</td>
+      <td className={correct.has('B') ? 'qqm-td-correct' : ''}>{q.optionB}</td>
+      <td className={correct.has('C') ? 'qqm-td-correct' : ''}>{q.optionC}</td>
+      <td className={correct.has('D') ? 'qqm-td-correct' : ''}>{q.optionD}</td>
+      <td className="qqm-col-narrow qqm-muted">{q.timeLimitSec || '—'}</td>
+      <td className="qqm-col-narrow qqm-muted">{q.points || '—'}</td>
+      <td className="qqm-col-narrow qqm-muted">{q.mediaUrl ? <a href={q.mediaUrl} target="_blank" rel="noopener noreferrer">link</a> : '—'}</td>
+      {editable && (
+        <td className="qqm-col-actions">
+          <button className="qqm-btn qqm-btn-icon" onClick={onEdit} title="Edit"><i className="fa-solid fa-pen" /></button>
+          <button className="qqm-btn qqm-btn-icon" disabled={deleting} onClick={onDelete} title="Delete">
+            {deleting ? <i className="fa-solid fa-circle-notch fa-spin" /> : <i className="fa-solid fa-trash" />}
+          </button>
+        </td>
+      )}
+    </tr>
+  );
+}
 
-      <div className="qqm-options-grid">
-        {['A', 'B', 'C', 'D'].map(letter => (
-          <div key={letter} className="qqm-option-field">
-            <label className="qqm-option-label">
-              <input
-                type="checkbox"
-                checked={form.correctLetters.includes(letter)}
-                onChange={() => toggleLetter(letter)}
-              />
-              Option {letter} {form.correctLetters.includes(letter) && <span className="qqm-correct-tag">correct</span>}
-            </label>
-            <input className="qxm-input" value={form['option' + letter]} onChange={set('option' + letter)} placeholder={letter === 'A' || letter === 'B' ? 'Required' : 'Optional'} />
-          </div>
-        ))}
-      </div>
+function OptionCell({ letter, form, setForm, toggleLetter }) {
+  const key = 'option' + letter;
+  return (
+    <td className="qqm-td-option-edit">
+      <label className="qqm-correct-check">
+        <input type="checkbox" checked={form.correctLetters.includes(letter)} onChange={() => toggleLetter(letter)} />
+        <span>correct</span>
+      </label>
+      <input
+        className="qqm-cell-input"
+        value={form[key]}
+        onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+        placeholder={letter === 'A' || letter === 'B' ? 'Required' : 'Optional'}
+      />
+    </td>
+  );
+}
 
-      <div className="qxm-form-row" style={{ marginTop: 10 }}>
-        <div className="qxm-field">
-          <label className="qxm-label">Time Limit (sec)</label>
-          <input className="qxm-input" type="number" min="5" max="120" value={form.timeLimitSec} onChange={set('timeLimitSec')} placeholder="Quiz default" />
-        </div>
-        <div className="qxm-field">
-          <label className="qxm-label">Points</label>
-          <input className="qxm-input" type="number" min="0" value={form.points} onChange={set('points')} placeholder="Quiz default" />
-        </div>
-      </div>
-      <label className="qxm-label">Media URL (optional)</label>
-      <input className="qxm-input" value={form.mediaUrl} onChange={set('mediaUrl')} placeholder="https://..." />
-
-      <div className="qqm-form-actions">
-        <button className="qxm-btn qxm-btn-primary qxu-btn-sm" disabled={saving} onClick={onSave}>
-          {saving ? <><i className="fa-solid fa-circle-notch fa-spin" /> Saving…</> : <><i className="fa-solid fa-check" /> Save</>}
+function EditableRow({ qNum, form, setForm, toggleLetter, saving, onSave, onCancel }) {
+  return (
+    <tr className="qqm-row-editing">
+      <td className="qqm-col-num">{qNum === 'new' ? 'new' : qNum}</td>
+      <td className="qqm-td-question-edit">
+        <textarea
+          className="qqm-cell-input qqm-cell-textarea"
+          rows={2}
+          value={form.questionText}
+          onChange={e => setForm(f => ({ ...f, questionText: e.target.value }))}
+        />
+      </td>
+      <OptionCell letter="A" form={form} setForm={setForm} toggleLetter={toggleLetter} />
+      <OptionCell letter="B" form={form} setForm={setForm} toggleLetter={toggleLetter} />
+      <OptionCell letter="C" form={form} setForm={setForm} toggleLetter={toggleLetter} />
+      <OptionCell letter="D" form={form} setForm={setForm} toggleLetter={toggleLetter} />
+      <td className="qqm-col-narrow">
+        <input className="qqm-cell-input" type="number" min="5" max="120" value={form.timeLimitSec}
+          onChange={e => setForm(f => ({ ...f, timeLimitSec: e.target.value }))} placeholder="Default" />
+      </td>
+      <td className="qqm-col-narrow">
+        <input className="qqm-cell-input" type="number" min="0" value={form.points}
+          onChange={e => setForm(f => ({ ...f, points: e.target.value }))} placeholder="Default" />
+      </td>
+      <td className="qqm-col-narrow">
+        <input className="qqm-cell-input" value={form.mediaUrl}
+          onChange={e => setForm(f => ({ ...f, mediaUrl: e.target.value }))} placeholder="URL" />
+      </td>
+      <td className="qqm-col-actions">
+        <button className="qqm-btn qqm-btn-icon qqm-btn-save" disabled={saving} onClick={onSave} title="Save">
+          {saving ? <i className="fa-solid fa-circle-notch fa-spin" /> : <i className="fa-solid fa-check" />}
         </button>
-        <button className="qxm-btn qxm-btn-outline qxu-btn-sm" disabled={saving} onClick={onCancel}>Cancel</button>
-      </div>
-    </div>
+        <button className="qqm-btn qqm-btn-icon" disabled={saving} onClick={onCancel} title="Cancel">
+          <i className="fa-solid fa-xmark" />
+        </button>
+      </td>
+    </tr>
   );
 }
 
 function QqmStyles() {
   return (
     <style jsx global>{`
-      .qqm-list { display: flex; flex-direction: column; gap: 8px; }
-      .qqm-row { background: var(--qxm-bg-card); border: 1px solid var(--qxm-border); border-radius: 10px; padding: 10px 12px; }
-      .qqm-row-main { display: flex; align-items: baseline; gap: 10px; }
-      .qqm-qnum { font-family: var(--qxm-font-mono); font-size: 11px; color: var(--qxm-muted); flex-shrink: 0; }
-      .qqm-qtext { flex: 1; font-size: 13px; }
-      .qqm-correct-badge { font-family: var(--qxm-font-mono); font-size: 11px; font-weight: 700; color: var(--qxm-accent); flex-shrink: 0; }
-      .qqm-row-actions { display: flex; gap: 6px; margin-top: 8px; }
+      .qqm-scope {
+        --qqm-bg: #1d1f42; --qqm-bg-well: #262a52; --qqm-border: #383c6e;
+        --qqm-accent: #22d3b0; --qqm-danger: #ff5c7a; --qqm-text: #f5f6ff; --qqm-muted: #9296c4;
+        font-family: 'Manrope', -apple-system, sans-serif;
+        color: var(--qqm-text);
+      }
+      .qqm-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+      .qqm-title { font-weight: 700; font-size: 16px; }
 
-      .qqm-form { display: flex; flex-direction: column; gap: 4px; }
-      .qqm-textarea { resize: vertical; font-family: inherit; }
-      .qqm-options-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 10px; }
-      .qqm-option-field { display: flex; flex-direction: column; gap: 4px; }
-      .qqm-option-label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--qxm-muted); font-weight: 700; }
-      .qqm-correct-tag { font-size: 10px; color: var(--qxm-accent); text-transform: uppercase; }
-      .qqm-form-actions { display: flex; gap: 8px; margin-top: 12px; }
+      .qqm-banner { background: rgba(255,176,32,.12); border: 1px solid rgba(255,176,32,.3); color: #ffb020; padding: 10px 14px; border-radius: 10px; margin-bottom: 14px; font-size: 13px; font-weight: 600; }
+      .qqm-banner-error { background: rgba(255,92,122,.12); border-color: rgba(255,92,122,.3); color: var(--qqm-danger); }
+      .qqm-loading { padding: 20px; text-align: center; color: var(--qqm-muted); font-size: 13px; }
+      .qqm-empty { padding: 24px; text-align: center; color: var(--qqm-muted); font-size: 13px; }
+
+      .qqm-table-wrap { overflow-x: auto; border: 1px solid var(--qqm-border); border-radius: 12px; }
+      .qqm-table { width: 100%; border-collapse: collapse; min-width: 980px; font-size: 13px; }
+      .qqm-table th {
+        text-align: left; padding: 10px 12px; background: var(--qqm-bg-well); font-family: 'Space Mono', ui-monospace, monospace;
+        font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--qqm-muted); font-weight: 700;
+        border-bottom: 1px solid var(--qqm-border); position: sticky; top: 0;
+      }
+      .qqm-table td { padding: 10px 12px; border-bottom: 1px solid var(--qqm-border); vertical-align: top; background: var(--qqm-bg); }
+      .qqm-table tr:last-child td { border-bottom: none; }
+      .qqm-col-num { width: 36px; font-family: 'Space Mono', ui-monospace, monospace; color: var(--qqm-muted); }
+      .qqm-col-narrow { width: 90px; }
+      .qqm-col-actions { width: 90px; white-space: nowrap; }
+      .qqm-td-question { max-width: 320px; }
+      .qqm-td-correct { color: var(--qqm-accent); font-weight: 700; }
+      .qqm-muted { color: var(--qqm-muted); }
+
+      .qqm-row-editing td { background: var(--qqm-bg-well); }
+      .qqm-cell-input {
+        width: 100%; padding: 7px 9px; border-radius: 6px; border: 1.5px solid var(--qqm-border);
+        background: var(--qqm-bg); color: var(--qqm-text); font-size: 12px; font-family: inherit; box-sizing: border-box;
+      }
+      .qqm-cell-input:focus { outline: none; border-color: var(--qqm-accent); }
+      .qqm-cell-textarea { resize: vertical; min-width: 220px; }
+      .qqm-td-question-edit { min-width: 220px; }
+      .qqm-td-option-edit { min-width: 140px; }
+      .qqm-correct-check { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--qqm-muted); font-weight: 700; text-transform: uppercase; margin-bottom: 5px; }
+
+      .qqm-btn {
+        border: 1px solid var(--qqm-border); background: var(--qqm-bg-well); color: var(--qqm-text);
+        border-radius: 8px; cursor: pointer; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;
+        padding: 8px 14px; font-size: 13px; font-family: inherit;
+      }
+      .qqm-btn-primary { background: var(--qqm-accent); border-color: var(--qqm-accent); color: #072922; }
+      .qqm-btn-icon { padding: 7px 10px; margin-right: 4px; }
+      .qqm-btn-save { background: var(--qqm-accent); border-color: var(--qqm-accent); color: #072922; }
+      .qqm-btn:disabled { opacity: .5; cursor: not-allowed; }
     `}</style>
   );
 }

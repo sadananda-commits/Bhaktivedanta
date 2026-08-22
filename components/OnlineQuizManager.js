@@ -162,26 +162,42 @@ export default function OnlineQuizManager({ hostEmail }) {
                   </button>
                 )}
               </div>
-
-              {uploaderForQuiz === q.quizId && (
-                <>
-                  <QuizQuestionUploader
-                    quizId={q.quizId}
-                    hostCode={q.hostCode}
-                    onDone={() => setQuestionsRefreshKey(k => k + 1)}
-                  />
-                  <QuizQuestionManager
-                    key={questionsRefreshKey}
-                    quizId={q.quizId}
-                    hostCode={q.hostCode}
-                    quizStatus={q.status}
-                  />
-                </>
-              )}
             </div>
           ))}
         </div>
       )}
+
+      {/* Rendered full-width, BELOW the card grid — not nested inside one
+          card's ~280px column — so the question table has real room to
+          breathe instead of being squeezed. */}
+      {uploaderForQuiz && (() => {
+        const activeQuiz = quizzes.find(q => q.quizId === uploaderForQuiz);
+        if (!activeQuiz) return null;
+        return (
+          <div className="qxm-fullwidth-panel">
+            <div className="qxm-fullwidth-header">
+              <div>
+                <div className="qxm-eyebrow">Managing questions for</div>
+                <div className="qxm-h1" style={{ fontSize: 20 }}>{activeQuiz.title} <span className="qxm-card-code">({activeQuiz.quizId})</span></div>
+              </div>
+              <button className="qxm-btn qxm-btn-outline" onClick={() => setUploaderForQuiz(null)}>
+                <i className="fa-solid fa-xmark" /> Close
+              </button>
+            </div>
+            <QuizQuestionUploader
+              quizId={activeQuiz.quizId}
+              hostCode={activeQuiz.hostCode}
+              onDone={() => setQuestionsRefreshKey(k => k + 1)}
+            />
+            <QuizQuestionManager
+              key={questionsRefreshKey}
+              quizId={activeQuiz.quizId}
+              hostCode={activeQuiz.hostCode}
+              quizStatus={activeQuiz.status}
+            />
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -321,6 +337,8 @@ function QxmStyles() {
       .qxm-hint code { background: var(--qxm-bg-well); padding: 1px 6px; border-radius: 4px; font-family: var(--qxm-font-mono); }
 
       .qxm-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+      .qxm-fullwidth-panel { margin-top: 22px; background: var(--qxm-bg-card); border: 1px solid var(--qxm-border); border-radius: 16px; padding: 20px; }
+      .qxm-fullwidth-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
       .qxm-card { background: var(--qxm-bg-card); border: 1px solid var(--qxm-border); border-radius: 16px; padding: 18px; }
       .qxm-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
       .qxm-card-title { font-weight: 700; font-size: 15px; }
