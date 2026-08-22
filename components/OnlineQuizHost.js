@@ -20,7 +20,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { quizApi } from '../lib/quizApi';
-import { subscribeToQuiz, onConnectionStateChange } from '../lib/quizPusher';
+import { subscribeToQuiz, onConnectionStateChange } from '../lib/quizFirestore';
 import { quizSounds } from '../lib/quizSounds';
 import { QuizFonts, QuizThemeStyles, ShapeIcon, OPTION_LABELS, OPTION_COLORS } from '../lib/quizTheme';
 
@@ -33,6 +33,7 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
   const [connectionLost, setConnectionLost] = useState(false);
 
   const [question, setQuestion] = useState(null);
+  const [totalQuestions, setTotalQuestions] = useState(0);
   const [answeredCount, setAnsweredCount] = useState(0);
   const [reveal, setReveal] = useState(null);
   // null while the question is actually live; 'summary' once auto-revealed;
@@ -64,6 +65,7 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
       .then(state => {
         setTitle(state.title || quizCode);
         setStatus(state.status === 'lobby' ? 'lobby' : state.status);
+        setTotalQuestions(state.totalQuestions || 0);
         if (state.currentQuestion) {
           setQuestion(state.currentQuestion);
           const dl = Date.parse(state.currentQuestion.startedAt) + state.currentQuestion.timeLimitSec * 1000;
@@ -92,6 +94,7 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
       'quiz-started': () => setStatus('live'),
       'question-started': (data) => {
         setQuestion(data);
+        setTotalQuestions(data.totalQuestions || 0);
         setDeadline(Date.parse(data.startedAt) + data.timeLimitSec * 1000);
         setTotalSeconds(data.timeLimitSec);
         // Seed this synchronously (not just via the tick effect) — otherwise
@@ -375,6 +378,16 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
           <button className="qx-btn qx-btn-primary" style={{ maxWidth: 240 }} onClick={exportCsv}><i className="fa-solid fa-download" /> Export CSV</button>
         </div>
       )}
+
+      {/* Persistent "Question X of Y" footer — shown under every screen above,
+          not just the live one, so the host always has a sense of pacing. */}
+      {totalQuestions > 0 && (
+        <div className="qxh-qcount-footer">
+          {status === 'lobby' && <>{totalQuestions} question{totalQuestions === 1 ? '' : 's'} in this quiz</>}
+          {status === 'ended' && <>All {totalQuestions} question{totalQuestions === 1 ? '' : 's'} complete</>}
+          {(status === 'live' || status === 'paused') && question && <>Question {question.qNum} of {totalQuestions}</>}
+        </div>
+      )}
     </div>
   );
 }
@@ -415,6 +428,10 @@ function HostStyles() {
       .qxh-wrap { max-width: 900px; margin: 0 auto; padding: 28px 20px; align-items: stretch; min-height: auto; }
       .qxh-header { margin-bottom: 20px; }
       .qxh-error { background: var(--qx-danger-dim); border: 1px solid rgba(255,92,122,.3); color: var(--qx-danger); padding: 12px 16px; border-radius: var(--qx-radius-sm); margin-bottom: 16px; font-weight: 600; }
+      .qxh-qcount-footer {
+        text-align: center; font-family: var(--qx-font-mono); font-size: 13px; color: var(--qx-muted);
+        margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--qx-border); letter-spacing: 0.02em;
+      }
 
       .qxh-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
       @media (max-width: 720px) { .qxh-grid { grid-template-columns: 1fr; } }

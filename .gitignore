@@ -25,3 +25,6 @@ yarn-debug.log*
 yarn-error.log*
 
 .vercel
+
+
+node_modules .next .env.local *.env.local *firebase-adminsdk*.json 

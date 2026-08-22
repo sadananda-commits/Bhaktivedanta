@@ -11,7 +11,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { quizApi } from '../lib/quizApi';
-import { subscribeToQuiz, onConnectionStateChange } from '../lib/quizPusher';
+import { subscribeToQuiz, onConnectionStateChange } from '../lib/quizFirestore';
 import { quizSounds, isMuted, setMuted } from '../lib/quizSounds';
 import { QuizFonts, QuizThemeStyles, ShapeIcon, OPTION_LABELS, OPTION_COLORS } from '../lib/quizTheme';
 
