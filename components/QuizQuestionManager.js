@@ -52,13 +52,19 @@ export default function QuizQuestionManager({ quizId, hostCode, quizStatus }) {
   const [form, setForm] = useState(BLANK_FORM);
   const [saving, setSaving] = useState(false);
   const [deletingQNum, setDeletingQNum] = useState(null);
+  const [selected, setSelected] = useState(() => new Set()); // qNums checked for bulk delete
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [clearingAll, setClearingAll] = useState(false);
 
   const editable = quizStatus === 'lobby';
 
   const load = useCallback(() => {
     setLoading(true);
     quizApi.getQuestions(quizId, hostCode)
-      .then(res => setQuestions(res.questions || []))
+      .then(res => {
+        setQuestions(res.questions || []);
+        setSelected(new Set()); // question numbers can be renumbered after a delete, so don't carry old selections forward
+      })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false));
   }, [quizId, hostCode]);
@@ -125,16 +131,80 @@ export default function QuizQuestionManager({ quizId, hostCode, quizStatus }) {
     }
   }
 
+  function toggleSelected(qNum) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(qNum)) next.delete(qNum); else next.add(qNum);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    setSelected(prev => (prev.size === questions.length ? new Set() : new Set(questions.map(q => q.qNum))));
+  }
+
+  // Deletes every checked question in one request rather than one round trip
+  // per row — this is what makes "check a batch, delete them" fast enough to
+  // actually use instead of clicking the trash icon N times.
+  async function removeSelected() {
+    const qNums = Array.from(selected);
+    if (!qNums.length) return;
+    if (!window.confirm(`Delete ${qNums.length} selected question${qNums.length === 1 ? '' : 's'}? The remaining questions will be renumbered.`)) return;
+    setBulkDeleting(true);
+    setError('');
+    try {
+      await quizApi.deleteQuestions(quizId, hostCode, qNums);
+      cancelEdit();
+      load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
+
+  // Wipes the whole question bank for this quiz — the "start over" button
+  // for a host who uploaded the wrong Excel file and wants to re-upload a
+  // fresh one, without deleting questions one row (or one checkbox-batch)
+  // at a time first.
+  async function clearAll() {
+    if (!questions.length) return;
+    if (!window.confirm(`Delete ALL ${questions.length} question${questions.length === 1 ? '' : 's'} in this quiz? This can't be undone — you'll need to re-add or re-upload a question set before starting the quiz.`)) return;
+    setClearingAll(true);
+    setError('');
+    try {
+      await quizApi.deleteAllQuestions(quizId, hostCode);
+      cancelEdit();
+      load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setClearingAll(false);
+    }
+  }
+
   return (
     <div className="qqm-scope">
       <QqmStyles />
       <div className="qqm-toolbar">
         <div className="qqm-title">Manage Questions{questions.length > 0 ? ` (${questions.length})` : ''}</div>
-        {editable && editingQNum === null && (
-          <button className="qqm-btn qqm-btn-primary" onClick={startAdd}>
-            <i className="fa-solid fa-plus" /> Add Question
-          </button>
-        )}
+        <div className="qqm-toolbar-actions">
+          {editable && selected.size > 0 && (
+            <button className="qqm-btn qqm-btn-danger" disabled={bulkDeleting || clearingAll} onClick={removeSelected}>
+              {bulkDeleting ? <i className="fa-solid fa-circle-notch fa-spin" /> : <i className="fa-solid fa-trash" />} Delete Selected ({selected.size})
+            </button>
+          )}
+          {editable && questions.length > 0 && editingQNum === null && (
+            <button className="qqm-btn qqm-btn-danger" disabled={clearingAll || bulkDeleting} onClick={clearAll} title="Remove every question so you can upload a fresh sheet">
+              {clearingAll ? <i className="fa-solid fa-circle-notch fa-spin" /> : <i className="fa-solid fa-broom" />} Delete All Questions
+            </button>
+          )}
+          {editable && editingQNum === null && (
+            <button className="qqm-btn qqm-btn-primary" onClick={startAdd}>
+              <i className="fa-solid fa-plus" /> Add Question
+            </button>
+          )}
+        </div>
       </div>
 
       {!editable && (
@@ -149,6 +219,17 @@ export default function QuizQuestionManager({ quizId, hostCode, quizStatus }) {
           <table className="qqm-table">
             <thead>
               <tr>
+                {editable && (
+                  <th className="qqm-col-check">
+                    <input
+                      type="checkbox"
+                      checked={questions.length > 0 && selected.size === questions.length}
+                      onChange={toggleSelectAll}
+                      disabled={questions.length === 0}
+                      title="Select all"
+                    />
+                  </th>
+                )}
                 <th className="qqm-col-num">#</th>
                 <th className="qqm-col-question">Question</th>
                 <th>Option A</th>
@@ -165,18 +246,19 @@ export default function QuizQuestionManager({ quizId, hostCode, quizStatus }) {
               {questions.map(q => (
                 editingQNum === q.qNum ? (
                   <EditableRow key={q.qNum} qNum={q.qNum} form={form} setForm={setForm} toggleLetter={toggleLetter}
-                    saving={saving} onSave={save} onCancel={cancelEdit} />
+                    saving={saving} onSave={save} onCancel={cancelEdit} editable={editable} />
                 ) : (
                   <ReadRow key={q.qNum} q={q} editable={editable} onEdit={() => startEdit(q)}
-                    onDelete={() => remove(q.qNum)} deleting={deletingQNum === q.qNum} />
+                    onDelete={() => remove(q.qNum)} deleting={deletingQNum === q.qNum}
+                    checked={selected.has(q.qNum)} onToggleChecked={() => toggleSelected(q.qNum)} />
                 )
               ))}
               {editingQNum === 'new' && (
                 <EditableRow qNum="new" form={form} setForm={setForm} toggleLetter={toggleLetter}
-                  saving={saving} onSave={save} onCancel={cancelEdit} />
+                  saving={saving} onSave={save} onCancel={cancelEdit} editable={editable} />
               )}
               {questions.length === 0 && editingQNum !== 'new' && (
-                <tr><td colSpan={editable ? 10 : 9} className="qqm-empty">No questions yet — upload an Excel file above, or click "Add Question".</td></tr>
+                <tr><td colSpan={editable ? 11 : 9} className="qqm-empty">No questions yet — upload an Excel file above, or click "Add Question".</td></tr>
               )}
             </tbody>
           </table>
@@ -186,10 +268,15 @@ export default function QuizQuestionManager({ quizId, hostCode, quizStatus }) {
   );
 }
 
-function ReadRow({ q, editable, onEdit, onDelete, deleting }) {
+function ReadRow({ q, editable, onEdit, onDelete, deleting, checked, onToggleChecked }) {
   const correct = new Set((q.correctAnswer || '').split(',').map(s => s.trim()));
   return (
     <tr>
+      {editable && (
+        <td className="qqm-col-check">
+          <input type="checkbox" checked={!!checked} onChange={onToggleChecked} />
+        </td>
+      )}
       <td className="qqm-col-num">{q.qNum}</td>
       <td className="qqm-td-question">{q.questionText}</td>
       <td className={correct.has('A') ? 'qqm-td-correct' : ''}>{q.optionA}</td>
@@ -229,9 +316,10 @@ function OptionCell({ letter, form, setForm, toggleLetter }) {
   );
 }
 
-function EditableRow({ qNum, form, setForm, toggleLetter, saving, onSave, onCancel }) {
+function EditableRow({ qNum, form, setForm, toggleLetter, saving, onSave, onCancel, editable }) {
   return (
     <tr className="qqm-row-editing">
+      {editable && <td className="qqm-col-check" />}
       <td className="qqm-col-num">{qNum === 'new' ? 'new' : qNum}</td>
       <td className="qqm-td-question-edit">
         <textarea
@@ -279,7 +367,10 @@ function QqmStyles() {
         color: var(--qqm-text);
       }
       .qqm-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+      .qqm-toolbar-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
       .qqm-title { font-weight: 700; font-size: 16px; }
+      .qqm-col-check { width: 32px; text-align: center; }
+      .qqm-col-check input { width: 15px; height: 15px; cursor: pointer; }
 
       .qqm-banner { background: rgba(255,176,32,.12); border: 1px solid rgba(255,176,32,.3); color: #ffb020; padding: 10px 14px; border-radius: 10px; margin-bottom: 14px; font-size: 13px; font-weight: 600; }
       .qqm-banner-error { background: rgba(255,92,122,.12); border-color: rgba(255,92,122,.3); color: var(--qqm-danger); }
@@ -319,6 +410,7 @@ function QqmStyles() {
         padding: 8px 14px; font-size: 13px; font-family: inherit;
       }
       .qqm-btn-primary { background: var(--qqm-accent); border-color: var(--qqm-accent); color: #072922; }
+      .qqm-btn-danger { background: var(--qqm-danger); border-color: var(--qqm-danger); color: #2a0410; }
       .qqm-btn-icon { padding: 7px 10px; margin-right: 4px; }
       .qqm-btn-save { background: var(--qqm-accent); border-color: var(--qqm-accent); color: #072922; }
       .qqm-btn:disabled { opacity: .5; cursor: not-allowed; }

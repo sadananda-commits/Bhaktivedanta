@@ -362,6 +362,20 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
             }}>
               <i className="fa-solid fa-chart-column" /> Reveal Answers Now
             </button>
+            {/* Skips straight to the next question without showing this
+                question's results at all — for when the host just wants to
+                move on (wrong question, running short on time, etc.) rather
+                than pause the countdown or reveal an answer breakdown first.
+                nextQuestion_ only requires the quiz to be 'live', so this is
+                safe to fire from here even though the summary screen is
+                normally what calls it. */}
+            <button className="qxh-btn" disabled={busy} onClick={() => {
+              if (!window.confirm('Skip this question and move on? Its results screen will be skipped for everyone.')) return;
+              autoRevealedRef.current = true;
+              runAction(() => quizApi.nextQuestion(quizCode, hostCode));
+            }}>
+              <i className="fa-solid fa-forward-step" /> Skip to Next Question
+            </button>
             <button className="qxh-btn qxh-btn-danger" disabled={busy} onClick={() => runAction(() => quizApi.endQuiz(quizCode, hostCode))}><i className="fa-solid fa-flag-checkered" /> End Quiz</button>
             {status === 'paused' && (
               <button className="qxh-btn qxh-btn-danger" disabled={busy} onClick={() => {

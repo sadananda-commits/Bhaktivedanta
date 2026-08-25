@@ -15,6 +15,68 @@ import { subscribeToQuiz, onConnectionStateChange } from '../lib/quizFirestore';
 import { quizSounds, isMuted, setMuted } from '../lib/quizSounds';
 import { QuizFonts, QuizThemeStyles, ShapeIcon, OPTION_LABELS, OPTION_COLORS } from '../lib/quizTheme';
 
+// ── Brand ──────────────────────────────────────────────────────────────
+// The participant-facing entry point is the only screen most players ever
+// see, so it carries the portal's name — everything else (host panel,
+// question screens) stays on the existing "live classroom scoreboard"
+// identity from quizTheme.js untouched.
+const PORTAL_NAME = 'Bhakti Vedanta Quiz Portal';
+
+// Simple abstract lotus-flame emblem — deliberately generic/non-iconographic
+// artwork (not a reproduction of any organization's actual logo), built
+// from the same mint/marigold accent pair as the rest of the theme so it
+// reads as part of the same design system rather than a bolted-on badge.
+function BrandMark({ size = 64 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 64 64" className="qx-brandmark" aria-hidden="true">
+      <defs>
+        <linearGradient id="qxBrandGrad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="var(--qx-accent-2)" />
+          <stop offset="100%" stopColor="var(--qx-accent)" />
+        </linearGradient>
+      </defs>
+      <circle cx="32" cy="32" r="30" fill="var(--qx-surface-2)" stroke="url(#qxBrandGrad)" strokeWidth="2" />
+      {/* four lotus-like petals fanning from the center, echoing the shape-coded
+          option tiles (circle/triangle/square/diamond) used elsewhere */}
+      {[0, 90, 180, 270].map(deg => (
+        <path key={deg} d="M32 32 C 26 22, 26 12, 32 8 C 38 12, 38 22, 32 32 Z"
+          fill="url(#qxBrandGrad)" opacity="0.9" transform={`rotate(${deg} 32 32)`} />
+      ))}
+      <circle cx="32" cy="32" r="7" fill="var(--qx-bg)" stroke="url(#qxBrandGrad)" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function BrandHeader() {
+  return (
+    <div className="qx-brand">
+      <BrandMark />
+      <div className="qx-eyebrow">Welcome to the</div>
+      <h1 className="qx-title qx-brand-title">{PORTAL_NAME}</h1>
+    </div>
+  );
+}
+
+// Waiting-room graphic for the lobby screen: a center emblem with a slowly
+// rotating ring of the four shape icons already used for answer options
+// elsewhere in the product, so "waiting" visually rhymes with "playing"
+// instead of being a generic unrelated spinner.
+function OrbitWaiting() {
+  return (
+    <div className="qx-orbit-wrap" aria-hidden="true">
+      <div className="qx-orbit-glow" />
+      <div className="qx-orbit-ring">
+        {OPTION_LABELS.map((letter, i) => (
+          <div key={letter} className="qx-orbit-item" style={{ '--i': i, color: OPTION_COLORS[letter] }}>
+            <ShapeIcon letter={letter} size={20} />
+          </div>
+        ))}
+      </div>
+      <div className="qx-orbit-center"><BrandMark size={40} /></div>
+    </div>
+  );
+}
+
 export default function OnlineQuizParticipant({ quizCode }) {
   const [phase, setPhase] = useState('join');
   const [name, setName] = useState('');
@@ -272,9 +334,9 @@ export default function OnlineQuizParticipant({ quizCode }) {
       <div className="qx-root qx-wrap">
         <QuizFonts /><QuizThemeStyles /><ParticipantStyles />
         <MuteToggle />
+        <BrandHeader />
         <div className="qx-card">
-          <div className="qx-eyebrow">You're invited to</div>
-          <h1 className="qx-title">Join Quiz</h1>
+          <div className="qx-eyebrow">Quiz code</div>
           <div className="qx-code">{quizCode}</div>
           <form onSubmit={handleJoin}>
             <label className="qx-label">Your name</label>
@@ -322,9 +384,10 @@ export default function OnlineQuizParticipant({ quizCode }) {
         <MuteToggle />
         <ConnectionBanner />
         <div className="qx-card qx-center">
+          <div className="qx-eyebrow">{PORTAL_NAME}</div>
           <h1 className="qx-title">{quizTitle || quizCode}</h1>
-          <p className="qx-muted">You're in! Waiting for the host to start…</p>
-          <div className="qx-pulse-dot" />
+          <OrbitWaiting />
+          <p className="qx-muted" style={{ marginTop: 4 }}>You're in! Waiting for the host to start…</p>
           <div className="qx-participant-count">{participantCount}</div>
           <div className="qx-muted" style={{ marginTop: -8 }}>players joined</div>
           <div className="qx-name-chip">Playing as <strong>{name}</strong></div>
@@ -530,6 +593,34 @@ function Confetti() {
 function ParticipantStyles() {
   return (
     <style jsx global>{`
+      .qx-brand { text-align: center; margin-bottom: 22px; }
+      .qx-brandmark { display: block; margin: 0 auto 10px; filter: drop-shadow(0 6px 18px rgba(34,211,176,0.25)); }
+      .qx-brand-title { font-size: 25px; max-width: 320px; margin: 0 auto; }
+
+      .qx-orbit-wrap { position: relative; width: 148px; height: 148px; margin: 18px auto 6px; }
+      .qx-orbit-glow {
+        position: absolute; inset: 10px; border-radius: 50%;
+        background: radial-gradient(circle, var(--qx-accent-dim) 0%, transparent 70%);
+        animation: qx-orbit-glow-pulse 2.4s ease-in-out infinite;
+      }
+      @keyframes qx-orbit-glow-pulse { 0%,100% { opacity: 0.6; transform: scale(0.92); } 50% { opacity: 1; transform: scale(1.06); } }
+      .qx-orbit-center {
+        position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      }
+      .qx-orbit-ring { position: absolute; inset: 0; animation: qx-orbit-spin 8s linear infinite; }
+      @keyframes qx-orbit-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      .qx-orbit-item {
+        position: absolute; top: 50%; left: 50%; width: 34px; height: 34px;
+        margin: -17px 0 0 -17px; display: flex; align-items: center; justify-content: center;
+        background: var(--qx-surface); border-radius: 10px; box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+        transform: rotate(calc(var(--i) * 90deg)) translate(64px) rotate(calc(var(--i) * -90deg));
+        animation: qx-orbit-counter-spin 8s linear infinite;
+      }
+      /* counter-rotate each icon so the shapes themselves stay upright while
+         still visibly traveling around the ring */
+      @keyframes qx-orbit-counter-spin { from { transform: rotate(calc(var(--i) * 90deg)) translate(64px) rotate(calc(var(--i) * -90deg)) rotate(0deg); } to { transform: rotate(calc(var(--i) * 90deg)) translate(64px) rotate(calc(var(--i) * -90deg)) rotate(-360deg); } }
+      @media (prefers-reduced-motion: reduce) { .qx-orbit-ring, .qx-orbit-item, .qx-orbit-glow { animation: none; } }
+
       .qx-live { justify-content: flex-start; padding-top: max(12px, env(safe-area-inset-top)); }
       .qx-code {
         font-family: var(--qx-font-mono); font-size: 34px; font-weight: 700; letter-spacing: 6px;
