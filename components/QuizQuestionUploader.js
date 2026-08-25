@@ -89,6 +89,15 @@ export default function QuizQuestionUploader({ quizId, hostCode, onDone }) {
   const [result, setResult] = useState(null);
   const fileInputRef = useRef(null);
 
+  function removeFile() {
+    setRows([]);
+    setProblems([]);
+    setFileName('');
+    setSubmitError('');
+    setResult(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+
   function handleFile(e) {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
@@ -183,7 +192,15 @@ export default function QuizQuestionUploader({ quizId, hostCode, onDone }) {
               onChange={handleFile}
               className="qxu-file-input"
             />
-            {fileName && <div className="qx-muted" style={{ fontSize: 12, marginTop: 4 }}>{fileName}</div>}
+            {fileName && (
+              <div className="qxu-file-chip">
+                <i className="fa-solid fa-file-excel" />
+                <span>{fileName}</span>
+                <button type="button" className="qxu-file-remove" onClick={removeFile} title="Remove this file" aria-label="Remove this file">
+                  <i className="fa-solid fa-xmark" />
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -191,6 +208,9 @@ export default function QuizQuestionUploader({ quizId, hostCode, onDone }) {
       {problems.length > 0 && (
         <div className="qxm-error" style={{ marginTop: 14 }}>
           {problems.map((p, i) => <div key={i}>⚠ {p}</div>)}
+          <button type="button" className="qxm-btn qxm-btn-outline qxu-btn-sm" style={{ marginTop: 10 }} onClick={removeFile}>
+            <i className="fa-solid fa-trash" /> Remove File
+          </button>
         </div>
       )}
 
@@ -213,9 +233,14 @@ export default function QuizQuestionUploader({ quizId, hostCode, onDone }) {
             </table>
           </div>
           {submitError && <div className="qxm-error">⚠ {submitError}</div>}
-          <button className="qxm-btn qxm-btn-primary" disabled={submitting} onClick={handleConfirm}>
-            {submitting ? <><i className="fa-solid fa-circle-notch fa-spin" /> Adding…</> : <><i className="fa-solid fa-check" /> Confirm &amp; Add to Quiz</>}
-          </button>
+          <div className="qxu-preview-actions">
+            <button className="qxm-btn qxm-btn-primary" disabled={submitting} onClick={handleConfirm}>
+              {submitting ? <><i className="fa-solid fa-circle-notch fa-spin" /> Adding…</> : <><i className="fa-solid fa-check" /> Confirm &amp; Add to Quiz</>}
+            </button>
+            <button type="button" className="qxm-btn qxm-btn-outline" disabled={submitting} onClick={removeFile}>
+              <i className="fa-solid fa-trash" /> Remove File
+            </button>
+          </div>
         </div>
       )}
 
@@ -242,6 +267,17 @@ function QxuStyles() {
       .qxu-step-title { font-weight: 700; font-size: 13px; margin-bottom: 8px; }
       .qxu-btn-sm { padding: 9px 14px; font-size: 13px; margin-top: 0; }
       .qxu-file-input { font-size: 13px; color: var(--qxm-text); }
+      .qxu-file-chip {
+        display: inline-flex; align-items: center; gap: 8px; margin-top: 8px; padding: 7px 10px 7px 12px;
+        background: var(--qxm-bg); border: 1px solid var(--qxm-border); border-radius: 999px; font-size: 12px;
+      }
+      .qxu-file-chip i.fa-file-excel { color: var(--qxm-accent); }
+      .qxu-file-remove {
+        border: none; background: var(--qxm-border); color: var(--qxm-text); width: 20px; height: 20px;
+        border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center;
+        font-size: 10px; padding: 0; flex-shrink: 0;
+      }
+      .qxu-file-remove:hover { background: var(--qqm-danger, #ff5c7a); }
 
       .qxu-preview { margin-top: 16px; }
       .qxu-preview-title { font-weight: 700; font-size: 13px; margin-bottom: 10px; }
@@ -253,6 +289,7 @@ function QxuStyles() {
       .qxu-correct { font-weight: 700; color: var(--qxm-accent); }
 
       .qxu-success { margin-top: 14px; color: var(--qxm-accent); font-weight: 600; font-size: 14px; }
+      .qxu-preview-actions { display: flex; gap: 10px; flex-wrap: wrap; }
     `}</style>
   );
 }

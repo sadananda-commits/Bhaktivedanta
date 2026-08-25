@@ -39,6 +39,7 @@ export default function OnlineQuizManager({ hostEmail }) {
   const [uploaderForQuiz, setUploaderForQuiz] = useState(null);
   const [questionsRefreshKey, setQuestionsRefreshKey] = useState(0);
   const [resettingQuizId, setResettingQuizId] = useState(null);
+  const [deletingQuizId, setDeletingQuizId] = useState(null);
 
   const load = useCallback(() => {
     if (!hostEmail) return;
@@ -64,6 +65,24 @@ export default function OnlineQuizManager({ hostEmail }) {
       setCopiedHostCode(quizId);
       setTimeout(() => setCopiedHostCode(null), 1800);
     });
+  }
+
+  async function handleDelete(q) {
+    const confirmMsg = `Permanently delete "${q.title}" (${q.quizId})?\n\n` +
+      `This removes the quiz itself AND every question, participant, answer, and result tied to it. ` +
+      `This cannot be undone.`;
+    if (!window.confirm(confirmMsg)) return;
+    setDeletingQuizId(q.quizId);
+    setError('');
+    try {
+      await quizApi.deleteQuiz(q.quizId, q.hostCode);
+      if (uploaderForQuiz === q.quizId) setUploaderForQuiz(null);
+      load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDeletingQuizId(null);
+    }
   }
 
   if (!hostEmail) {
@@ -159,6 +178,17 @@ export default function OnlineQuizManager({ hostEmail }) {
                     {resettingQuizId === q.quizId
                       ? <i className="fa-solid fa-circle-notch fa-spin" />
                       : <i className="fa-solid fa-rotate-left" />} Reset Quiz
+                  </button>
+                )}
+                {(q.status === 'lobby' || q.status === 'ended') && (
+                  <button
+                    className="qxm-btn qxm-btn-outline qxm-btn-danger"
+                    disabled={deletingQuizId === q.quizId}
+                    onClick={() => handleDelete(q)}
+                  >
+                    {deletingQuizId === q.quizId
+                      ? <i className="fa-solid fa-circle-notch fa-spin" />
+                      : <i className="fa-solid fa-trash" />} Delete Quiz
                   </button>
                 )}
               </div>
