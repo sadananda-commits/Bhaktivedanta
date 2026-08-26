@@ -59,6 +59,7 @@ const ACTIONS = {
   deleteQuestion: deleteQuestion,
   deleteQuestions: deleteQuestions,           // multi-select delete
   deleteAllQuestions: deleteAllQuestions,     // clear the whole question bank
+  deleteQuiz: deleteQuiz,
   joinQuiz: joinQuiz,
   getQuizState: getQuizState,
   getParticipants: getParticipants,
@@ -479,6 +480,43 @@ async function deleteAllQuestions(p) {
   await batch.commit();
 
   return { ok: true, removed: snap.size };
+}
+
+// Deletes every doc in a collection, in chunks — a plain single batch (as
+// used above for questions, which are always few) isn't safe here: after
+// self-paced mode, a quiz's participants/answers can keep growing
+// indefinitely for as long as the link stays shared, and Firestore batches
+// cap out at 500 writes. Looping in pages means this can't silently leave
+// leftover docs behind on a quiz that's had a lot of traffic.
+async function deleteCollectionDocs(collRef) {
+  const PAGE_SIZE = 450;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const snap = await collRef.limit(PAGE_SIZE).get();
+    if (snap.empty) return;
+    const batch = db.batch();
+    snap.docs.forEach(d => batch.delete(d.ref));
+    await batch.commit();
+    if (snap.size < PAGE_SIZE) return;
+  }
+}
+
+// Permanently removes a quiz and everything tied to it — its questions,
+// participants (live AND self-paced), answers, and the quizSecrets doc
+// holding its host code. Irreversible; the confirm dialog for this lives
+// client-side (OnlineQuizManager.js) since there's no undo once it runs.
+async function deleteQuiz(p) {
+  const { id: quizId, ref: quizRef } = await getQuizDoc(p.quizId);
+  const secret = await getSecretDoc(quizId);
+  assertHost(secret, p.hostCode);
+
+  await deleteCollectionDocs(quizRef.collection('questions'));
+  await deleteCollectionDocs(quizRef.collection('participants'));
+  await deleteCollectionDocs(quizRef.collection('answers'));
+  await quizRef.delete();
+  await db.collection('quizSecrets').doc(quizId).delete();
+
+  return { ok: true };
 }
 
 async function joinQuiz(p) {
