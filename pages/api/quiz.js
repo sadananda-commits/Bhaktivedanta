@@ -15,11 +15,33 @@
 //                                             INCLUDING the correct answer —
 //                                             admin-only, never sent to a
 //                                             participant's browser directly
-//   quizzes/{quizId}/participants/{id}     — joined participants
+//   quizzes/{quizId}/participants/{id}     — joined participants. Self-paced
+//                                             ("take it later") participants
+//                                             are regular docs in this SAME
+//                                             subcollection, just with 3
+//                                             extra fields: mode: 'solo',
+//                                             soloQuestionIndex (0-based,
+//                                             which question they're
+//                                             currently on), soloStartedAt
+//                                             (ISO — when THEY were served
+//                                             that question, their own
+//                                             per-participant clock instead
+//                                             of the shared
+//                                             currentQuestionStartedAt).
+//                                             Live participants simply don't
+//                                             have these fields at all —
+//                                             every check below treats a
+//                                             missing/non-'solo' mode as
+//                                             live. No Firestore schema
+//                                             migration needed for this —
+//                                             new fields just start
+//                                             appearing on new solo joins.
 //   quizzes/{quizId}/answers/{partId_qNum} — one doc per (participant,
 //                                             question) — the deterministic
 //                                             doc ID doubles as the
-//                                             duplicate-submit guard
+//                                             duplicate-submit guard. Used
+//                                             for both live and solo answers
+//                                             identically.
 //   quizSecrets/{quizId}                   — { hostEmail, hostCodeLower,
 //                                             hostCode } — NEVER readable
 //                                             from the client; only this
@@ -35,6 +57,8 @@ const ACTIONS = {
   getQuestions: getQuestions,
   updateQuestion: updateQuestion,
   deleteQuestion: deleteQuestion,
+  deleteQuestions: deleteQuestions,           // multi-select delete
+  deleteAllQuestions: deleteAllQuestions,     // clear the whole question bank
   joinQuiz: joinQuiz,
   getQuizState: getQuizState,
   getParticipants: getParticipants,
@@ -49,6 +73,12 @@ const ACTIONS = {
   endQuiz: endQuiz,
   getMyQuizzes: getMyQuizzes,
   getResults: getResults,
+  // Self-paced ("take it later") actions — see the comment above
+  // joinSoloQuiz for what these add to the participant doc shape.
+  joinSoloQuiz: joinSoloQuiz,
+  getSoloState: getSoloState,
+  submitSoloAnswer: submitSoloAnswer,
+  soloNextQuestion: soloNextQuestion,
 };
 
 export default async function handler(req, res) {
@@ -86,6 +116,10 @@ function normalizeAnswer(str) {
     .filter(Boolean)
     .sort()
     .join(',');
+}
+
+function isSolo(participant) {
+  return participant.mode === 'solo';
 }
 
 async function getQuizDoc(quizId) {
@@ -159,7 +193,11 @@ async function computeStandings(quizId) {
   const answers = answersSnap.docs.map(d => d.data());
 
   const standings = participantsSnap.docs
-    .filter(pDoc => pDoc.data().status !== 'left')
+    // Self-paced takers are excluded from the LIVE running standings shown
+    // between questions — their scores aren't "final" yet and mixing them
+    // in would blur the Live/Self-Paced split that's meant to only really
+    // show up in the final results (see endQuiz).
+    .filter(pDoc => pDoc.data().status !== 'left' && !isSolo(pDoc.data()))
     .map(pDoc => {
       const participant = pDoc.data();
       const mine = answers.filter(a => a.participantId === pDoc.id);
@@ -200,6 +238,7 @@ async function createQuiz(p) {
       pausedAt: null,
       answeredCount: 0,
       participantCount: 0,
+      soloParticipantCount: 0,
       totalQuestions: 0,
       reveal: null,
       leaderboard: null,
@@ -394,6 +433,54 @@ async function deleteQuestion(p) {
   return { ok: true, remaining: remaining.length };
 }
 
+// Multi-select delete — the "check a batch, delete them" button next to
+// each question's individual trash icon. Same read-all/delete-all/rewrite-
+// renumbered approach as deleteQuestion above, just filtering out a whole
+// Set of qNums instead of one.
+async function deleteQuestions(p) {
+  const { id: quizId, ref: quizRef, data: quizData } = await getQuizDoc(p.quizId);
+  const secret = await getSecretDoc(quizId);
+  assertHost(secret, p.hostCode);
+  assertEditableQuestions(quizData);
+  if (!Array.isArray(p.qNums) || !p.qNums.length) throw new Error('No questions selected to delete.');
+
+  const toRemove = new Set(p.qNums.map(n => Number(n)));
+  const questionsRef = quizRef.collection('questions');
+  const snap = await questionsRef.get();
+  const remaining = snap.docs
+    .map(d => d.data())
+    .filter(q => !toRemove.has(Number(q.qNum)))
+    .sort((a, b) => Number(a.qNum) - Number(b.qNum));
+
+  const batch = db.batch();
+  snap.docs.forEach(d => batch.delete(d.ref));
+  remaining.forEach((q, i) => {
+    batch.set(questionsRef.doc(String(i + 1)), { ...q, qNum: i + 1 });
+  });
+  batch.update(quizRef, { totalQuestions: remaining.length });
+  await batch.commit();
+
+  return { ok: true, removed: toRemove.size, remaining: remaining.length };
+}
+
+// Wipes the whole question bank in one shot — the "start over" button for a
+// host who uploaded the wrong Excel file and wants to re-upload a fresh one,
+// instead of deleting questions one row (or one checkbox-batch) at a time.
+async function deleteAllQuestions(p) {
+  const { id: quizId, ref: quizRef, data: quizData } = await getQuizDoc(p.quizId);
+  const secret = await getSecretDoc(quizId);
+  assertHost(secret, p.hostCode);
+  assertEditableQuestions(quizData);
+
+  const snap = await quizRef.collection('questions').get();
+  const batch = db.batch();
+  snap.docs.forEach(d => batch.delete(d.ref));
+  batch.update(quizRef, { totalQuestions: 0 });
+  await batch.commit();
+
+  return { ok: true, removed: snap.size };
+}
+
 async function joinQuiz(p) {
   const { id: quizId, ref: quizRef, data: quizData } = await getQuizDoc(p.quizId);
   if (quizData.status === 'ended') throw new Error('This quiz has already ended.');
@@ -422,6 +509,11 @@ async function getQuizState(p) {
     currentQuestion: data.currentQuestion || null,
     totalQuestions: data.totalQuestions || 0,
     participantCount: data.participantCount || 0,
+    // Surfaced separately from participantCount (which only ever counts
+    // live joins — see joinQuiz/joinSoloQuiz) so the host can see at a
+    // glance that people are taking it self-paced, without it inflating
+    // the live lobby/"X answered" numbers.
+    soloParticipantCount: data.soloParticipantCount || 0,
     answeredCount: data.answeredCount || 0,
   };
 }
@@ -433,8 +525,12 @@ async function getParticipants(p) {
 
   const snap = await db.collection('quizzes').doc(quizId).collection('participants').get();
   return {
+    // Self-paced takers are deliberately left out of this list — it feeds
+    // the host's live "Participants" panel (with a Remove button that kicks
+    // someone out of the LIVE round), which isn't a meaningful action for
+    // someone playing entirely on their own timer.
     participants: snap.docs
-      .filter(d => d.data().status !== 'left')
+      .filter(d => d.data().status !== 'left' && !isSolo(d.data()))
       .map(d => ({ participantId: d.id, name: d.data().name, age: d.data().age, joinTime: d.data().joinTime })),
   };
 }
@@ -547,7 +643,10 @@ async function broadcastQuestionEnded(quizId, quizRef, qNum) {
     quizRef.collection('participants').get(),
   ]);
   const answers = answersSnap.docs.map(d => d.data());
-  const participantCount = participantsSnap.docs.filter(d => d.data().status !== 'left').length;
+  // Excludes self-paced takers — this feeds the "no answer" bucket for THIS
+  // live round (participantCount minus who answered), and solo players
+  // aren't on this round at all, live or otherwise.
+  const participantCount = participantsSnap.docs.filter(d => d.data().status !== 'left' && !isSolo(d.data())).length;
 
   // Each participant may have selected more than one letter (multi-select),
   // so a single answer doc can contribute to more than one bucket here.
@@ -645,9 +744,22 @@ async function resetQuiz(p) {
     throw new Error('Quiz can only be reset while paused or ended (it\'s currently ' + quizData.status + ').');
   }
 
-  const answersSnap = await quizRef.collection('answers').get();
+  const [answersSnap, participantsSnap] = await Promise.all([
+    quizRef.collection('answers').get(),
+    quizRef.collection('participants').get(),
+  ]);
   const batch = db.batch();
   answersSnap.docs.forEach(d => batch.delete(d.ref));
+  // Every answer is about to be wiped, so any self-paced participant's
+  // progress pointer needs to go back to Question 1 too — otherwise they'd
+  // be left "on Question 5" with none of questions 1–5's answers actually
+  // existing anymore. Live participants don't have these fields at all, so
+  // this only ever touches solo docs.
+  participantsSnap.docs.forEach(d => {
+    if (isSolo(d.data())) {
+      batch.update(d.ref, { soloQuestionIndex: 0, soloStartedAt: nowIso() });
+    }
+  });
   batch.update(quizRef, {
     status: 'lobby',
     currentQuestionIndex: -1,
@@ -728,7 +840,7 @@ async function endQuiz(p) {
   const answers = answersSnap.docs.map(d => d.data());
   const totalQuestions = Number(quizData.totalQuestions) || 0;
 
-  const results = participantsSnap.docs
+  const allResults = participantsSnap.docs
     .filter(pDoc => pDoc.data().status !== 'left')
     .map(pDoc => {
       const participant = pDoc.data();
@@ -750,11 +862,23 @@ async function endQuiz(p) {
         correctAnswers: correct,
         incorrectAnswers: Math.max(0, totalQuestions - correct),
         avgResponseMs,
+        // Lets the client split "Live" vs "Self-Paced" into two sections
+        // instead of one mixed leaderboard — ranks below are computed
+        // separately within each group for the same reason (otherwise two
+        // different people could both show as "#1").
+        mode: isSolo(participant) ? 'solo' : 'live',
       };
     });
 
-  results.sort((a, b) => b.totalScore - a.totalScore || a.avgResponseMs - b.avgResponseMs);
-  results.forEach((r, i) => { r.rank = i + 1; });
+  function rankGroup(rows) {
+    rows.sort((a, b) => b.totalScore - a.totalScore || a.avgResponseMs - b.avgResponseMs);
+    rows.forEach((r, i) => { r.rank = i + 1; });
+    return rows;
+  }
+
+  const liveResults = rankGroup(allResults.filter(r => r.mode !== 'solo'));
+  const soloResults = rankGroup(allResults.filter(r => r.mode === 'solo'));
+  const results = liveResults.concat(soloResults);
 
   await quizRef.update({ status: 'ended', leaderboard: results });
 
@@ -796,4 +920,209 @@ async function getMyQuizzes(p) {
 async function getResults(p) {
   const { data } = await getQuizDoc(p.quizId);
   return { leaderboard: data.leaderboard || [] };
+}
+
+// ── Self-paced ("take it later") mode ───────────────────────────────────
+// Lets someone who missed the live session join the SAME quiz and move
+// through it entirely on their own: they get Question 1 the instant they
+// join, click "Next" themselves instead of waiting on the host, and see
+// their own independent per-question countdown (their own soloStartedAt,
+// not the shared currentQuestionStartedAt). Nothing here touches the live
+// quiz doc's currentQuestion/currentQuestionIndex — those stay 100% about
+// the host-driven live round — so this never interferes with (or gets
+// interfered with by) whatever's happening live.
+//
+// The quiz stays open to new self-paced joiners for as long as the host
+// hasn't pressed "End Quiz" (status !== 'ended'). Once it has,
+// soloNextQuestion still lets someone finish whatever question they were
+// already on (submitSoloAnswer has no status check at all) — they just
+// can't be handed a NEW question after that point.
+
+async function joinSoloQuiz(p) {
+  const { id: quizId, ref: quizRef, data: quizData } = await getQuizDoc(p.quizId);
+  if (quizData.status === 'ended') throw new Error('This quiz has already ended.');
+  if (!p.name) throw new Error('name required');
+
+  const qSnap = await quizRef.collection('questions').doc('1').get();
+  if (!qSnap.exists) throw new Error('This quiz has no questions yet.');
+
+  const startedAt = nowIso();
+  const participantRef = quizRef.collection('participants').doc();
+  await participantRef.set({
+    name: String(p.name).trim(),
+    age: p.age || '',
+    joinTime: startedAt,
+    status: 'active',
+    mode: 'solo',
+    soloQuestionIndex: 0,
+    soloStartedAt: startedAt,
+  });
+  // Deliberately does NOT increment participantCount — that field drives
+  // the host's live headcount/lobby screen, which self-paced takers aren't
+  // part of. Tracked separately below so the host still has visibility.
+  await quizRef.update({ soloParticipantCount: FieldValue.increment(1) });
+
+  return {
+    ok: true,
+    participantId: participantRef.id,
+    quizId,
+    title: quizData.title,
+    question: { ...publicQuestion(qSnap.data(), quizData), startedAt },
+  };
+}
+
+// Re-fetches whatever a self-paced participant should currently be looking
+// at — the solo equivalent of getQuizState, used on page reload/reconnect
+// (see the client's "Restore identity on reload" effect).
+async function getSoloState(p) {
+  const { ref: quizRef, data: quizData } = await getQuizDoc(p.quizId);
+  const pSnap = await quizRef.collection('participants').doc(p.participantId).get();
+  if (!pSnap.exists) throw new Error('Participant not found.');
+  const participant = pSnap.data();
+  if (!isSolo(participant)) throw new Error('Not a self-paced participant.');
+
+  const totalQuestions = Number(quizData.totalQuestions) || 0;
+  const idx = Number(participant.soloQuestionIndex);
+  const qSnap = idx < totalQuestions
+    ? await quizRef.collection('questions').doc(String(idx + 1)).get()
+    : null;
+
+  if (!qSnap || !qSnap.exists) {
+    return { ok: true, completed: true, summary: await soloSummary(quizRef, p.participantId, participant, totalQuestions) };
+  }
+
+  return {
+    ok: true,
+    title: quizData.title,
+    question: { ...publicQuestion(qSnap.data(), quizData), startedAt: participant.soloStartedAt },
+  };
+}
+
+async function submitSoloAnswer(p) {
+  const { ref: quizRef, data: quizData } = await getQuizDoc(p.quizId);
+  const participantRef = quizRef.collection('participants').doc(p.participantId);
+  const pSnap = await participantRef.get();
+  if (!pSnap.exists) throw new Error('Participant not found.');
+  const participant = pSnap.data();
+  if (!isSolo(participant)) throw new Error('Not a self-paced participant.');
+
+  const qNum = Number(participant.soloQuestionIndex) + 1;
+  if (Number(p.qNum) !== qNum) throw new Error('Answer submitted for wrong/expired question.');
+
+  const qSnap = await quizRef.collection('questions').doc(String(qNum)).get();
+  if (!qSnap.exists) throw new Error('Question not found.');
+  const question = qSnap.data();
+
+  const timeLimitSec = Number(question.timeLimitSec) || Number(quizData.defaultTimeLimitSec) || 20;
+  const startedAtMs = Date.parse(participant.soloStartedAt);
+  const answeredAtMs = Date.now();
+  let responseDurationMs = answeredAtMs - startedAtMs;
+  responseDurationMs = Math.max(0, Math.min(responseDurationMs, timeLimitSec * 1000));
+  const isLate = (answeredAtMs - startedAtMs) > timeLimitSec * 1000;
+
+  const isCorrect = normalizeAnswer(p.selectedAnswer) !== '' &&
+    normalizeAnswer(p.selectedAnswer) === normalizeAnswer(question.correctAnswer);
+  const pointsEarned = isLate ? 0 : computeScore(isCorrect, responseDurationMs, timeLimitSec, question, quizData);
+
+  // Same doc-ID-as-guard trick as the live submitAnswer — participantId_qNum
+  // makes "already exists" and "write it" atomic inside the transaction.
+  const answerRef = quizRef.collection('answers').doc(`${p.participantId}_${qNum}`);
+  await db.runTransaction(async (txn) => {
+    const existing = await txn.get(answerRef);
+    if (existing.exists) throw new Error('Already answered this question.');
+    txn.set(answerRef, {
+      participantId: p.participantId,
+      qNum,
+      selectedAnswer: p.selectedAnswer,
+      isCorrect,
+      answeredAt: nowIso(),
+      responseDurationMs,
+      pointsEarned,
+    });
+  });
+
+  // Covers the "let them finish this question, then end" grace window: if
+  // the host already pressed End Quiz and this participant's leaderboard
+  // entry was already frozen by endQuiz, patch it so this last, in-flight
+  // answer still counts instead of silently vanishing from the final
+  // numbers.
+  await patchFrozenLeaderboardEntry(quizRef, p.participantId);
+
+  return { ok: true, isCorrect, pointsEarned };
+}
+
+// Advances a self-paced participant to their next question, or reports
+// completion — either because they've answered every question, or because
+// the host ended the quiz while they still had more to go (they keep
+// whatever they'd already scored; they just can't start a new question).
+async function soloNextQuestion(p) {
+  const { ref: quizRef, data: quizData } = await getQuizDoc(p.quizId);
+  const participantRef = quizRef.collection('participants').doc(p.participantId);
+  const pSnap = await participantRef.get();
+  if (!pSnap.exists) throw new Error('Participant not found.');
+  const participant = pSnap.data();
+  if (!isSolo(participant)) throw new Error('Not a self-paced participant.');
+
+  const totalQuestions = Number(quizData.totalQuestions) || 0;
+  const nextIdx = Number(participant.soloQuestionIndex) + 1;
+
+  if (nextIdx >= totalQuestions) {
+    await participantRef.update({ soloQuestionIndex: totalQuestions });
+    return { ok: true, completed: true, summary: await soloSummary(quizRef, p.participantId, participant, totalQuestions) };
+  }
+
+  if (quizData.status === 'ended') {
+    return { ok: true, ended: true, summary: await soloSummary(quizRef, p.participantId, participant, totalQuestions) };
+  }
+
+  const qSnap = await quizRef.collection('questions').doc(String(nextIdx + 1)).get();
+  const startedAt = nowIso();
+  await participantRef.update({ soloQuestionIndex: nextIdx, soloStartedAt: startedAt });
+
+  return { ok: true, question: { ...publicQuestion(qSnap.data(), quizData), startedAt } };
+}
+
+async function soloSummary(quizRef, participantId, participant, totalQuestions) {
+  const answersSnap = await quizRef.collection('answers').where('participantId', '==', participantId).get();
+  const answers = answersSnap.docs.map(d => d.data());
+  const correct = answers.filter(a => a.isCorrect === true).length;
+  return {
+    name: participant.name,
+    totalScore: answers.reduce((sum, a) => sum + (Number(a.pointsEarned) || 0), 0),
+    correctAnswers: correct,
+    incorrectAnswers: Math.max(0, answers.length - correct),
+    questionsAnswered: answers.length,
+    totalQuestions,
+  };
+}
+
+// Keeps a solo participant's already-frozen leaderboard entry (written once
+// by endQuiz's snapshot into quizzes/{quizId}.leaderboard) in sync with any
+// answer they submit in the grace window right after the host ends the
+// quiz. Doesn't touch 'rank' on any entry — nudging one late score
+// shouldn't reshuffle everyone else's already-announced rank.
+async function patchFrozenLeaderboardEntry(quizRef, participantId) {
+  const quizSnap = await quizRef.get();
+  const quizData = quizSnap.data();
+  if (!Array.isArray(quizData.leaderboard)) return; // normal case — nothing frozen yet
+  const idx = quizData.leaderboard.findIndex(r => r.participantId === participantId);
+  if (idx === -1) return;
+
+  const answersSnap = await quizRef.collection('answers').where('participantId', '==', participantId).get();
+  const answers = answersSnap.docs.map(d => d.data());
+  const totalQuestions = Number(quizData.totalQuestions) || 0;
+  const correct = answers.filter(a => a.isCorrect === true).length;
+  const avgResponseMs = answers.length
+    ? Math.round(answers.reduce((s, a) => s + (Number(a.responseDurationMs) || 0), 0) / answers.length)
+    : 0;
+
+  const updatedLeaderboard = quizData.leaderboard.slice();
+  updatedLeaderboard[idx] = {
+    ...updatedLeaderboard[idx],
+    totalScore: answers.reduce((sum, a) => sum + (Number(a.pointsEarned) || 0), 0),
+    correctAnswers: correct,
+    incorrectAnswers: Math.max(0, totalQuestions - correct),
+    avgResponseMs,
+  };
+  await quizRef.update({ leaderboard: updatedLeaderboard });
 }

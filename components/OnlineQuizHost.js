@@ -37,6 +37,7 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
   const [question, setQuestion] = useState(null);
   const [totalQuestions, setTotalQuestions] = useState(0);
   const [answeredCount, setAnsweredCount] = useState(0);
+  const [soloParticipantCount, setSoloParticipantCount] = useState(0);
   const [reveal, setReveal] = useState(null);
   // null while the question is actually live; 'summary' once auto-revealed;
   // 'standings' once the host chooses to look at the leaderboard.
@@ -68,6 +69,7 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
         setTitle(state.title || quizCode);
         setStatus(state.status === 'lobby' ? 'lobby' : state.status);
         setTotalQuestions(state.totalQuestions || 0);
+        setSoloParticipantCount(state.soloParticipantCount || 0);
         if (state.currentQuestion) {
           setQuestion(state.currentQuestion);
           const dl = Date.parse(state.currentQuestion.startedAt) + state.currentQuestion.timeLimitSec * 1000;
@@ -86,6 +88,17 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
   }, [quizCode, refreshParticipants]);
 
   useEffect(() => { refreshFullState(); }, [refreshFullState]);
+
+  // Solo joins don't fire a Pusher event (see joinSoloQuiz_'s comment on
+  // why), so this is a light poll purely to keep the "X taking it
+  // self-paced" badge below from going stale — no realtime dependency here.
+  useEffect(() => {
+    if (status === 'ended') return;
+    const id = setInterval(() => {
+      quizApi.getQuizState(quizCode).then(state => setSoloParticipantCount(state.soloParticipantCount || 0)).catch(() => {});
+    }, 20000);
+    return () => clearInterval(id);
+  }, [status, quizCode]);
 
   useEffect(() => {
     const unsubscribe = subscribeToQuiz(quizCode, {
@@ -214,8 +227,11 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
 
   function exportCsv() {
     if (!leaderboard) return;
-    const header = 'Rank,Name,Score,Correct,Incorrect,Avg Response (ms)\n';
-    const rows = leaderboard.map(r => [r.rank, r.name, r.totalScore, r.correctAnswers, r.incorrectAnswers, r.avgResponseMs].join(',')).join('\n');
+    const header = 'Section,Rank,Name,Score,Correct,Incorrect,Avg Response (ms)\n';
+    const rows = leaderboard.map(r => [
+      r.mode === 'solo' ? 'Self-Paced' : 'Live',
+      r.rank, r.name, r.totalScore, r.correctAnswers, r.incorrectAnswers, r.avgResponseMs,
+    ].join(',')).join('\n');
     const blob = new Blob([header + rows], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -243,6 +259,15 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
         <button className="qxh-btn qxh-participants-toggle" onClick={() => setShowParticipants(v => !v)}>
           <i className="fa-solid fa-users" /> Participants ({participants.length})
         </button>
+        {/* Self-paced takers use the exact same join link, just after
+            choosing "take it at my own pace" — they're never in the list
+            above (see getParticipants_'s comment), so this is the only
+            place the host sees that anyone's doing it. */}
+        {soloParticipantCount > 0 && (
+          <span className="qxh-solo-badge" title="People taking this quiz self-paced, using the same join link">
+            <i className="fa-solid fa-person-walking-arrow-right" /> {soloParticipantCount} self-paced
+          </span>
+        )}
       </div>
 
       {showParticipants && (
@@ -287,6 +312,9 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
             <div className="qxh-code-big">{quizCode}</div>
             <div className="qxh-link">{joinUrl}</div>
             <p className="qx-muted">Scan to join — no typing needed</p>
+            <p className="qx-muted" style={{ marginTop: 6, fontSize: 12 }}>
+              Anyone who misses this live session can still use this same link later — it'll offer them a "take it at your own pace" option for as long as this quiz stays open.
+            </p>
           </div>
           <div className="qx-card">
             <div className="qxh-count-row">
@@ -439,20 +467,15 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
 
       {status === 'ended' && (
         <div className="qx-card qxh-results-card">
-          <h3 className="qx-leaderboard-title" style={{ marginTop: 0 }}>Final Results</h3>
-          <div className="qxh-table-scroll">
-            <table className="qxh-table">
-              <thead><tr><th>Rank</th><th>Name</th><th>Score</th><th>Correct</th><th>Incorrect</th><th>Avg (ms)</th></tr></thead>
-              <tbody>
-                {(leaderboard || []).map(r => (
-                  <tr key={r.participantId}>
-                    <td>{r.rank}</td><td>{r.name}</td><td>{r.totalScore}</td>
-                    <td>{r.correctAnswers}</td><td>{r.incorrectAnswers}</td><td>{r.avgResponseMs}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <h3 className="qx-leaderboard-title" style={{ marginTop: 0 }}>Final Results — Live</h3>
+          <ResultsTable rows={(leaderboard || []).filter(r => r.mode !== 'solo')} emptyLabel="No one played live." />
+
+          {/* Self-paced takers get their own section/table rather than being
+              mixed into the live rankings above — same quiz, same scoring,
+              just a separate group since they played on their own time. */}
+          <h3 className="qx-leaderboard-title">Final Results — Self-Paced</h3>
+          <ResultsTable rows={(leaderboard || []).filter(r => r.mode === 'solo')} emptyLabel="No one has taken this quiz self-paced." />
+
           <button className="qx-btn qx-btn-primary" style={{ maxWidth: 240 }} onClick={exportCsv}><i className="fa-solid fa-download" /> Export CSV</button>
           <button className="qx-btn" style={{ maxWidth: 240, background: 'var(--qx-danger)', color: '#2a0007' }} disabled={busy} onClick={() => {
             if (!window.confirm('Reset this quiz back to the start? Every submitted answer and this leaderboard will be cleared — participants stay joined and can play again from Question 1.')) return;
@@ -506,12 +529,36 @@ function BarChart({ question, reveal }) {
   );
 }
 
+function ResultsTable({ rows, emptyLabel }) {
+  if (!rows.length) return <p className="qx-muted" style={{ margin: '0 0 18px' }}>{emptyLabel}</p>;
+  return (
+    <div className="qxh-table-scroll" style={{ marginBottom: 18 }}>
+      <table className="qxh-table">
+        <thead><tr><th>Rank</th><th>Name</th><th>Score</th><th>Correct</th><th>Incorrect</th><th>Avg (ms)</th></tr></thead>
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.participantId}>
+              <td>{r.rank}</td><td>{r.name}</td><td>{r.totalScore}</td>
+              <td>{r.correctAnswers}</td><td>{r.incorrectAnswers}</td><td>{r.avgResponseMs}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function HostStyles() {
   return (
     <style jsx global>{`
       .qxh-wrap { max-width: 900px; margin: 0 auto; padding: 28px 20px; align-items: stretch; min-height: auto; }
       .qxh-header { margin-bottom: 20px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
       .qxh-participants-toggle { white-space: nowrap; }
+      .qxh-solo-badge {
+        display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700;
+        color: var(--qx-accent-2); background: var(--qx-accent-2-dim); padding: 7px 12px; border-radius: 999px;
+        white-space: nowrap;
+      }
       .qxh-participants-panel { margin-bottom: 20px; }
       .qxh-participants-panel-title { font-weight: 700; margin-bottom: 10px; }
       .qxh-participant-row-manage { padding-right: 8px; }

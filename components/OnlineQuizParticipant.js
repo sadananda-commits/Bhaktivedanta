@@ -88,6 +88,16 @@ export default function OnlineQuizParticipant({ quizCode }) {
   const [quizTitle, setQuizTitle] = useState('');
   const [participantCount, setParticipantCount] = useState(0);
 
+  // ── Self-paced ("take it later") mode ──────────────────────────────
+  // takeMode is only meaningful once the person has actually committed —
+  // 'live' joins the shared in-progress question, 'solo' starts their own
+  // independent run through the quiz from Question 1. prejoinStatus is a
+  // lightweight peek at the quiz (no join yet) purely to decide whether the
+  // join screen needs to offer that choice at all.
+  const [prejoinStatus, setPrejoinStatus] = useState(null); // null while loading
+  const [takeMode, setTakeMode] = useState(null); // null | 'live' | 'solo'
+  const [soloSummary, setSoloSummary] = useState(null); // personal score once done/cut off
+
   const [question, setQuestion] = useState(null);
   const [deadline, setDeadline] = useState(null);
   const [secondsLeft, setSecondsLeft] = useState(0);
@@ -104,6 +114,7 @@ export default function OnlineQuizParticipant({ quizCode }) {
   const [connectionLost, setConnectionLost] = useState(false);
 
   const storageKey = 'quiz_participant_' + quizCode;
+  const soloStorageKey = 'quiz_solo_participant_' + quizCode;
   const wasDisconnectedRef = useRef(false);
   const lastTickPlayedRef = useRef(null);
   const submittedRef = useRef(false); // guards against manual + auto-submit racing
@@ -112,9 +123,47 @@ export default function OnlineQuizParticipant({ quizCode }) {
   useEffect(() => { setMutedState(isMuted()); }, []);
   function toggleMute() { const next = !muted; setMuted(next); setMutedState(next); }
 
+  // Seeds a fetched/advanced solo question into the same state the live
+  // question screen reads from, so both phases can share one render block.
+  const applySoloQuestion = useCallback((q, title) => {
+    if (title !== undefined) setQuizTitle(title || '');
+    setQuestion(q);
+    setDeadline(Date.parse(q.startedAt || Date.now()) + q.timeLimitSec * 1000);
+    setTotalSeconds(q.timeLimitSec);
+    setSelectedLetters([]);
+    setHasAnswered(false);
+    setAnswerFeedback(null);
+    setPointsDisplay(0);
+    submittedRef.current = false;
+    timeUpPlayedRef.current = false;
+    setPhase('solo');
+  }, []);
+
+  // ── Peek at the quiz's status before joining ─────────────────────────
+  // Purely informational — doesn't create a participant row. Lets the join
+  // screen offer "take it at your own pace" only when it's actually
+  // relevant (the live session is already underway or already over), and
+  // skip straight to a normal join while the quiz is still in its lobby.
+  useEffect(() => {
+    quizApi.getQuizState(quizCode)
+      .then(state => { setQuizTitle(state.title || ''); setPrejoinStatus(state.status); })
+      .catch(() => setPrejoinStatus('lobby')); // fail open to the normal join form
+  }, [quizCode]);
+
   // ── Restore identity on reload ──────────────────────────────────────
   useEffect(() => {
     try {
+      const soloSaved = JSON.parse(sessionStorage.getItem(soloStorageKey) || 'null');
+      if (soloSaved && soloSaved.participantId) {
+        setParticipantId(soloSaved.participantId);
+        setName(soloSaved.name || '');
+        setTakeMode('solo');
+        quizApi.getSoloState(quizCode, soloSaved.participantId).then(res => {
+          if (res.completed) { setSoloSummary(res.summary); setPhase('solo-done'); }
+          else applySoloQuestion(res.question, res.title);
+        }).catch(() => {});
+        return;
+      }
       const saved = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
       if (saved && saved.participantId) {
         setParticipantId(saved.participantId);
@@ -158,13 +207,21 @@ export default function OnlineQuizParticipant({ quizCode }) {
     if (!name.trim()) { setJoinError('Enter your name to continue.'); return; }
     setJoining(true);
     try {
-      const res = await quizApi.joinQuiz(quizCode, name.trim(), age ? Number(age) : '');
-      setParticipantId(res.participantId);
-      sessionStorage.setItem(storageKey, JSON.stringify({ participantId: res.participantId, name: name.trim() }));
-      setPhase('lobby');
-      quizSounds.join();
-      const state = await quizApi.getQuizState(quizCode);
-      applyState(state);
+      if (takeMode === 'solo') {
+        const res = await quizApi.joinSoloQuiz(quizCode, name.trim(), age ? Number(age) : '');
+        setParticipantId(res.participantId);
+        sessionStorage.setItem(soloStorageKey, JSON.stringify({ participantId: res.participantId, name: name.trim() }));
+        quizSounds.join();
+        applySoloQuestion(res.question, res.title);
+      } else {
+        const res = await quizApi.joinQuiz(quizCode, name.trim(), age ? Number(age) : '');
+        setParticipantId(res.participantId);
+        sessionStorage.setItem(storageKey, JSON.stringify({ participantId: res.participantId, name: name.trim() }));
+        setPhase('lobby');
+        quizSounds.join();
+        const state = await quizApi.getQuizState(quizCode);
+        applyState(state);
+      }
     } catch (err) {
       setJoinError(err.message || 'Could not join this quiz.');
     } finally {
@@ -172,9 +229,30 @@ export default function OnlineQuizParticipant({ quizCode }) {
     }
   }
 
+  // ── Solo: click "Next"/"Finish" ────────────────────────────────────
+  const [soloAdvancing, setSoloAdvancing] = useState(false);
+  async function handleSoloNext() {
+    setSoloAdvancing(true);
+    try {
+      const res = await quizApi.soloNextQuestion(quizCode, participantId);
+      if (res.completed || res.ended) {
+        setSoloSummary(res.summary);
+        setPhase(res.ended ? 'solo-ended' : 'solo-done');
+        sessionStorage.removeItem(soloStorageKey);
+      } else {
+        applySoloQuestion(res.question);
+        quizSounds.questionStart();
+      }
+    } catch (err) {
+      setJoinError(err.message); // reused as a generic inline error surface
+    } finally {
+      setSoloAdvancing(false);
+    }
+  }
+
   // ── Pusher subscription ────────────────────────────────────────────
   useEffect(() => {
-    if (!participantId) return;
+    if (!participantId || takeMode === 'solo') return; // solo mode is plain request/response — no realtime channel needed
     const unsubscribe = subscribeToQuiz(quizCode, {
       'participant-joined': (data) => setParticipantCount(data.participantCount),
       'quiz-started': () => setPhase(p => (p === 'lobby' ? 'live' : p)),
@@ -237,7 +315,7 @@ export default function OnlineQuizParticipant({ quizCode }) {
 
   // ── Connection-drop recovery ─────────────────────────────────────────
   useEffect(() => {
-    if (!participantId) return;
+    if (!participantId || takeMode === 'solo') return;
     const unsubscribe = onConnectionStateChange((state) => {
       if (state === 'connected') {
         setConnectionLost(false);
@@ -257,13 +335,15 @@ export default function OnlineQuizParticipant({ quizCode }) {
     submittedRef.current = true;
     setHasAnswered(true);
     try {
-      const res = await quizApi.submitAnswer(quizCode, participantId, question.qNum, letters.join(','));
+      const res = takeMode === 'solo'
+        ? await quizApi.submitSoloAnswer(quizCode, participantId, question.qNum, letters.join(','))
+        : await quizApi.submitAnswer(quizCode, participantId, question.qNum, letters.join(','));
       setAnswerFeedback({ isCorrect: res.isCorrect, pointsEarned: res.pointsEarned });
       if (res.isCorrect) quizSounds.correct(); else quizSounds.incorrect();
     } catch (err) {
       setAnswerFeedback({ error: err.message });
     }
-  }, [question, quizCode, participantId]);
+  }, [question, quizCode, participantId, takeMode]);
 
   function toggleOption(letter) {
     if (hasAnswered || secondsLeft <= 0) return;
@@ -282,7 +362,7 @@ export default function OnlineQuizParticipant({ quizCode }) {
 
   // ── Countdown + tick + time's-up + auto-submit ────────────────────────
   useEffect(() => {
-    if (phase !== 'live' || !deadline || paused) return; // frozen while paused — no interval runs at all
+    if ((phase !== 'live' && phase !== 'solo') || !deadline || paused) return; // frozen while paused — no interval runs at all (solo never pauses)
     const tick = () => {
       const s = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
       setSecondsLeft(s);
@@ -330,6 +410,34 @@ export default function OnlineQuizParticipant({ quizCode }) {
   // ── Render ───────────────────────────────────────────────────────────
 
   if (phase === 'join') {
+    // The quiz is already over — no point offering either join path.
+    if (prejoinStatus === 'ended') {
+      return (
+        <div className="qx-root qx-wrap">
+          <QuizFonts /><QuizThemeStyles /><ParticipantStyles />
+          <MuteToggle />
+          <BrandHeader />
+          <div className="qx-card qx-center">
+            <div className="qx-eyebrow">{quizTitle || quizCode}</div>
+            <h1 className="qx-title">This quiz has ended</h1>
+            <p className="qx-muted">The host has closed this quiz, so it can no longer be joined — live or self-paced.</p>
+            <button className="qx-btn qx-btn-primary" onClick={() => {
+              quizApi.getResults(quizCode).then(r => { setLeaderboard(r.leaderboard); setPhase('ended'); }).catch(err => setJoinError(err.message));
+            }}>
+              <i className="fa-solid fa-ranking-star" /> View Final Leaderboard
+            </button>
+            {joinError && <div className="qx-error">{joinError}</div>}
+          </div>
+        </div>
+      );
+    }
+
+    // The live session is already underway (or already went by) — offer a
+    // choice instead of silently dropping a latecomer into the middle of
+    // whatever question is currently live.
+    const inProgress = prejoinStatus === 'live' || prejoinStatus === 'paused';
+    const needsModeChoice = inProgress && takeMode === null;
+
     return (
       <div className="qx-root qx-wrap">
         <QuizFonts /><QuizThemeStyles /><ParticipantStyles />
@@ -338,16 +446,41 @@ export default function OnlineQuizParticipant({ quizCode }) {
         <div className="qx-card">
           <div className="qx-eyebrow">Quiz code</div>
           <div className="qx-code">{quizCode}</div>
-          <form onSubmit={handleJoin}>
-            <label className="qx-label">Your name</label>
-            <input className="qx-input" value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Priya" autoFocus />
-            <label className="qx-label">Your age</label>
-            <input className="qx-input" type="number" min="1" max="120" value={age} onChange={e => setAge(e.target.value)} placeholder="e.g. 10" />
-            {joinError && <div className="qx-error">{joinError}</div>}
-            <button className="qx-btn qx-btn-primary" type="submit" disabled={joining}>
-              {joining ? 'Joining…' : 'Join Quiz'}
-            </button>
-          </form>
+
+          {prejoinStatus === null ? (
+            <p className="qx-muted" style={{ textAlign: 'center' }}><i className="fa-solid fa-circle-notch fa-spin" /> Checking quiz status…</p>
+          ) : needsModeChoice ? (
+            <>
+              <p className="qx-muted" style={{ textAlign: 'center', marginBottom: 18 }}>
+                This quiz is already in progress. You can jump into the live session, or take it on your own from Question 1 whenever you like.
+              </p>
+              <button className="qx-btn qx-btn-primary" onClick={() => setTakeMode('live')}>
+                <i className="fa-solid fa-bolt" /> Join the Live Quiz
+              </button>
+              <button className="qx-btn" style={{ background: 'var(--qx-surface-2)', color: 'var(--qx-text)' }} onClick={() => setTakeMode('solo')}>
+                <i className="fa-solid fa-person-walking-arrow-right" /> Take It at My Own Pace
+              </button>
+            </>
+          ) : (
+            <form onSubmit={handleJoin}>
+              {inProgress && (
+                <div className="qx-mode-chip">
+                  {takeMode === 'solo'
+                    ? <><i className="fa-solid fa-person-walking-arrow-right" /> Self-paced — starts at Question 1</>
+                    : <><i className="fa-solid fa-bolt" /> Joining the live session</>}
+                  <button type="button" className="qx-mode-change" onClick={() => setTakeMode(null)}>Change</button>
+                </div>
+              )}
+              <label className="qx-label">Your name</label>
+              <input className="qx-input" value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Priya" autoFocus />
+              <label className="qx-label">Your age</label>
+              <input className="qx-input" type="number" min="1" max="120" value={age} onChange={e => setAge(e.target.value)} placeholder="e.g. 10" />
+              {joinError && <div className="qx-error">{joinError}</div>}
+              <button className="qx-btn qx-btn-primary" type="submit" disabled={joining}>
+                {joining ? 'Joining…' : takeMode === 'solo' ? 'Start My Own Quiz' : 'Join Quiz'}
+              </button>
+            </form>
+          )}
         </div>
       </div>
     );
@@ -474,6 +607,123 @@ export default function OnlineQuizParticipant({ quizCode }) {
     );
   }
 
+  if (phase === 'solo' && question) {
+    const pct = totalSeconds > 0 ? secondsLeft / totalSeconds : 0;
+    const circumference = 2 * Math.PI * 26;
+    const isLastQuestion = question.qNum >= question.totalQuestions;
+    return (
+      <div className="qx-root qx-wrap qx-live">
+        <QuizFonts /><QuizThemeStyles /><ParticipantStyles />
+        <div className="qx-live-header">
+          <div className="qx-qnum">
+            Question {question.qNum} of {question.totalQuestions}
+            {question.multiSelect && <span className="qx-multi-tag">select all that apply</span>}
+          </div>
+          <div className={'qx-ring-wrap' + (secondsLeft <= 5 ? ' qx-ring-urgent' : '')}>
+            <svg width="60" height="60" viewBox="0 0 60 60">
+              <circle cx="30" cy="30" r="26" fill="none" stroke="var(--qx-surface-2)" strokeWidth="5" />
+              <circle
+                cx="30" cy="30" r="26" fill="none"
+                stroke={secondsLeft <= 5 ? 'var(--qx-danger)' : 'var(--qx-accent)'}
+                strokeWidth="5" strokeLinecap="round"
+                strokeDasharray={circumference}
+                strokeDashoffset={circumference * (1 - pct)}
+                transform="rotate(-90 30 30)"
+                style={{ transition: 'stroke-dashoffset 0.25s linear' }}
+              />
+            </svg>
+            <span className="qx-ring-num">{secondsLeft}</span>
+          </div>
+          <MuteToggle />
+        </div>
+        {question.mediaUrl && <img src={question.mediaUrl} alt="" className="qx-media" />}
+        <div className="qx-question-text">{question.questionText}</div>
+
+        {!hasAnswered ? (
+          <>
+            <div className="qx-options">
+              {OPTION_LABELS.filter(l => question.options[l]).map(letter => {
+                const active = selectedLetters.includes(letter);
+                return (
+                  <button
+                    key={letter}
+                    className={'qx-option' + (active ? ' qx-option-active' : '')}
+                    style={{ '--tile-color': OPTION_COLORS[letter] }}
+                    onClick={() => toggleOption(letter)}
+                    disabled={secondsLeft <= 0}
+                  >
+                    <span className="qx-option-shape"><ShapeIcon letter={letter} /></span>
+                    <span>{question.options[letter]}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              className="qx-btn qx-btn-primary qx-submit-btn"
+              disabled={selectedLetters.length === 0}
+              onClick={handleManualSubmit}
+            >
+              <i className="fa-solid fa-paper-plane" /> Submit Answer
+            </button>
+          </>
+        ) : (
+          <div className="qx-card qx-center">
+            {answerFeedback?.error ? (
+              <p className="qx-error">{answerFeedback.error}</p>
+            ) : answerFeedback ? (
+              <>
+                <div className={'qx-feedback ' + (answerFeedback.isCorrect ? 'qx-correct qx-bounce-in' : 'qx-incorrect qx-shake')}>
+                  {answerFeedback.isCorrect ? '✓ Correct!' : '✗ Not quite'}
+                </div>
+                <div className="qx-points">+{pointsDisplay} pts</div>
+              </>
+            ) : (
+              <p className="qx-muted">Answer locked in — scoring…</p>
+            )}
+            {/* No "waiting for other players" here — self-paced moves on
+                whenever THIS person is ready, not on the host's clock. */}
+            <button className="qx-btn qx-btn-primary" disabled={soloAdvancing} onClick={handleSoloNext}>
+              {soloAdvancing
+                ? <><i className="fa-solid fa-circle-notch fa-spin" /> Loading…</>
+                : isLastQuestion
+                  ? <><i className="fa-solid fa-flag-checkered" /> Finish</>
+                  : <><i className="fa-solid fa-forward" /> Next Question</>}
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if ((phase === 'solo-done' || phase === 'solo-ended') && soloSummary) {
+    return (
+      <div className="qx-root qx-wrap">
+        <QuizFonts /><QuizThemeStyles /><ParticipantStyles />
+        <MuteToggle />
+        <div className="qx-card qx-center">
+          {phase === 'solo-done' ? (
+            <>
+              <h1 className="qx-title">🏁 Quiz Complete!</h1>
+              <p className="qx-muted">Nice work, {soloSummary.name} — here's how you did.</p>
+            </>
+          ) : (
+            <>
+              <div className="qx-eyebrow" style={{ color: 'var(--qx-accent-2)' }}>Quiz ended</div>
+              <h1 className="qx-title">The host ended this quiz</h1>
+              <p className="qx-muted">
+                You answered {soloSummary.questionsAnswered} of {soloSummary.totalQuestions} questions before it closed — here's your score so far.
+              </p>
+            </>
+          )}
+          <div className="qx-my-result">
+            <div className="qx-my-score" style={{ fontSize: 28 }}>{soloSummary.totalScore} points</div>
+            <div className="qx-muted">{soloSummary.correctAnswers} correct · {soloSummary.incorrectAnswers} incorrect</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (phase === 'between' && reveal) {
     const mine = reveal.standings?.find(s => s.participantId === participantId);
     return (
@@ -530,7 +780,12 @@ export default function OnlineQuizParticipant({ quizCode }) {
   }
 
   if (phase === 'ended') {
-    const mine = leaderboard?.find(r => r.participantId === participantId);
+    // Filtered to the live group only — mixing in self-paced entries here
+    // would show two different people both labeled "#1" (each mode's ranks
+    // restart at 1; see endQuiz_), which reads as a bug rather than two
+    // separate leaderboards.
+    const liveLeaderboard = (leaderboard || []).filter(r => r.mode !== 'solo');
+    const mine = liveLeaderboard.find(r => r.participantId === participantId);
     const isTopThree = mine && mine.rank <= 3;
     return (
       <div className="qx-root qx-wrap">
@@ -550,7 +805,7 @@ export default function OnlineQuizParticipant({ quizCode }) {
           )}
           <h3 className="qx-leaderboard-title">Leaderboard</h3>
           <ol className="qx-leaderboard">
-            {(leaderboard || []).slice(0, 10).map(r => (
+            {liveLeaderboard.slice(0, 10).map(r => (
               <li key={r.participantId} className={r.participantId === participantId ? 'qx-me' : ''}>
                 <span className="qx-lb-rank">#{r.rank}</span>
                 <span className="qx-lb-name">{r.name}</span>
@@ -633,6 +888,15 @@ function ParticipantStyles() {
       @keyframes qx-pulse { 0%,100% { opacity: 0.3; transform: scale(0.8);} 50% { opacity: 1; transform: scale(1.2);} }
       .qx-participant-count { font-family: var(--qx-font-display); font-size: 44px; font-weight: 600; margin: 4px 0 0; }
       .qx-name-chip { display: inline-block; margin-top: 16px; padding: 7px 16px; border-radius: 999px; background: var(--qx-surface-2); font-size: 13px; }
+      .qx-mode-chip {
+        display: flex; align-items: center; justify-content: space-between; gap: 10px;
+        background: var(--qx-accent-dim); color: var(--qx-accent); font-weight: 700; font-size: 12px;
+        padding: 8px 12px; border-radius: 999px; margin-bottom: 18px;
+      }
+      .qx-mode-change {
+        background: none; border: none; color: inherit; text-decoration: underline; font-size: 12px;
+        font-weight: 700; cursor: pointer; padding: 0; font-family: inherit;
+      }
 
       .qx-live-header { display: flex; justify-content: space-between; align-items: center; width: 100%; max-width: 620px; margin-bottom: 18px; gap: 10px; }
       .qx-qnum { font-size: 14px; color: var(--qx-muted); font-weight: 600; display: flex; flex-direction: column; gap: 2px; }
