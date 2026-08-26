@@ -82,6 +82,17 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
           setSecondsLeft(Math.max(0, Math.ceil((dl - Date.now()) / 1000)));
           setAnsweredCount(state.answeredCount || 0);
         }
+        // Covers reloading the host panel after the quiz already ended —
+        // without this, 'leaderboard' would just stay null (the
+        // 'quiz-ended' realtime event only fires for whoever's watching
+        // live at the exact moment it happens) and the Final Results screen
+        // would look empty even though results genuinely exist. Also picks
+        // up any self-paced completions that happened since — that section
+        // never stops growing (see quiz.js's getResults), so this doubles
+        // as the "latest rankings" view every time the page is opened.
+        if (state.status === 'ended') {
+          quizApi.getResults(quizCode).then(r => setLeaderboard(r.leaderboard)).catch(() => {});
+        }
       })
       .catch(err => setError(err.message));
     refreshParticipants();
@@ -143,9 +154,15 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
         }
       },
       'quiz-ended': (data) => {
+        // Same reasoning as OnlineQuizParticipant.js's identical handler:
+        // the realtime payload only has the live cohort (that's all
+        // endQuiz freezes), so layer in the current self-paced standings
+        // with a getResults() call. Setting the live-only data first means
+        // the screen doesn't sit blank while that fetch is in flight.
         setLeaderboard(data.leaderboard);
         setStatus('ended');
         quizSounds.quizEnd();
+        quizApi.getResults(quizCode).then(r => setLeaderboard(r.leaderboard)).catch(() => {});
       },
       'quiz-reset': () => {
         setStatus('lobby');
@@ -472,10 +489,19 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
 
           {/* Self-paced takers get their own section/table rather than being
               mixed into the live rankings above — same quiz, same scoring,
-              just a separate group since they played on their own time. */}
+              just a separate group since they played on their own time.
+              Unlike the live section (frozen the moment the quiz ended),
+              this one has no "final" state — self-paced stays open
+              indefinitely, so new completions keep landing here. The
+              Refresh button below is how a host re-pulls the latest count. */}
           <h3 className="qx-leaderboard-title">Final Results — Self-Paced</h3>
-          <ResultsTable rows={(leaderboard || []).filter(r => r.mode === 'solo')} emptyLabel="No one has taken this quiz self-paced." />
+          <ResultsTable rows={(leaderboard || []).filter(r => r.mode === 'solo')} emptyLabel="No one has taken this quiz self-paced yet." />
 
+          <button className="qx-btn" style={{ maxWidth: 240, background: 'var(--qx-surface-2)', color: 'var(--qx-text)' }} onClick={() => {
+            quizApi.getResults(quizCode).then(r => setLeaderboard(r.leaderboard)).catch(err => setError(err.message));
+          }}>
+            <i className="fa-solid fa-rotate" /> Refresh Rankings
+          </button>
           <button className="qx-btn qx-btn-primary" style={{ maxWidth: 240 }} onClick={exportCsv}><i className="fa-solid fa-download" /> Export CSV</button>
           <button className="qx-btn" style={{ maxWidth: 240, background: 'var(--qx-danger)', color: '#2a0007' }} disabled={busy} onClick={() => {
             if (!window.confirm('Reset this quiz back to the start? Every submitted answer and this leaderboard will be cleared — participants stay joined and can play again from Question 1.')) return;

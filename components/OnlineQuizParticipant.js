@@ -96,7 +96,8 @@ export default function OnlineQuizParticipant({ quizCode }) {
   // join screen needs to offer that choice at all.
   const [prejoinStatus, setPrejoinStatus] = useState(null); // null while loading
   const [takeMode, setTakeMode] = useState(null); // null | 'live' | 'solo'
-  const [soloSummary, setSoloSummary] = useState(null); // personal score once done/cut off
+  const [soloSummary, setSoloSummary] = useState(null); // personal score once done
+  const [soloLeaderboard, setSoloLeaderboard] = useState(null); // fresh self-paced standings as of finishing
 
   const [question, setQuestion] = useState(null);
   const [deadline, setDeadline] = useState(null);
@@ -159,7 +160,7 @@ export default function OnlineQuizParticipant({ quizCode }) {
         setName(soloSaved.name || '');
         setTakeMode('solo');
         quizApi.getSoloState(quizCode, soloSaved.participantId).then(res => {
-          if (res.completed) { setSoloSummary(res.summary); setPhase('solo-done'); }
+          if (res.completed) { setSoloSummary(res.summary); setSoloLeaderboard(res.leaderboard || null); setPhase('solo-done'); }
           else applySoloQuestion(res.question, res.title);
         }).catch(() => {});
         return;
@@ -235,9 +236,10 @@ export default function OnlineQuizParticipant({ quizCode }) {
     setSoloAdvancing(true);
     try {
       const res = await quizApi.soloNextQuestion(quizCode, participantId);
-      if (res.completed || res.ended) {
+      if (res.completed) {
         setSoloSummary(res.summary);
-        setPhase(res.ended ? 'solo-ended' : 'solo-done');
+        setSoloLeaderboard(res.leaderboard || null);
+        setPhase('solo-done');
         sessionStorage.removeItem(soloStorageKey);
       } else {
         applySoloQuestion(res.question);
@@ -288,9 +290,15 @@ export default function OnlineQuizParticipant({ quizCode }) {
         }
       },
       'quiz-ended': (data) => {
+        // The realtime event's own payload only carries the live cohort
+        // (that's all endQuiz freezes — see quiz.js), so a fuller
+        // getResults() call layers in the current self-paced standings too.
+        // Set the live-only data immediately so the screen doesn't sit
+        // blank while that fetch is in flight.
         setLeaderboard(data.leaderboard);
         setPhase('ended');
         quizSounds.quizEnd();
+        quizApi.getResults(quizCode).then(r => setLeaderboard(r.leaderboard)).catch(() => {});
       },
       'quiz-reset': () => {
         setQuestion(null);
@@ -410,33 +418,15 @@ export default function OnlineQuizParticipant({ quizCode }) {
   // ── Render ───────────────────────────────────────────────────────────
 
   if (phase === 'join') {
-    // The quiz is already over — no point offering either join path.
-    if (prejoinStatus === 'ended') {
-      return (
-        <div className="qx-root qx-wrap">
-          <QuizFonts /><QuizThemeStyles /><ParticipantStyles />
-          <MuteToggle />
-          <BrandHeader />
-          <div className="qx-card qx-center">
-            <div className="qx-eyebrow">{quizTitle || quizCode}</div>
-            <h1 className="qx-title">This quiz has ended</h1>
-            <p className="qx-muted">The host has closed this quiz, so it can no longer be joined — live or self-paced.</p>
-            <button className="qx-btn qx-btn-primary" onClick={() => {
-              quizApi.getResults(quizCode).then(r => { setLeaderboard(r.leaderboard); setPhase('ended'); }).catch(err => setJoinError(err.message));
-            }}>
-              <i className="fa-solid fa-ranking-star" /> View Final Leaderboard
-            </button>
-            {joinError && <div className="qx-error">{joinError}</div>}
-          </div>
-        </div>
-      );
-    }
-
-    // The live session is already underway (or already went by) — offer a
-    // choice instead of silently dropping a latecomer into the middle of
-    // whatever question is currently live.
+    // "In progress" offers a choice between the live session and self-paced.
+    // "Ended" no longer blocks joining at all — self-paced stays open
+    // forever, specifically so someone who missed the live session can
+    // still take it whenever they get to this link, even weeks later. Only
+    // the "join the live session" option goes away once it's actually over,
+    // since there's no live round left to jump into.
     const inProgress = prejoinStatus === 'live' || prejoinStatus === 'paused';
-    const needsModeChoice = inProgress && takeMode === null;
+    const ended = prejoinStatus === 'ended';
+    const needsModeChoice = (inProgress || ended) && takeMode === null;
 
     return (
       <div className="qx-root qx-wrap">
@@ -452,18 +442,31 @@ export default function OnlineQuizParticipant({ quizCode }) {
           ) : needsModeChoice ? (
             <>
               <p className="qx-muted" style={{ textAlign: 'center', marginBottom: 18 }}>
-                This quiz is already in progress. You can jump into the live session, or take it on your own from Question 1 whenever you like.
+                {ended
+                  ? "This quiz's live session has already wrapped up, but it's still open — take it any time, at your own pace, from Question 1."
+                  : 'This quiz is already in progress. You can jump into the live session, or take it on your own from Question 1 whenever you like.'}
               </p>
-              <button className="qx-btn qx-btn-primary" onClick={() => setTakeMode('live')}>
-                <i className="fa-solid fa-bolt" /> Join the Live Quiz
-              </button>
-              <button className="qx-btn" style={{ background: 'var(--qx-surface-2)', color: 'var(--qx-text)' }} onClick={() => setTakeMode('solo')}>
+              {inProgress && (
+                <button className="qx-btn qx-btn-primary" onClick={() => setTakeMode('live')}>
+                  <i className="fa-solid fa-bolt" /> Join the Live Quiz
+                </button>
+              )}
+              <button className={'qx-btn' + (inProgress ? '' : ' qx-btn-primary')}
+                style={inProgress ? { background: 'var(--qx-surface-2)', color: 'var(--qx-text)' } : undefined}
+                onClick={() => setTakeMode('solo')}>
                 <i className="fa-solid fa-person-walking-arrow-right" /> Take It at My Own Pace
               </button>
+              {ended && (
+                <button type="button" className="qx-btn" style={{ background: 'transparent', color: 'var(--qx-muted)', marginTop: 4 }} onClick={() => {
+                  quizApi.getResults(quizCode).then(r => { setLeaderboard(r.leaderboard); setPhase('ended'); }).catch(err => setJoinError(err.message));
+                }}>
+                  <i className="fa-solid fa-ranking-star" /> Just Show Me the Leaderboard
+                </button>
+              )}
             </>
           ) : (
             <form onSubmit={handleJoin}>
-              {inProgress && (
+              {(inProgress || ended) && (
                 <div className="qx-mode-chip">
                   {takeMode === 'solo'
                     ? <><i className="fa-solid fa-person-walking-arrow-right" /> Self-paced — starts at Question 1</>
@@ -695,30 +698,40 @@ export default function OnlineQuizParticipant({ quizCode }) {
     );
   }
 
-  if ((phase === 'solo-done' || phase === 'solo-ended') && soloSummary) {
+  if (phase === 'solo-done' && soloSummary) {
+    const mine = (soloLeaderboard || []).find(r => r.participantId === participantId);
     return (
       <div className="qx-root qx-wrap">
         <QuizFonts /><QuizThemeStyles /><ParticipantStyles />
         <MuteToggle />
         <div className="qx-card qx-center">
-          {phase === 'solo-done' ? (
-            <>
-              <h1 className="qx-title">🏁 Quiz Complete!</h1>
-              <p className="qx-muted">Nice work, {soloSummary.name} — here's how you did.</p>
-            </>
-          ) : (
-            <>
-              <div className="qx-eyebrow" style={{ color: 'var(--qx-accent-2)' }}>Quiz ended</div>
-              <h1 className="qx-title">The host ended this quiz</h1>
-              <p className="qx-muted">
-                You answered {soloSummary.questionsAnswered} of {soloSummary.totalQuestions} questions before it closed — here's your score so far.
-              </p>
-            </>
-          )}
+          <h1 className="qx-title">🏁 Quiz Complete!</h1>
+          <p className="qx-muted">Nice work, {soloSummary.name} — here's how you did.</p>
           <div className="qx-my-result">
+            {mine && <div className="qx-my-rank">Rank #{mine.rank} <span className="qx-muted" style={{ fontWeight: 400 }}>self-paced</span></div>}
             <div className="qx-my-score" style={{ fontSize: 28 }}>{soloSummary.totalScore} points</div>
             <div className="qx-muted">{soloSummary.correctAnswers} correct · {soloSummary.incorrectAnswers} incorrect</div>
           </div>
+
+          {/* This is recomputed fresh every time someone finishes — it's
+              never a stale snapshot. Anyone who takes the quiz later, even
+              much later, bumps this list and can see exactly where they
+              landed among everyone who's completed it so far. */}
+          <h3 className="qx-leaderboard-title">Self-Paced Leaderboard</h3>
+          <ol className="qx-leaderboard">
+            {(soloLeaderboard || []).slice(0, 10).map(r => (
+              <li key={r.participantId} className={r.participantId === participantId ? 'qx-me' : ''}>
+                <span className="qx-lb-rank">#{r.rank}</span>
+                <span className="qx-lb-name">{r.name}</span>
+                <span className="qx-lb-score">{r.totalScore}</span>
+              </li>
+            ))}
+          </ol>
+          <button className="qx-btn" style={{ background: 'var(--qx-surface-2)', color: 'var(--qx-text)' }} onClick={() => {
+            quizApi.getResults(quizCode).then(r => setSoloLeaderboard(r.leaderboard.filter(x => x.mode === 'solo'))).catch(() => {});
+          }}>
+            <i className="fa-solid fa-rotate" /> Refresh Rankings
+          </button>
         </div>
       </div>
     );
@@ -780,11 +793,13 @@ export default function OnlineQuizParticipant({ quizCode }) {
   }
 
   if (phase === 'ended') {
-    // Filtered to the live group only — mixing in self-paced entries here
-    // would show two different people both labeled "#1" (each mode's ranks
-    // restart at 1; see endQuiz_), which reads as a bug rather than two
-    // separate leaderboards.
+    // Split by mode, same reason as before — each group's ranks restart at
+    // 1 (see quiz.js's endQuiz/computeSoloLeaderboard), so mixing them would
+    // show two different people both labeled "#1". Self-paced is now shown
+    // too (not just live) since it's the section that keeps growing after
+    // this screen first loads — see the "Refresh" button below.
     const liveLeaderboard = (leaderboard || []).filter(r => r.mode !== 'solo');
+    const soloLb = (leaderboard || []).filter(r => r.mode === 'solo');
     const mine = liveLeaderboard.find(r => r.participantId === participantId);
     const isTopThree = mine && mine.rank <= 3;
     return (
@@ -803,16 +818,38 @@ export default function OnlineQuizParticipant({ quizCode }) {
               <div className="qx-muted">{mine.correctAnswers} correct · {mine.incorrectAnswers} incorrect</div>
             </div>
           )}
-          <h3 className="qx-leaderboard-title">Leaderboard</h3>
+          <h3 className="qx-leaderboard-title">Live Leaderboard</h3>
           <ol className="qx-leaderboard">
-            {liveLeaderboard.slice(0, 10).map(r => (
-              <li key={r.participantId} className={r.participantId === participantId ? 'qx-me' : ''}>
-                <span className="qx-lb-rank">#{r.rank}</span>
-                <span className="qx-lb-name">{r.name}</span>
-                <span className="qx-lb-score">{r.totalScore}</span>
-              </li>
-            ))}
+            {liveLeaderboard.length
+              ? liveLeaderboard.slice(0, 10).map(r => (
+                <li key={r.participantId} className={r.participantId === participantId ? 'qx-me' : ''}>
+                  <span className="qx-lb-rank">#{r.rank}</span>
+                  <span className="qx-lb-name">{r.name}</span>
+                  <span className="qx-lb-score">{r.totalScore}</span>
+                </li>
+              ))
+              : <li><span className="qx-muted">No one played live.</span></li>}
           </ol>
+
+          {/* Keeps growing after this screen first loads, since self-paced
+              never closes — this section is worth re-checking later. */}
+          <h3 className="qx-leaderboard-title">Self-Paced Leaderboard</h3>
+          <ol className="qx-leaderboard">
+            {soloLb.length
+              ? soloLb.slice(0, 10).map(r => (
+                <li key={r.participantId}>
+                  <span className="qx-lb-rank">#{r.rank}</span>
+                  <span className="qx-lb-name">{r.name}</span>
+                  <span className="qx-lb-score">{r.totalScore}</span>
+                </li>
+              ))
+              : <li><span className="qx-muted">No one has taken this quiz self-paced yet.</span></li>}
+          </ol>
+          <button className="qx-btn" style={{ background: 'var(--qx-surface-2)', color: 'var(--qx-text)' }} onClick={() => {
+            quizApi.getResults(quizCode).then(r => setLeaderboard(r.leaderboard)).catch(() => {});
+          }}>
+            <i className="fa-solid fa-rotate" /> Refresh Rankings
+          </button>
         </div>
       </div>
     );

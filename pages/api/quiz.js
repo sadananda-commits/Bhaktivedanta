@@ -840,8 +840,14 @@ async function endQuiz(p) {
   const answers = answersSnap.docs.map(d => d.data());
   const totalQuestions = Number(quizData.totalQuestions) || 0;
 
-  const allResults = participantsSnap.docs
-    .filter(pDoc => pDoc.data().status !== 'left')
+  // Only the LIVE cohort gets scored/frozen here — self-paced participants
+  // are deliberately excluded. Ending the quiz closes the live round, but
+  // self-paced stays open indefinitely (see the big comment above
+  // joinSoloQuiz), so there's no single moment where "final" self-paced
+  // results could ever be frozen — getResults below recomputes those fresh
+  // on every call instead.
+  const liveResults = participantsSnap.docs
+    .filter(pDoc => pDoc.data().status !== 'left' && !isSolo(pDoc.data()))
     .map(pDoc => {
       const participant = pDoc.data();
       const mine = answers.filter(a => a.participantId === pDoc.id);
@@ -862,27 +868,20 @@ async function endQuiz(p) {
         correctAnswers: correct,
         incorrectAnswers: Math.max(0, totalQuestions - correct),
         avgResponseMs,
-        // Lets the client split "Live" vs "Self-Paced" into two sections
-        // instead of one mixed leaderboard — ranks below are computed
-        // separately within each group for the same reason (otherwise two
-        // different people could both show as "#1").
-        mode: isSolo(participant) ? 'solo' : 'live',
+        mode: 'live',
       };
     });
 
-  function rankGroup(rows) {
-    rows.sort((a, b) => b.totalScore - a.totalScore || a.avgResponseMs - b.avgResponseMs);
-    rows.forEach((r, i) => { r.rank = i + 1; });
-    return rows;
-  }
+  liveResults.sort((a, b) => b.totalScore - a.totalScore || a.avgResponseMs - b.avgResponseMs);
+  liveResults.forEach((r, i) => { r.rank = i + 1; });
 
-  const liveResults = rankGroup(allResults.filter(r => r.mode !== 'solo'));
-  const soloResults = rankGroup(allResults.filter(r => r.mode === 'solo'));
-  const results = liveResults.concat(soloResults);
+  await quizRef.update({ status: 'ended', leaderboard: liveResults });
 
-  await quizRef.update({ status: 'ended', leaderboard: results });
-
-  return { ok: true, leaderboard: results };
+  // Returned merged with the current self-paced standings so whoever's
+  // watching live right when the host ends it sees the complete picture
+  // immediately, not just the live half — matches what getResults returns.
+  const soloResults = await computeSoloLeaderboard(quizRef, totalQuestions);
+  return { ok: true, leaderboard: liveResults.concat(soloResults) };
 }
 
 // Lists every quiz created by a given host — used by the teacher-facing
@@ -917,9 +916,19 @@ async function getMyQuizzes(p) {
   return { quizzes };
 }
 
+// Returns the FULL current report — the live cohort's one-time frozen
+// result (empty until the host presses "End Quiz") concatenated with a
+// freshly recomputed self-paced leaderboard (see computeSoloLeaderboard).
+// Called with no host code required — anyone with the join link can check
+// it, live or self-paced, at any time, including long after the live
+// session ended. Every call recomputes the self-paced half from scratch, so
+// this genuinely is "the latest rankings" each time it's fetched.
 async function getResults(p) {
-  const { data } = await getQuizDoc(p.quizId);
-  return { leaderboard: data.leaderboard || [] };
+  const { ref: quizRef, data } = await getQuizDoc(p.quizId);
+  const liveLeaderboard = data.leaderboard || [];
+  const totalQuestions = Number(data.totalQuestions) || 0;
+  const soloLeaderboard = await computeSoloLeaderboard(quizRef, totalQuestions);
+  return { leaderboard: liveLeaderboard.concat(soloLeaderboard) };
 }
 
 // ── Self-paced ("take it later") mode ───────────────────────────────────
@@ -932,15 +941,23 @@ async function getResults(p) {
 // the host-driven live round — so this never interferes with (or gets
 // interfered with by) whatever's happening live.
 //
-// The quiz stays open to new self-paced joiners for as long as the host
-// hasn't pressed "End Quiz" (status !== 'ended'). Once it has,
-// soloNextQuestion still lets someone finish whatever question they were
-// already on (submitSoloAnswer has no status check at all) — they just
-// can't be handed a NEW question after that point.
+// The quiz stays open to new self-paced joiners FOREVER — including well
+// after the host has pressed "End Quiz". That's the entire point of this
+// mode: someone who missed the live session should be able to click the
+// same link days later and still take the quiz from Question 1. So unlike
+// the rest of this file, none of the functions below ever check
+// quizData.status at all.
+//
+// Because of that, self-paced results can never be "frozen" the way the
+// live cohort's are in endQuiz — new solo completions keep happening
+// indefinitely. So there IS no stored solo leaderboard: computeSoloLeaderboard
+// below recomputes it fresh, from scratch, on every single call. getResults
+// merges that fresh computation with the live cohort's one-time frozen
+// snapshot every time it's called — see its comment for why that split is
+// the right one.
 
 async function joinSoloQuiz(p) {
   const { id: quizId, ref: quizRef, data: quizData } = await getQuizDoc(p.quizId);
-  if (quizData.status === 'ended') throw new Error('This quiz has already ended.');
   if (!p.name) throw new Error('name required');
 
   const qSnap = await quizRef.collection('questions').doc('1').get();
@@ -988,7 +1005,8 @@ async function getSoloState(p) {
     : null;
 
   if (!qSnap || !qSnap.exists) {
-    return { ok: true, completed: true, summary: await soloSummary(quizRef, p.participantId, participant, totalQuestions) };
+    const { summary, leaderboard } = await soloCompletionPayload(quizRef, quizData, p.participantId, participant);
+    return { ok: true, completed: true, summary, leaderboard };
   }
 
   return {
@@ -1041,20 +1059,19 @@ async function submitSoloAnswer(p) {
     });
   });
 
-  // Covers the "let them finish this question, then end" grace window: if
-  // the host already pressed End Quiz and this participant's leaderboard
-  // entry was already frozen by endQuiz, patch it so this last, in-flight
-  // answer still counts instead of silently vanishing from the final
-  // numbers.
-  await patchFrozenLeaderboardEntry(quizRef, p.participantId);
+  // No leaderboard-patching needed here (unlike an earlier version of this
+  // function) — solo standings are never frozen in the first place, see
+  // computeSoloLeaderboard/getResults below. This answer is simply live the
+  // instant the next getResults call runs.
 
   return { ok: true, isCorrect, pointsEarned };
 }
 
 // Advances a self-paced participant to their next question, or reports
-// completion — either because they've answered every question, or because
-// the host ended the quiz while they still had more to go (they keep
-// whatever they'd already scored; they just can't start a new question).
+// completion once they've answered every question. No quiz-status check of
+// any kind — self-paced never gets cut off by the host ending the live
+// quiz; that's the whole point of this mode (see the file-level comment
+// above joinSoloQuiz).
 async function soloNextQuestion(p) {
   const { ref: quizRef, data: quizData } = await getQuizDoc(p.quizId);
   const participantRef = quizRef.collection('participants').doc(p.participantId);
@@ -1068,11 +1085,8 @@ async function soloNextQuestion(p) {
 
   if (nextIdx >= totalQuestions) {
     await participantRef.update({ soloQuestionIndex: totalQuestions });
-    return { ok: true, completed: true, summary: await soloSummary(quizRef, p.participantId, participant, totalQuestions) };
-  }
-
-  if (quizData.status === 'ended') {
-    return { ok: true, ended: true, summary: await soloSummary(quizRef, p.participantId, participant, totalQuestions) };
+    const { summary, leaderboard } = await soloCompletionPayload(quizRef, quizData, p.participantId, participant);
+    return { ok: true, completed: true, summary, leaderboard };
   }
 
   const qSnap = await quizRef.collection('questions').doc(String(nextIdx + 1)).get();
@@ -1082,11 +1096,17 @@ async function soloNextQuestion(p) {
   return { ok: true, question: { ...publicQuestion(qSnap.data(), quizData), startedAt } };
 }
 
-async function soloSummary(quizRef, participantId, participant, totalQuestions) {
+// Bundles a just-finished solo participant's own score together with the
+// CURRENT self-paced standings — so their "you're done!" screen can show
+// "here's how you rank among everyone who's taken this so far" immediately,
+// without a second round trip. Reused by getSoloState's completed branch
+// (reload-after-finishing) for the exact same reason.
+async function soloCompletionPayload(quizRef, quizData, participantId, participant) {
+  const totalQuestions = Number(quizData.totalQuestions) || 0;
   const answersSnap = await quizRef.collection('answers').where('participantId', '==', participantId).get();
   const answers = answersSnap.docs.map(d => d.data());
   const correct = answers.filter(a => a.isCorrect === true).length;
-  return {
+  const summary = {
     name: participant.name,
     totalScore: answers.reduce((sum, a) => sum + (Number(a.pointsEarned) || 0), 0),
     correctAnswers: correct,
@@ -1094,35 +1114,51 @@ async function soloSummary(quizRef, participantId, participant, totalQuestions) 
     questionsAnswered: answers.length,
     totalQuestions,
   };
+  const leaderboard = await computeSoloLeaderboard(quizRef, totalQuestions);
+  return { summary, leaderboard };
 }
 
-// Keeps a solo participant's already-frozen leaderboard entry (written once
-// by endQuiz's snapshot into quizzes/{quizId}.leaderboard) in sync with any
-// answer they submit in the grace window right after the host ends the
-// quiz. Doesn't touch 'rank' on any entry — nudging one late score
-// shouldn't reshuffle everyone else's already-announced rank.
-async function patchFrozenLeaderboardEntry(quizRef, participantId) {
-  const quizSnap = await quizRef.get();
-  const quizData = quizSnap.data();
-  if (!Array.isArray(quizData.leaderboard)) return; // normal case — nothing frozen yet
-  const idx = quizData.leaderboard.findIndex(r => r.participantId === participantId);
-  if (idx === -1) return;
-
-  const answersSnap = await quizRef.collection('answers').where('participantId', '==', participantId).get();
+// Computes the self-paced leaderboard FROM SCRATCH every time it's called —
+// there's no stored/frozen version of this, unlike the live cohort's
+// leaderboard field (see endQuiz). That's deliberate: self-paced
+// participants can finish at any time, indefinitely, so "the" self-paced
+// ranking is only ever "as of right now" — every call here IS the report
+// updating "as and when anyone else takes the test".
+//
+// Only counts participants who've actually FINISHED (soloQuestionIndex >=
+// totalQuestions) — someone three questions into their own attempt
+// shouldn't show up mid-list with an inflated partial score.
+async function computeSoloLeaderboard(quizRef, totalQuestions) {
+  const [participantsSnap, answersSnap] = await Promise.all([
+    quizRef.collection('participants').get(),
+    quizRef.collection('answers').get(),
+  ]);
   const answers = answersSnap.docs.map(d => d.data());
-  const totalQuestions = Number(quizData.totalQuestions) || 0;
-  const correct = answers.filter(a => a.isCorrect === true).length;
-  const avgResponseMs = answers.length
-    ? Math.round(answers.reduce((s, a) => s + (Number(a.responseDurationMs) || 0), 0) / answers.length)
-    : 0;
 
-  const updatedLeaderboard = quizData.leaderboard.slice();
-  updatedLeaderboard[idx] = {
-    ...updatedLeaderboard[idx],
-    totalScore: answers.reduce((sum, a) => sum + (Number(a.pointsEarned) || 0), 0),
-    correctAnswers: correct,
-    incorrectAnswers: Math.max(0, totalQuestions - correct),
-    avgResponseMs,
-  };
-  await quizRef.update({ leaderboard: updatedLeaderboard });
+  const rows = participantsSnap.docs
+    .filter(pDoc => pDoc.data().status !== 'left' && isSolo(pDoc.data()) &&
+      Number(pDoc.data().soloQuestionIndex) >= totalQuestions)
+    .map(pDoc => {
+      const participant = pDoc.data();
+      const mine = answers.filter(a => a.participantId === pDoc.id);
+      const correct = mine.filter(a => a.isCorrect === true).length;
+      const totalScore = mine.reduce((sum, a) => sum + (Number(a.pointsEarned) || 0), 0);
+      const avgResponseMs = mine.length
+        ? Math.round(mine.reduce((s, a) => s + (Number(a.responseDurationMs) || 0), 0) / mine.length)
+        : 0;
+      return {
+        participantId: pDoc.id,
+        name: participant.name,
+        totalScore,
+        correctAnswers: correct,
+        incorrectAnswers: Math.max(0, totalQuestions - correct),
+        avgResponseMs,
+        mode: 'solo',
+      };
+    });
+
+  rows.sort((a, b) => b.totalScore - a.totalScore || a.avgResponseMs - b.avgResponseMs);
+  rows.forEach((r, i) => { r.rank = i + 1; });
+  return rows;
 }
+
