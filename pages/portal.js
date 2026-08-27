@@ -3903,6 +3903,20 @@ function PortalInner({ initialProfile }) {
 {navItem.ID==='myassignments' && pendingMyAssignments>0 && <span className="nb-badge">{pendingMyAssignments}</span>}
                 </button>
               ))}
+              {/* Weekly Scheduler — hands off to the Team Meet portal, signed
+                  in automatically as this student. Opens in a new tab so the
+                  student doesn't lose their place here. See
+                  /api/student/teammeet-sso.js and docs/SSO_BHAKTIVEDANTA.md
+                  (in the Team Meet project) for the full handoff flow. */}
+              <button
+                className="nb"
+                onClick={() => {
+                  window.open(`/api/student/teammeet-sso?studentId=${encodeURIComponent(profile.id)}`, '_blank', 'noopener,noreferrer');
+                  setSidebarPeeking(false);
+                }}
+              >
+                <i className="fa-solid fa-calendar-days" /> Weekly Scheduler
+              </button>
             </nav>
             <div className="sb-ft">
               <div style={{marginBottom:'10px'}}><LanguageToggle style={{width:'100%',justifyContent:'center'}} /></div>

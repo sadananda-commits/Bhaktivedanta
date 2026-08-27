@@ -1050,6 +1050,24 @@ function ParentPortalInner() {
                   </button>
                 )}
 
+                {/* Weekly Scheduler — hands off to the Team Meet portal,
+                    signed in automatically as this parent/teacher. Opens in
+                    a new tab so they don't lose their place here. See
+                    /api/parent/teammeet-sso.js and docs/SSO_BHAKTIVEDANTA.md
+                    (in the Team Meet project) for the full handoff flow. */}
+                {(ptUser?.role === 'Teacher' || ptUser?.role === 'Parent') && (
+                  <button
+                    className="ptsb-student"
+                    style={{ width: '100%', marginBottom: '10px' }}
+                    onClick={() => {
+                      window.open(`/api/parent/teammeet-sso?id=${encodeURIComponent(ptUser.id)}`, '_blank', 'noopener,noreferrer');
+                    }}
+                  >
+                    <div className="ptsb-student-av"><i className="fa-solid fa-calendar-days" /></div>
+                    <div style={{fontWeight:700,color:'inherit'}}>Weekly Scheduler</div>
+                  </button>
+                )}
+
 				<div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 4px'}}>
                   <p className="ptsb-sec" style={{margin:0}}>My Students</p>
                   {!seesAllStudents && (
