@@ -21,7 +21,7 @@ import { quizApi } from '../lib/quizApi';
 
 const BLANK_FORM = {
   questionText: '', optionA: '', optionB: '', optionC: '', optionD: '',
-  correctLetters: [], timeLimitSec: '', points: '', mediaUrl: '',
+  correctLetters: [], explanation: '', timeLimitSec: '', points: '', mediaUrl: '',
 };
 
 function toForm(q) {
@@ -29,6 +29,7 @@ function toForm(q) {
     questionText: q.questionText || '',
     optionA: q.optionA || '', optionB: q.optionB || '', optionC: q.optionC || '', optionD: q.optionD || '',
     correctLetters: (q.correctAnswer || '').split(',').map(s => s.trim()).filter(Boolean),
+    explanation: q.explanation || '',
     timeLimitSec: q.timeLimitSec || '', points: q.points || '', mediaUrl: q.mediaUrl || '',
   };
 }
@@ -38,6 +39,7 @@ function toApiFields(form) {
     questionText: form.questionText.trim(),
     optionA: form.optionA.trim(), optionB: form.optionB.trim(), optionC: form.optionC.trim(), optionD: form.optionD.trim(),
     correctAnswer: form.correctLetters.join(','),
+    explanation: form.explanation.trim(),
     timeLimitSec: form.timeLimitSec ? Number(form.timeLimitSec) : null,
     points: form.points ? Number(form.points) : null,
     mediaUrl: form.mediaUrl.trim(),
@@ -236,6 +238,7 @@ export default function QuizQuestionManager({ quizId, hostCode, quizStatus }) {
                 <th>Option B</th>
                 <th>Option C</th>
                 <th>Option D</th>
+                <th className="qqm-col-explanation">Explanation</th>
                 <th className="qqm-col-narrow">Time (s)</th>
                 <th className="qqm-col-narrow">Points</th>
                 <th className="qqm-col-narrow">Media</th>
@@ -258,7 +261,7 @@ export default function QuizQuestionManager({ quizId, hostCode, quizStatus }) {
                   saving={saving} onSave={save} onCancel={cancelEdit} editable={editable} />
               )}
               {questions.length === 0 && editingQNum !== 'new' && (
-                <tr><td colSpan={editable ? 11 : 9} className="qqm-empty">No questions yet — upload an Excel file above, or click "Add Question".</td></tr>
+                <tr><td colSpan={editable ? 12 : 10} className="qqm-empty">No questions yet — upload an Excel file above, or click "Add Question".</td></tr>
               )}
             </tbody>
           </table>
@@ -283,6 +286,7 @@ function ReadRow({ q, editable, onEdit, onDelete, deleting, checked, onToggleChe
       <td className={correct.has('B') ? 'qqm-td-correct' : ''}>{q.optionB}</td>
       <td className={correct.has('C') ? 'qqm-td-correct' : ''}>{q.optionC}</td>
       <td className={correct.has('D') ? 'qqm-td-correct' : ''}>{q.optionD}</td>
+      <td className="qqm-td-explanation qqm-muted" title={q.explanation || ''}>{q.explanation || '—'}</td>
       <td className="qqm-col-narrow qqm-muted">{q.timeLimitSec || '—'}</td>
       <td className="qqm-col-narrow qqm-muted">{q.points || '—'}</td>
       <td className="qqm-col-narrow qqm-muted">{q.mediaUrl ? <a href={q.mediaUrl} target="_blank" rel="noopener noreferrer">link</a> : '—'}</td>
@@ -333,6 +337,15 @@ function EditableRow({ qNum, form, setForm, toggleLetter, saving, onSave, onCanc
       <OptionCell letter="B" form={form} setForm={setForm} toggleLetter={toggleLetter} />
       <OptionCell letter="C" form={form} setForm={setForm} toggleLetter={toggleLetter} />
       <OptionCell letter="D" form={form} setForm={setForm} toggleLetter={toggleLetter} />
+      <td className="qqm-td-explanation-edit">
+        <textarea
+          className="qqm-cell-input qqm-cell-textarea"
+          rows={2}
+          value={form.explanation}
+          onChange={e => setForm(f => ({ ...f, explanation: e.target.value }))}
+          placeholder="Shown to participants after they answer (optional)"
+        />
+      </td>
       <td className="qqm-col-narrow">
         <input className="qqm-cell-input" type="number" min="5" max="120" value={form.timeLimitSec}
           onChange={e => setForm(f => ({ ...f, timeLimitSec: e.target.value }))} placeholder="Default" />
@@ -378,7 +391,7 @@ function QqmStyles() {
       .qqm-empty { padding: 24px; text-align: center; color: var(--qqm-muted); font-size: 13px; }
 
       .qqm-table-wrap { overflow-x: auto; border: 1px solid var(--qqm-border); border-radius: 12px; }
-      .qqm-table { width: 100%; border-collapse: collapse; min-width: 980px; font-size: 13px; }
+      .qqm-table { width: 100%; border-collapse: collapse; min-width: 1160px; font-size: 13px; }
       .qqm-table th {
         text-align: left; padding: 10px 12px; background: var(--qqm-bg-well); font-family: 'Space Mono', ui-monospace, monospace;
         font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--qqm-muted); font-weight: 700;
@@ -390,6 +403,10 @@ function QqmStyles() {
       .qqm-col-narrow { width: 90px; }
       .qqm-col-actions { width: 90px; white-space: nowrap; }
       .qqm-td-question { max-width: 320px; }
+      .qqm-col-explanation { min-width: 200px; }
+      .qqm-td-explanation {
+        max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
       .qqm-td-correct { color: var(--qqm-accent); font-weight: 700; }
       .qqm-muted { color: var(--qqm-muted); }
 
@@ -401,6 +418,7 @@ function QqmStyles() {
       .qqm-cell-input:focus { outline: none; border-color: var(--qqm-accent); }
       .qqm-cell-textarea { resize: vertical; min-width: 220px; }
       .qqm-td-question-edit { min-width: 220px; }
+      .qqm-td-explanation-edit { min-width: 200px; }
       .qqm-td-option-edit { min-width: 140px; }
       .qqm-correct-check { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--qqm-muted); font-weight: 700; text-transform: uppercase; margin-bottom: 5px; }
 

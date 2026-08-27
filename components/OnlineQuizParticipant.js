@@ -346,7 +346,16 @@ export default function OnlineQuizParticipant({ quizCode }) {
       const res = takeMode === 'solo'
         ? await quizApi.submitSoloAnswer(quizCode, participantId, question.qNum, letters.join(','))
         : await quizApi.submitAnswer(quizCode, participantId, question.qNum, letters.join(','));
-      setAnswerFeedback({ isCorrect: res.isCorrect, pointsEarned: res.pointsEarned });
+      setAnswerFeedback({
+        isCorrect: res.isCorrect,
+        pointsEarned: res.pointsEarned,
+        // Only ever present on the solo response — live mode's submitAnswer
+        // deliberately withholds these until the host reveals for everyone
+        // (see the "between" phase instead), so they'll just be undefined
+        // there and the extra block below won't render.
+        correctAnswer: res.correctAnswer,
+        explanation: res.explanation,
+      });
       if (res.isCorrect) quizSounds.correct(); else quizSounds.incorrect();
     } catch (err) {
       setAnswerFeedback({ error: err.message });
@@ -679,6 +688,17 @@ export default function OnlineQuizParticipant({ quizCode }) {
                   {answerFeedback.isCorrect ? '✓ Correct!' : '✗ Not quite'}
                 </div>
                 <div className="qx-points">+{pointsDisplay} pts</div>
+                {!answerFeedback.isCorrect && answerFeedback.correctAnswer && (
+                  <div className="qx-muted" style={{ marginTop: 4 }}>
+                    Correct answer: <strong>{answerFeedback.correctAnswer}</strong>
+                  </div>
+                )}
+                {answerFeedback.explanation && (
+                  <div className="qx-explanation">
+                    <span className="qx-explanation-label"><i className="fa-solid fa-lightbulb" /> Explanation</span>
+                    <p>{answerFeedback.explanation}</p>
+                  </div>
+                )}
               </>
             ) : (
               <p className="qx-muted">Answer locked in — scoring…</p>
@@ -762,6 +782,13 @@ export default function OnlineQuizParticipant({ quizCode }) {
               )
             ))}
           </div>
+
+          {reveal.explanation && (
+            <div className="qx-explanation">
+              <span className="qx-explanation-label"><i className="fa-solid fa-lightbulb" /> Explanation</span>
+              <p>{reveal.explanation}</p>
+            </div>
+          )}
 
           {answerFeedback && !answerFeedback.error && (
             <div className={'qx-round-result ' + (answerFeedback.isCorrect ? 'qx-correct' : 'qx-incorrect')}>
@@ -993,6 +1020,15 @@ function ParticipantStyles() {
       .qx-tally-incorrect { background: var(--qx-danger-dim); color: var(--qx-danger); }
       .qx-answer-bar-row { display: flex; align-items: center; gap: 12px; }
       .qx-shape-sm { width: 26px; height: 26px; border-radius: 7px; display: flex; align-items: center; justify-content: center; color: #0e0f24; }
+      .qx-explanation {
+        background: var(--qx-accent-2-dim); border: 1px solid rgba(255,176,32,0.3); border-radius: var(--qx-radius-sm);
+        padding: 14px 16px; margin: 14px 0; text-align: left;
+      }
+      .qx-explanation-label {
+        display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.04em; color: var(--qx-accent-2); margin-bottom: 6px;
+      }
+      .qx-explanation p { margin: 0; font-size: 14px; line-height: 1.5; color: var(--qx-text); }
       .qx-round-result {
         font-weight: 700; padding: 10px 16px; border-radius: var(--qx-radius-sm);
         background: var(--qx-surface-2); display: inline-block; margin: 6px 0 4px;

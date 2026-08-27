@@ -445,6 +445,13 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
 
           <BarChart question={question} reveal={reveal} />
 
+          {reveal.explanation && (
+            <div className="qxh-explanation">
+              <span className="qxh-explanation-label"><i className="fa-solid fa-lightbulb" /> Explanation</span>
+              <p>{reveal.explanation}</p>
+            </div>
+          )}
+
           <div className="qxh-controls">
             <button className="qxh-btn" disabled={busy} onClick={() => setRevealPhase('standings')}>
               <i className="fa-solid fa-ranking-star" /> View Standings
@@ -641,6 +648,15 @@ function HostStyles() {
       .qxh-tally-correct { background: rgba(52,231,180,0.14); color: var(--qx-success); }
       .qxh-tally-incorrect { background: var(--qx-danger-dim); color: var(--qx-danger); }
       .qxh-barchart { display: flex; flex-direction: column; gap: 12px; margin-bottom: 22px; }
+      .qxh-explanation {
+        background: var(--qx-accent-2-dim); border: 1px solid rgba(255,176,32,0.3); border-radius: var(--qx-radius-sm);
+        padding: 14px 16px; margin-bottom: 18px;
+      }
+      .qxh-explanation-label {
+        display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.04em; color: var(--qx-accent-2); margin-bottom: 6px;
+      }
+      .qxh-explanation p { margin: 0; font-size: 14px; line-height: 1.5; color: var(--qx-text); }
       .qxh-bar-row { display: grid; grid-template-columns: 28px auto 1fr 32px 20px; align-items: center; gap: 10px; padding: 4px 0; }
       .qxh-bar-row-correct { background: rgba(52,231,180,0.06); border-radius: 10px; }
       .qxh-bar-shape { width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #0e0f24; flex-shrink: 0; }

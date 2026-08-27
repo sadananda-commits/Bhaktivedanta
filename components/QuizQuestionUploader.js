@@ -26,6 +26,7 @@ const HEADER_ALIASES = {
   optionC: ['option c', 'c', 'option 3'],
   optionD: ['option d', 'd', 'option 4'],
   correctAnswer: ['correct answer', 'correct', 'answer'],
+  explanation: ['explanation', 'why', 'rationale'],
   timeLimitSec: ['time limit (sec)', 'time limit', 'time limit sec', 'seconds'],
   points: ['points', 'point value'],
   mediaUrl: ['media url', 'image url', 'media'],
@@ -47,13 +48,13 @@ function buildHeaderMap(firstRow) {
 }
 
 function downloadTemplate() {
-  const headers = ['Q Num', 'Question Text', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct Answer', 'Time Limit (sec)', 'Points', 'Media URL'];
+  const headers = ['Q Num', 'Question Text', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct Answer', 'Explanation', 'Time Limit (sec)', 'Points', 'Media URL'];
   const example = [
-    [1, 'What is the capital of France?', 'Paris', 'Rome', 'Berlin', 'Madrid', 'A', 20, 1000, ''],
-    [2, 'Which of these are primary colors? (pick all that apply)', 'Red', 'Green', 'Blue', 'Orange', 'A,C', 25, 1000, ''],
+    [1, 'What is the capital of France?', 'Paris', 'Rome', 'Berlin', 'Madrid', 'A', 'Paris has been the capital of France since the 10th century.', 20, 1000, ''],
+    [2, 'Which of these are primary colors? (pick all that apply)', 'Red', 'Green', 'Blue', 'Orange', 'A,C', 'Red and blue are primary colors; green and orange are made by mixing them with others.', 25, 1000, ''],
   ];
   const ws = XLSX.utils.aoa_to_sheet([headers, ...example]);
-  ws['!cols'] = [{ wch: 6 }, { wch: 44 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 8 }, { wch: 20 }];
+  ws['!cols'] = [{ wch: 6 }, { wch: 44 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 44 }, { wch: 14 }, { wch: 8 }, { wch: 20 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Questions');
   XLSX.writeFile(wb, 'quiz-questions-template.xlsx');
@@ -129,6 +130,7 @@ export default function QuizQuestionUploader({ quizId, hostCode, onDone }) {
           optionC: headerMap.optionC ? String(r[headerMap.optionC] || '').trim() : '',
           optionD: headerMap.optionD ? String(r[headerMap.optionD] || '').trim() : '',
           correctAnswer: String(r[headerMap.correctAnswer] || '').trim(),
+          explanation: headerMap.explanation ? String(r[headerMap.explanation] || '').trim() : '',
           timeLimitSec: headerMap.timeLimitSec ? Number(r[headerMap.timeLimitSec]) || null : null,
           points: headerMap.points ? Number(r[headerMap.points]) || null : null,
           mediaUrl: headerMap.mediaUrl ? String(r[headerMap.mediaUrl] || '').trim() : '',
@@ -219,7 +221,7 @@ export default function QuizQuestionUploader({ quizId, hostCode, onDone }) {
           <div className="qxu-preview-title">{rows.length} question{rows.length === 1 ? '' : 's'} ready to add</div>
           <div className="qxu-table-scroll">
             <table className="qxu-table">
-              <thead><tr><th>#</th><th>Question</th><th>A</th><th>B</th><th>C</th><th>D</th><th>Correct</th></tr></thead>
+              <thead><tr><th>#</th><th>Question</th><th>A</th><th>B</th><th>C</th><th>D</th><th>Correct</th><th>Explanation</th></tr></thead>
               <tbody>
                 {rows.map((r, i) => (
                   <tr key={i}>
@@ -227,6 +229,7 @@ export default function QuizQuestionUploader({ quizId, hostCode, onDone }) {
                     <td className="qxu-qtext">{r.questionText}</td>
                     <td>{r.optionA}</td><td>{r.optionB}</td><td>{r.optionC}</td><td>{r.optionD}</td>
                     <td className="qxu-correct">{r.correctAnswer}</td>
+                    <td className="qxu-qtext">{r.explanation || <span className="qxu-muted-cell">—</span>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -286,6 +289,7 @@ function QxuStyles() {
       .qxu-table th, .qxu-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--qxm-border); font-size: 13px; }
       .qxu-table th { font-family: var(--qxm-font-mono); font-size: 10px; text-transform: uppercase; color: var(--qxm-muted); }
       .qxu-qtext { max-width: 260px; }
+      .qxu-muted-cell { color: var(--qxm-muted); }
       .qxu-correct { font-weight: 700; color: var(--qxm-accent); }
 
       .qxu-success { margin-top: 14px; color: var(--qxm-accent); font-weight: 600; font-size: 14px; }

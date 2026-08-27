@@ -151,6 +151,11 @@ function assertHost(secret, hostCode) {
 // the raw Firestore question doc data; quizData is the parent quiz doc data
 // (for totalQuestions / defaultTimeLimitSec fallbacks).
 function publicQuestion(qDoc, quizData) {
+  // Deliberately excludes both correctAnswer AND explanation — an
+  // explanation of "why B is right" is itself a giveaway before someone's
+  // actually answered. Both get sent back separately, only after an answer
+  // is submitted — see revealAnswer/broadcastQuestionEnded (live) and
+  // submitSoloAnswer (self-paced).
   return {
     qNum: Number(qDoc.qNum),
     // Lets every screen (participant AND host) show "Question X of Y".
@@ -309,6 +314,11 @@ function validateQuestionFields(q, label) {
     timeLimitSec: q.timeLimitSec || null,
     points: q.points || null,
     mediaUrl: String(q.mediaUrl || '').trim(),
+    // Optional — shown to a participant right after THEY answer this
+    // question (see publicQuestion's comment on why it's kept out of the
+    // question payload itself, and revealAnswer/submitSoloAnswer for where
+    // it actually gets sent).
+    explanation: String(q.explanation || '').trim(),
   };
 }
 
@@ -706,6 +716,7 @@ async function broadcastQuestionEnded(quizId, quizRef, qNum) {
     reveal: {
       qNum,
       correctAnswer: q.correctAnswer,
+      explanation: q.explanation || '',
       answerCounts: counts,
       correctCount,
       incorrectCount: incorrectCount + noAnswerCount, // no-answer counts as incorrect, same rule as final scoring
@@ -1102,7 +1113,17 @@ async function submitSoloAnswer(p) {
   // computeSoloLeaderboard/getResults below. This answer is simply live the
   // instant the next getResults call runs.
 
-  return { ok: true, isCorrect, pointsEarned };
+  // Solo mode has no host to press "Reveal Answer" — so unlike the live
+  // path (where correctAnswer/explanation only go out via
+  // revealAnswer/broadcastQuestionEnded), they're sent back right here,
+  // immediately after each answer, since this IS the reveal for self-paced.
+  return {
+    ok: true,
+    isCorrect,
+    pointsEarned,
+    correctAnswer: question.correctAnswer,
+    explanation: question.explanation || '',
+  };
 }
 
 // Advances a self-paced participant to their next question, or reports
