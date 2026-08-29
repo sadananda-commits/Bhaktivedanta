@@ -11,7 +11,7 @@ import LANDING_FALLBACK_DA from '../lib/landingContentDA';
 ───────────────────────────────────────────────────────────────────────────── */
 const FALLBACK = {
   classes: [
-    { Id: 'KG', Label: 'Kindergarten', Age: '4–5 yrs',  Description: 'Foundational literacy, numeracy, and sensory learning through play-based activities.',       Color: '#f97316' },
+    { Id: 'KG', Label: 'Kindergarten', Age: '4–5 yrs',  Description: 'Foundational literacy, numeracy, and sensory learning — the earliest Question Bank chapters.',       Color: '#f97316' },
     { Id: 'C1', Label: 'Class 1',      Age: '5–6 yrs',  Description: 'Introduction to reading, basic arithmetic, and exploring the natural world.',                 Color: '#eab308' },
     { Id: 'C2', Label: 'Class 2',      Age: '6–7 yrs',  Description: 'Expanding vocabulary, two-digit arithmetic, and basic scientific concepts.',                   Color: '#22c55e' },
     { Id: 'C3', Label: 'Class 3',      Age: '7–8 yrs',  Description: 'Comprehension, multiplication, introduction to geography and Indian history.',                  Color: '#00c6a7' },
@@ -19,73 +19,57 @@ const FALLBACK = {
     { Id: 'C5', Label: 'Class 5',      Age: '9–10 yrs', Description: 'Advanced comprehension, geometry, ecosystems, map reading, and ancient civilizations.',         Color: '#a855f7' },
   ],
   subjects: [
-    { Name: 'English',     Icon: 'fa-book',           Color: '#3b82f6', Topics: 'Phonics · Grammar · Reading Comprehension · Creative Writing',      Goal: 'Confident communication and expressive writing',  Method: 'Story-based learning, role-play, reading circles' },
-    { Name: 'Mathematics', Icon: 'fa-calculator',     Color: '#f97316', Topics: 'Arithmetic · Fractions · Geometry · Word Problems',                  Goal: 'Analytical thinking and problem solving',         Method: 'Visual aids, manipulatives, structured worksheets' },
-    { Name: 'Science',     Icon: 'fa-flask',          Color: '#22c55e', Topics: 'Plant Life · Human Body · Force & Matter · Simple Machines',         Goal: 'Curiosity-driven empirical understanding',        Method: 'Experiments, observations, model building' },
-    { Name: 'Geography',   Icon: 'fa-earth-americas', Color: '#eab308', Topics: 'Maps · Climate Zones · Landforms · Natural Resources',               Goal: 'Spatial awareness and global knowledge',          Method: 'Map exercises, documentary clips, field discussions' },
-    { Name: 'History',     Icon: 'fa-landmark',       Color: '#a855f7', Topics: 'Early Civilizations · Indian History · National Movements · Culture', Goal: 'Cultural identity and chronological awareness',   Method: 'Timelines, storytelling, primary source discussion' },
-  ],
-  schedules: [
-    { Batch: 'Morning Batch',   Days: 'Mon – Fri', Time: '7:00 AM – 8:30 AM',  Mode: 'Physical', Seats: '3', Color: '#f97316' },
-    { Batch: 'Afternoon Batch', Days: 'Mon – Fri', Time: '3:30 PM – 5:00 PM',  Mode: 'Physical', Seats: '1', Color: '#eab308' },
-    { Batch: 'Evening Batch',   Days: 'Mon – Fri', Time: '6:00 PM – 7:30 PM',  Mode: 'Online',   Seats: '4', Color: '#22c55e' },
-    { Batch: 'Weekend Morning', Days: 'Sat – Sun', Time: '9:00 AM – 11:00 AM', Mode: 'Hybrid',   Seats: '5', Color: '#3b82f6' },
-    { Batch: 'Weekend Evening', Days: 'Sat – Sun', Time: '4:00 PM – 6:00 PM',  Mode: 'Online',   Seats: '2', Color: '#a855f7' },
-  ],
-  fees: [
-    { Tier: 'Single Subject', Price: '₹1,500', Period: '/month', Perks: '1 Subject|Weekly Tests|Homework Support|Progress Reports',                                     Highlight: 'FALSE' },
-    { Tier: 'Core Pack',      Price: '₹3,500', Period: '/month', Perks: '3 Subjects|Weekly Tests|Homework Support|Progress Reports|Parent Meetings',                    Highlight: 'TRUE'  },
-    { Tier: 'Full Academy',   Price: '₹5,500', Period: '/month', Perks: 'All 5 Subjects|Daily Tests|Homework Support|Progress Reports|Parent Meetings|Exam Prep',        Highlight: 'FALSE' },
+    { Name: 'English',     Icon: 'fa-book',           Color: '#3b82f6', Topics: 'Phonics · Grammar · Reading Comprehension · Creative Writing',      Goal: 'Confident communication and expressive writing',  Method: 'Chapter-wise questions with instant feedback' },
+    { Name: 'Mathematics', Icon: 'fa-calculator',     Color: '#f97316', Topics: 'Arithmetic · Fractions · Geometry · Word Problems',                  Goal: 'Analytical thinking and problem solving',         Method: 'Self-paced practice sets, tracked automatically' },
+    { Name: 'Science',     Icon: 'fa-flask',          Color: '#22c55e', Topics: 'Plant Life · Human Body · Force & Matter · Simple Machines',         Goal: 'Curiosity-driven empirical understanding',        Method: 'Question bank + live teacher-hosted quizzes' },
+    { Name: 'Geography',   Icon: 'fa-earth-americas', Color: '#eab308', Topics: 'Maps · Climate Zones · Landforms · Natural Resources',               Goal: 'Spatial awareness and global knowledge',          Method: 'Chapter-wise questions with instant feedback' },
+    { Name: 'History',     Icon: 'fa-landmark',       Color: '#a855f7', Topics: 'Early Civilizations · Indian History · National Movements · Culture', Goal: 'Cultural identity and chronological awareness',   Method: 'Question bank + live teacher-hosted quizzes' },
   ],
   testimonials: [
-    { Name: 'Priya Mehta',   Role: 'Parent, Class 3',     Text: 'My son went from struggling with fractions to topping his school test in just two months. The teachers here genuinely care.' },
-    { Name: 'Rajiv Sinha',   Role: 'Parent, Class 5',     Text: "The real-time dashboard helps me track my daughter's progress without having to call the teacher every week. Brilliant system." },
-    { Name: 'Anjali Kapoor', Role: 'Parent, KG & Class 2', Text: 'Both my kids attend and the micro-batch approach means neither of them ever feels lost or ignored.' },
-  ],
-  teachers: [
-    { Id: 'T01', Name: 'Mrs. Anjali Sharma', Qualification: 'M.Sc. Mathematics · B.Ed',      Experience: '5 Years', Subjects: 'Mathematics & Science', Bio: 'Renowned for making complex concepts feel intuitive. Her students consistently rank in the top 10% of their school exams.' },
-    { Id: 'T02', Name: 'Mr. Pradeep Nair',   Qualification: 'M.A. English Literature · B.Ed', Experience: '7 Years', Subjects: 'English & History',     Bio: 'Award-winning educator whose storytelling approach brings history and language to life in every session.' },
+    { Name: 'Priya Mehta',   Role: 'Parent',     Text: 'We used to pay for three different apps — a meeting tool, a quiz tool, and something for homework. Now it is all in one place, for free, built by our own community.' },
+    { Name: 'Rajiv Sinha',   Role: 'Parent',     Text: "The live dashboard means I don't have to ask the teacher for updates — I can see exactly what my daughter has practiced and how she's doing." },
+    { Name: 'Anjali Kapoor', Role: 'Teacher', Text: 'Running a quiz used to mean juggling three separate logins. Now I create it, share one link, and everyone just joins — no host required, no time limit.' },
   ],
   faqs: [
-    { Question: 'What age groups do you teach?',           Answer: 'We cover Kindergarten (age 4–5) through Class 5 (age 9–10) with fun, interactive lessons designed for each age group.' },
-    { Question: 'How many students are in each batch?',    Answer: 'We strictly limit batches to a maximum of 5 students to guarantee individual attention and a personalised learning experience.' },
-    { Question: 'Do you offer online classes?',            Answer: 'Yes. We offer Physical, Online (via Google Meet / Zoom), and Hybrid formats. You choose your preferred mode during enrollment.' },
-    { Question: 'What happens after I submit the form?',   Answer: 'Your Student ID, username, and temporary password are generated instantly. You can log in to the Student Portal immediately.' },
-    { Question: 'Can I change my schedule after joining?', Answer: 'Yes, schedule changes can be requested through the portal or by contacting the registrar, subject to seat availability.' },
-    { Question: 'Are study materials provided?',           Answer: 'Yes. Worksheets, practice papers, and reading materials are uploaded directly to your student dashboard.' },
+    { Question: 'Is the platform really free?',             Answer: 'Yes. There is no subscription, no per-seat fee, and no paid tier. It is built and maintained by the community, for the community.' },
+    { Question: 'Do I need a Zoom or Kahoot account?',      Answer: 'No. Meetings and quizzes run entirely inside the portal — no external accounts, no time limits, and no host requirement for meetings.' },
+    { Question: 'How does the Question Bank work?',         Answer: 'Pick your class, then browse by subject and chapter. Questions are answered right in the browser with instant feedback, at your own pace.' },
+    { Question: 'What happens after I create a profile?',   Answer: 'Your login is generated instantly and you can start straight away — browsing the Question Bank, joining meetings, or taking quizzes.' },
+    { Question: 'Can parents see their child\'s progress?', Answer: 'Yes. Parents get a live dashboard showing what has been practiced, accuracy by subject, and recent activity — updated automatically.' },
+    { Question: 'How can teachers get involved?',           Answer: 'Teachers can host live quizzes, assign chapters, review submitted homework, and track each student\'s progress from the Parent & Teacher Portal.' },
   ],
   about: [
-    { Icon: 'fa-users-between-lines', IconBg: 'rgba(0,198,167,.1)',   IconColor: 'var(--teal)',  Heading: 'Micro-Batch Teaching',           Body: 'Strictly limited to 5 students per batch — every child receives undivided attention and a truly personalised learning path.' },
-    { Icon: 'fa-chart-line',          IconBg: 'rgba(245,166,35,.1)',  IconColor: 'var(--accent)', Heading: 'Live Progress Dashboards',        Body: 'Parents and students access real-time academic logs — homework completion, attendance, quiz scores, and growth metrics updated daily.' },
-    { Icon: 'fa-map-pin',             IconBg: 'rgba(99,102,241,.1)',  IconColor: '#818cf8',      Heading: 'Structured Learning Path',        Body: 'Every lesson is carefully sequenced and age-appropriate, so children build knowledge step by step at a pace that suits them.' },
-    { Icon: 'fa-laptop-code',         IconBg: 'rgba(239,68,68,.1)',   IconColor: '#f87171',      Heading: 'Physical, Online & Hybrid',       Body: 'Choose the format that works best for your family. Switch modes anytime through the student portal — no questions asked.' },
-    { Icon: 'fa-medal',               IconBg: 'rgba(168,85,247,.1)',  IconColor: '#a855f7',      Heading: 'Proven Results',                  Body: 'Children build lasting confidence and genuine understanding — parents see real growth in curiosity, engagement, and skill within weeks of joining.' },
-    { Icon: 'fa-shield-halved',       IconBg: 'rgba(34,197,94,.1)',   IconColor: '#22c55e',      Heading: 'Background-Verified Teachers',    Body: 'All teachers are degree-qualified, B.Ed certified, DBS checked, and trained in child-centred primary developmental learning.' },
+    { Icon: 'fa-hand-holding-heart',  IconBg: 'rgba(0,198,167,.1)',   IconColor: 'var(--teal)',  Heading: 'Free, Always',                    Body: 'No subscriptions, no per-seat fees, no paid tiers. Built by community volunteers, for everyone in the community.' },
+    { Icon: 'fa-users-between-lines', IconBg: 'rgba(245,166,35,.1)',  IconColor: 'var(--accent)', Heading: 'Built By Our Community',          Body: 'A shared alternative to the big-tech tools we all rely on — reducing our dependency on external platforms, one feature at a time.' },
+    { Icon: 'fa-chart-line',          IconBg: 'rgba(99,102,241,.1)',  IconColor: '#818cf8',      Heading: 'Live Progress Dashboards',        Body: 'Parents and students see real academic activity — questions attempted, accuracy, and recent progress, updated automatically.' },
+    { Icon: 'fa-video',               IconBg: 'rgba(239,68,68,.1)',   IconColor: '#f87171',      Heading: 'No Time Limits, No Host Needed',  Body: 'Meetings work like Zoom, minus the 40-minute cutoff and the requirement that someone specific has to start the call.' },
+    { Icon: 'fa-gamepad',             IconBg: 'rgba(168,85,247,.1)',  IconColor: '#a855f7',      Heading: 'Kahoot-Style Live Quizzes',       Body: 'Teachers and parents run interactive, timed quizzes that make revision genuinely fun — no third-party app required.' },
+    { Icon: 'fa-shield-halved',       IconBg: 'rgba(34,197,94,.1)',   IconColor: '#22c55e',      Heading: 'A Safe, Community-Run Space',     Body: 'Built and moderated by people the community already knows and trusts, not an anonymous platform run for profit.' },
   ],
   contact: {
     whatsappNumber: '919999999999',
     phone:          '+91 99999 99999',
     email:          'support@vedantaacademy.com',
-    address:        'Sector 15, Block C, New Delhi',
+    address:        'A community-run platform — no physical office',
   },
   hero: {
-    badge:      'Interactive Learning · KG to Class 5',
-    headline:   "Where every child's potential is unlocked",
-    headlineLine1: "Where every child's",
-    headlineLine2: 'potential is unlocked',
-    subheadline:'Learn as you play – helping children learn through fun, interactive experiences, with expert mentors, micro-batches of 5, and a real-time portal to track every step of your child\'s growth.',
-    btn1Text:   'Enroll Now — Free',
+    badge:      'Community-Built · Free For Everyone',
+    headline:   'A learning & collaboration platform, built by our own community',
+    headlineLine1: 'A learning platform',
+    headlineLine2: 'built by our own community',
+    subheadline:"Practice from a Question Bank by class and chapter, join meetings with no time limits or host requirement, take part in Kahoot-style quizzes, and track progress — all in one free place, reducing our dependency on big-tech platforms.",
+    btn1Text:   'Join — It\'s Free',
     btn1Link:   '#enroll',
     btn2Text:   'Student Login',
     btn2Link:   '/portal',
-    stat1Num:   '5',   stat1Label: 'Students Max Per Batch',
-    stat2Num:   '98%', stat2Label: 'Parent Satisfaction',
+    stat1Num:   '0',   stat1Label: 'Cost To Join',
+    stat2Num:   '∞', stat2Label: 'Meeting Time Limit',
     stat3Num:   '6',   stat3Label: 'Class Levels KG – Class 5',
     stat4Num:   '5',   stat4Label: 'Core Subjects',
-    feat1: 'Live attendance & homework tracking',
-    feat2: 'Personalised progress dashboards',
-    feat3: 'Physical, Online & Hybrid options',
-    feat4: 'Fun, interactive learning experiences',
+    feat1: 'Question Bank by class, subject & chapter',
+    feat2: 'Hostless meetings — no time limit, no subscription',
+    feat3: 'Kahoot-style live quizzes for teachers & parents',
+    feat4: 'Assignments & progress tracking, all in one place',
   },
 };
 
@@ -172,10 +156,7 @@ function HomeInner() {
           about:        data.about?.length                     ? data.about        : FALLBACK.about,
           classes:      data.classes?.length                   ? data.classes      : FALLBACK.classes,
           subjects:     data.subjects?.length                  ? data.subjects     : FALLBACK.subjects,
-          schedules:    data.schedules?.length                 ? data.schedules    : FALLBACK.schedules,
-          fees:         data.fees?.length                      ? data.fees         : FALLBACK.fees,
           testimonials: data.testimonials?.length              ? data.testimonials : FALLBACK.testimonials,
-          teachers:     data.teachers?.length                  ? data.teachers     : FALLBACK.teachers,
           faqs:         data.faqs?.length                      ? data.faqs         : FALLBACK.faqs,
           contact:      Object.keys(data.contact || {}).length ? data.contact      : FALLBACK.contact,
         });
@@ -361,20 +342,20 @@ function HomeInner() {
         {/* Primary description — the i18n key (page_meta_description) is the
             live value; the content attr below is the canonical default used by
             OG / Twitter and as the fallback if the translation is missing. */}
-        <meta name="description" content="Learn as you play – helping children learn through fun, interactive experiences." />
+        <meta name="description" content="A free, community-built learning & collaboration platform — Question Bank, hostless meetings, live quizzes, and progress tracking." />
         <meta name="description" content={t('page_meta_description')} />
 
         {/* Open Graph */}
         <meta property="og:type"        content="website" />
         <meta property="og:site_name"   content="Vedanta Academy" />
         <meta property="og:title"       content={t('page_title')} />
-        <meta property="og:description" content="Learn as you play – helping children learn through fun, interactive experiences." />
+        <meta property="og:description" content="A free, community-built learning & collaboration platform — Question Bank, hostless meetings, live quizzes, and progress tracking." />
         <meta property="og:url"         content="https://vedantaacademy.com" />
 
         {/* Twitter / X Card */}
         <meta name="twitter:card"        content="summary" />
         <meta name="twitter:title"       content={t('page_title')} />
-        <meta name="twitter:description" content="Learn as you play – helping children learn through fun, interactive experiences." />
+        <meta name="twitter:description" content="A free, community-built learning & collaboration platform — Question Bank, hostless meetings, live quizzes, and progress tracking." />
 
         {/* Indexing */}
         <meta name="robots"   content="index, follow" />
@@ -715,16 +696,15 @@ function HomeInner() {
       <nav className="nav">
         <div className="nav-i">
           <a href="#home" className="logo">
-            <div className="logo-box"><i className="fa-solid fa-graduation-cap"></i></div>
+            <div className="logo-box"><i className="fa-solid fa-people-group"></i></div>
             <span className="logo-txt">Vedanta Academy</span>
           </a>
           <div className="nav-links">
             <a href="#dashboard" className="nl">{t('nav_dashboard')}</a>
             <a href="#about"    className="nl">{t('nav_about')}</a>
+            <a href="#features" className="nl">{t('nav_features')}</a>
             <a href="#classes"  className="nl">{t('nav_classes')}</a>
             <a href="#subjects" className="nl">{t('nav_subjects')}</a>
-            <a href="#schedule" className="nl">{t('nav_schedule')}</a>
-            <a href="#fees"     className="nl">{t('nav_fees')}</a>
             <a href="#contact"  className="nl">{t('nav_contact')}</a>
             <a href="/portal"        className="n-portal"><i className="fa-solid fa-lock-open" style={{fontSize:'11px'}}></i> {t('nav_student_login')}</a>
             <a href="/parent-portal" className="n-portal" style={{background:'rgba(168,85,247,.15)',borderColor:'rgba(168,85,247,.3)',color:'#c084fc'}}><i className="fa-solid fa-users-between-lines" style={{fontSize:'11px'}}></i> {t('nav_parent_login')}</a>
@@ -746,10 +726,9 @@ function HomeInner() {
           <div style={{padding:'0 0 12px'}}><LanguageToggle /></div>
           <a href="#dashboard" className="nl" onClick={()=>setMobileNavOpen(false)}>{t('nav_dashboard')}</a>
           <a href="#about"    className="nl" onClick={()=>setMobileNavOpen(false)}>{t('nav_about')}</a>
+          <a href="#features" className="nl" onClick={()=>setMobileNavOpen(false)}>{t('nav_features')}</a>
           <a href="#classes"  className="nl" onClick={()=>setMobileNavOpen(false)}>{t('nav_classes')}</a>
           <a href="#subjects" className="nl" onClick={()=>setMobileNavOpen(false)}>{t('nav_subjects')}</a>
-          <a href="#schedule" className="nl" onClick={()=>setMobileNavOpen(false)}>{t('nav_schedule')}</a>
-          <a href="#fees"     className="nl" onClick={()=>setMobileNavOpen(false)}>{t('nav_fees')}</a>
           <a href="#contact"  className="nl" onClick={()=>setMobileNavOpen(false)}>{t('nav_contact')}</a>
           <a href="/portal"        className="n-portal" style={{marginTop:'10px',textAlign:'center'}}><i className="fa-solid fa-lock-open" style={{fontSize:'11px'}}></i> {t('nav_student_login')}</a>
           <a href="/parent-portal" className="n-portal" style={{textAlign:'center',marginTop:'8px',background:'rgba(168,85,247,.15)',borderColor:'rgba(168,85,247,.3)',color:'#c084fc'}}><i className="fa-solid fa-users-between-lines" style={{fontSize:'11px'}}></i> {t('nav_parent_login')}</a>
@@ -968,8 +947,33 @@ function HomeInner() {
         </div>
       </section>
 
+      {/* ── FEATURES ── */}
+      <section id="features" className="sec sec-dark">
+        <div className="sec-in">
+          <p className="sec-lbl">{t('features_lbl')}</p>
+          <h2 className="sec-h">{t('features_h')}</h2>
+          <p className="sec-sub">{t('features_sub')}</p>
+          <div className="why-g">
+            {[
+              { icon:'fa-book-open-reader', bg:'rgba(0,198,167,.1)',  color:'var(--teal)',   heading:t('feat_qbank_title'),   body:t('feat_qbank_desc') },
+              { icon:'fa-video',            bg:'rgba(59,130,246,.1)', color:'#60a5fa',        heading:t('feat_meetings_title'),body:t('feat_meetings_desc') },
+              { icon:'fa-gamepad',          bg:'rgba(245,166,35,.1)', color:'var(--accent)',  heading:t('feat_quizzes_title'), body:t('feat_quizzes_desc') },
+              { icon:'fa-clipboard-check',  bg:'rgba(168,85,247,.1)', color:'#a855f7',        heading:t('feat_assignments_title'), body:t('feat_assignments_desc') },
+            ].map((f, i) => (
+              <div key={i} className="why-c">
+                <div className="why-ic" style={{background:f.bg, color:f.color}}>
+                  <i className={`fa-solid ${f.icon}`}></i>
+                </div>
+                <h3>{f.heading}</h3>
+                <p>{f.body}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* ── CLASSES ── */}
-      <section id="classes" className="sec sec-dark">
+      <section id="classes" className="sec sec-alt">
         <div className="sec-in">
           <p className="sec-lbl">{t('classes_lbl')}</p>
           <h2 className="sec-h">{t('classes_h')}</h2>
@@ -988,7 +992,7 @@ function HomeInner() {
       </section>
 
       {/* ── SUBJECTS ── */}
-      <section id="subjects" className="sec sec-alt">
+      <section id="subjects" className="sec sec-dark">
         <div className="sec-in">
           <p className="sec-lbl">{t('subjects_lbl')}</p>
           <h2 className="sec-h">{t('subjects_h_1')}<br/>{t('subjects_h_2')}</h2>
@@ -1011,67 +1015,8 @@ function HomeInner() {
         </div>
       </section>
 
-      {/* ── SCHEDULE ── */}
-      <section id="schedule" className="sec sec-dark">
-        <div className="sec-in">
-          <p className="sec-lbl">{t('sched_lbl')}</p>
-          <h2 className="sec-h">{t('sched_h')}</h2>
-          <p className="sec-sub">{t('sched_sub')}</p>
-          <div className="sched-g">
-            {cms.schedules.map((s, i) => {
-              const seats = Number(s.Seats);
-              const dotCls = seats >= 4 ? 'seat-dot' : seats >= 2 ? 'seat-dot few' : 'seat-dot last';
-              const modeColor = s.Mode==='Physical'?'rgba(34,197,94,.15)':s.Mode==='Online'?'rgba(59,130,246,.15)':'rgba(168,85,247,.15)';
-              const modeText  = s.Mode==='Physical'?'#4ade80':s.Mode==='Online'?'#60a5fa':'#c084fc';
-              return (
-                <div key={i} className="sched-c">
-                  <div className="sched-top">
-                    <span className="sched-batch">{s.Batch}</span>
-                    <span className="mode-tag" style={{background:modeColor, color:modeText}}>{t(`sched_mode_${s.Mode.toLowerCase()}`)}</span>
-                  </div>
-                  <div className="sched-rows">
-                    <div className="sched-row"><i className="fa-solid fa-calendar"></i>{s.Days}</div>
-                    <div className="sched-row"><i className="fa-solid fa-clock"></i>{s.Time}</div>
-                  </div>
-                  <div className="seats" style={{color: seats>=4?'#4ade80':seats>=2?'#f97316':'#ef4444'}}>
-                    <span className={dotCls}></span>{seats} {seats===1?t('sched_seats_available_one'):t('sched_seats_available_many')}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </section>
-
-      {/* ── FEES ── */}
-      <section id="fees" className="sec sec-alt">
-        <div className="sec-in">
-          <p className="sec-lbl">{t('fees_lbl')}</p>
-          <h2 className="sec-h">{t('fees_h')}</h2>
-          <p className="sec-sub">{t('fees_sub')}</p>
-          <div className="fees-g">
-            {cms.fees.map((f, i) => {
-              const isHighlight = String(f.Highlight).toUpperCase() === 'TRUE';
-              const perks = typeof f.Perks === 'string' ? f.Perks.split('|') : (f.Perks || []);
-              return (
-                <div key={i} className={`fee-c${isHighlight ? ' hi' : ''}`}>
-                  {isHighlight && <span className="fee-badge">{t('fees_most_popular')}</span>}
-                  <div className="fee-tier">{f.Tier}</div>
-                  <div className="fee-price">{f.Price}</div>
-                  <div className="fee-period">{f.Period} · {t('fees_per_student')}</div>
-                  <div className="fee-perks">
-                    {perks.map((p, j) => <div key={j} className="fee-perk"><i className="fa-solid fa-check-circle"></i>{p.trim()}</div>)}
-                  </div>
-                  <a href="#enroll" className="btn btn-accent" style={{width:'100%',justifyContent:'center'}}><i className="fa-solid fa-user-plus"></i> {t('fees_enroll_now')}</a>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </section>
-
       {/* ── TESTIMONIALS ── */}
-      <section className="sec sec-dark">
+      <section className="sec sec-alt">
         <div className="sec-in">
           <p className="sec-lbl">{t('test_lbl')}</p>
           <h2 className="sec-h">{t('test_h')}</h2>
@@ -1084,32 +1029,6 @@ function HomeInner() {
                 <div className="test-auth">
                   <div className="test-av"><i className="fa-solid fa-user"></i></div>
                   <div><div className="test-name">{item.Name}</div><div className="test-role">{item.Role}</div></div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ── TEACHERS ── */}
-      <section id="teachers" className="sec sec-alt">
-        <div className="sec-in">
-          <p className="sec-lbl">{t('teach_lbl')}</p>
-          <h2 className="sec-h">{t('teach_h')}</h2>
-          <p className="sec-sub">{t('teach_sub')}</p>
-          <div className="teach-g">
-            {cms.teachers.map(teacher => (
-              <div key={teacher.Id} className="teach-c">
-                {teacher.ImageUrl
-                  ? <img src={teacher.ImageUrl} alt={teacher.Name} style={{width:'64px',height:'64px',borderRadius:'16px',objectFit:'cover',flexShrink:0}} />
-                  : <div className="teach-av"><i className="fa-solid fa-user-tie"></i></div>
-                }
-                <div>
-                  <div className="teach-id">{teacher.Id}</div>
-                  <div className="teach-name">{teacher.Name}</div>
-                  <div className="teach-qual">{teacher.Qualification} · {teacher.Experience} {t('teach_experience')}</div>
-                  <div className="teach-tag"><i className="fa-solid fa-chalkboard-user" style={{fontSize:'11px'}}></i>{teacher.Subjects}</div>
-                  <div className="teach-bio">{teacher.Bio}</div>
                 </div>
               </div>
             ))}
@@ -1294,28 +1213,6 @@ function HomeInner() {
 
                 {step===3 && (
                   <div>
-                    <div className="fg-2">
-                      <div className="fg"><label className="fl">{t('f_preferred_teacher')}</label>
-                        <select name="teacherId" className="fi" defaultValue={formData.teacherId}>
-                          <option value="">{t('f_no_preference')}</option>
-                          {cms.teachers.map(teacher => <option key={teacher.Id} value={teacher.Id}>{teacher.Name} ({teacher.Id})</option>)}
-                        </select>
-                      </div>
-                      <div className="fg"><label className="fl">{t('f_preferred_batch')}</label>
-                        <select name="timeSlot" className="fi" defaultValue={formData.timeSlot}>
-                          <option value="">{t('f_select_batch')}</option>
-                          {cms.schedules.map((s, i) => <option key={i} value={s.Batch}>{s.Batch} — {s.Time}</option>)}
-                        </select>
-                      </div>
-                    </div>
-                    <div className="fg"><label className="fl">{t('f_learning_mode')}</label>
-                      <select name="learningMode" className="fi" defaultValue={formData.learningMode}>
-                        <option value="">{t('f_select_mode')}</option>
-                        <option value="Physical">{t('f_mode_physical')}</option>
-                        <option value="Online">{t('f_mode_online')}</option>
-                        <option value="Hybrid">{t('f_mode_hybrid')}</option>
-                      </select>
-                    </div>
                     <div className="fg"><label className="fl">{t('f_subjects_required')}</label>
                       <div className="cb-g">
                         {cms.subjects.map(s => (
@@ -1345,7 +1242,6 @@ function HomeInner() {
                         <div><span style={{color:'rgba(255,255,255,.4)'}}>{t('f_review_parent')} </span>{formData.parentName || '—'}</div>
                         <div><span style={{color:'rgba(255,255,255,.4)'}}>{t('f_review_email')} </span>{formData.email || '—'}</div>
                         <div><span style={{color:'rgba(255,255,255,.4)'}}>{t('f_review_phone')} </span>{formData.phone || '—'}</div>
-                        <div><span style={{color:'rgba(255,255,255,.4)'}}>{t('f_review_mode')} </span>{formData.learningMode ? t(`f_review_mode_${formData.learningMode.toLowerCase()}`) : '—'}</div>
                         <div style={{gridColumn:'1/-1'}}><span style={{color:'rgba(255,255,255,.4)'}}>{t('f_review_subjects')} </span>{formData.subjects.length > 0 ? formData.subjects.join(', ') : '—'}</div>
                       </div>
                     </div>
@@ -1513,14 +1409,12 @@ function HomeInner() {
           <div>
             <p className="f-h">{t('footer_academy')}</p>
             <a href="#about"    className="f-lnk">{t('footer_about_us')}</a>
+            <a href="#features" className="f-lnk">{t('nav_features')}</a>
             <a href="#classes"  className="f-lnk">{t('footer_classes')}</a>
             <a href="#subjects" className="f-lnk">{t('footer_subjects')}</a>
-            <a href="#teachers" className="f-lnk">{t('footer_teachers')}</a>
           </div>
           <div>
             <p className="f-h">{t('footer_admission')}</p>
-            <a href="#schedule" className="f-lnk">{t('footer_schedules')}</a>
-            <a href="#fees"     className="f-lnk">{t('footer_fee_structure')}</a>
             <a href="#enroll"   className="f-lnk">{t('footer_enroll_now')}</a>
             <a href="/portal"        className="f-lnk">{t('footer_student_portal')}</a>
             <a href="/parent-portal" className="f-lnk">{t('footer_parent_portal')}</a>

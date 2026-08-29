@@ -124,9 +124,9 @@ export default async function handler(req, res) {
       // if the child's ID wasn't provided — admin will link them shortly.
       linkedStudentIDs,
       note: role === 'Parent' && !linkedStudentIDs
-        ? 'Your account has been created. The academy will link your child\'s profile within 24 hours.'
+        ? 'Your account has been created. We\'ll link your child\'s profile within 24 hours.'
         : role === 'Teacher'
-        ? 'Your account has been created. The academy will configure your student access shortly.'
+        ? 'Your account has been created. Your student access will be configured shortly.'
         : '',
     });
 
