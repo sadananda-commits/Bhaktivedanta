@@ -85,6 +85,16 @@ function HomeInner() {
     'Social Studies': 'Samfundsfag', 'General Knowledge': 'Almen Viden',
   };
   const subjectDisplay = (name) => lang === 'da' ? (SUBJECT_DISPLAY_DA[name] || name) : name;
+  // Testimonial avatars: no color is stored per-testimonial in the sheet, so
+  // rotate through a small on-brand gradient palette (teal, gold, purple) by
+  // index, and show initials instead of a generic icon — a bit more human
+  // and a lot less flat than a single grey circle for every parent/teacher.
+  const TESTIMONIAL_AVATAR_PALETTE = [
+    ['#00c6a7', '#0aa3cc'],
+    ['#f5a623', '#ff7a59'],
+    ['#a855f7', '#6366f1'],
+  ];
+  const initialsOf = (name) => (name || '').trim().split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase();
   // The live Google Sheet behind /api/content is English-only content
   // (teachers edit it in English) — it has no Danish column today. So:
   //  - English: fetch and prefer live Sheet data, same as before.
@@ -411,7 +421,13 @@ function HomeInner() {
           }
 
           /* HERO */
-          .hero{background:var(--navy);min-height:90vh;display:flex;align-items:center;position:relative;overflow:hidden;}
+          /* HERO — background photo slot. Drop a real photo of your students/
+             classroom at public/images/hero-photo.jpg and it appears here,
+             tinted for readability. Until then, this quietly falls back to
+             the original solid navy — the url() layer just doesn't paint if
+             the file is missing, so nothing ever breaks or shows a broken-
+             image icon. */
+          .hero{background:linear-gradient(180deg, rgba(10,15,44,.90) 0%, rgba(10,15,44,.85) 45%, rgba(10,15,44,.97) 100%), url('/images/hero-photo.jpg') center 30%/cover no-repeat, var(--navy);min-height:90vh;display:flex;align-items:center;position:relative;overflow:hidden;}
           .hero::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse 60% 60% at 70% 40%,rgba(0,198,167,.13) 0%,transparent 60%),radial-gradient(ellipse 40% 40% at 20% 70%,rgba(245,166,35,.10) 0%,transparent 60%);}
           .hgrid{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);background-size:60px 60px;}
           .hero-in{max-width:1200px;margin:0 auto;padding:100px 24px 80px;display:grid;grid-template-columns:1fr 400px;gap:60px;align-items:center;position:relative;z-index:1;}
@@ -437,8 +453,8 @@ function HomeInner() {
           @media(max-width:860px){.hero-in{grid-template-columns:1fr;}.hero-card{display:none;}}
 
           /* SECTION WRAPPER */
-          .sec{padding:88px 24px;}
-          .sec-in{max-width:1200px;margin:0 auto;}
+          .sec{padding:88px 24px;position:relative;overflow:hidden;}
+          .sec-in{max-width:1200px;margin:0 auto;position:relative;z-index:1;}
           .sec-lbl{font-size:11px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:var(--teal);margin-bottom:10px;}
           .sec-h{font-family:var(--font-d);font-size:clamp(26px,3.5vw,42px);font-weight:900;color:var(--navy);line-height:1.15;margin-bottom:14px;}
           .sec-sub{font-size:15px;color:var(--muted);line-height:1.75;max-width:540px;}
@@ -447,6 +463,13 @@ function HomeInner() {
           .sec-dark .sec-h{color:#fff;}
           .sec-dark .sec-sub{color:rgba(255,255,255,.5);}
           .sec-alt{background:var(--surface-alt);}
+          /* Ambient background color washes — same technique as the hero's
+             radial gradients, applied consistently instead of stopping after
+             one section, so every part of the page feels considered rather
+             than a flat block of color. Purely decorative: sits behind
+             .sec-in (z-index:1) and never intercepts clicks. */
+          .sec-alt::before{content:'';position:absolute;inset:0;z-index:0;pointer-events:none;background:radial-gradient(ellipse 50% 55% at 88% 10%, rgba(0,198,167,.07) 0%, transparent 60%), radial-gradient(ellipse 42% 48% at 6% 92%, rgba(245,166,35,.07) 0%, transparent 60%);}
+          .sec-dark::before{content:'';position:absolute;inset:0;z-index:0;pointer-events:none;background:radial-gradient(ellipse 50% 55% at 92% 8%, rgba(0,198,167,.09) 0%, transparent 60%), radial-gradient(ellipse 42% 48% at 4% 95%, rgba(168,85,247,.08) 0%, transparent 60%);}
 
           /* ABOUT / WHY */
           .why-g{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;margin-top:52px;}
@@ -519,22 +542,22 @@ function HomeInner() {
 
           /* CLASSES */
           .cls-g{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:52px;}
-          .cls-c{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:var(--radius);padding:26px;transition:all .3s;}
-          .cls-c:hover{transform:translateY(-3px);background:rgba(255,255,255,.07);}
+          .cls-c{background:var(--surface);border:1px solid var(--border);border-top:4px solid var(--border);border-radius:var(--radius);padding:26px;transition:all .25s ease;box-shadow:0 2px 14px rgba(10,15,44,.05);}
+          .cls-c:hover{transform:translateY(-5px);box-shadow:var(--shadow-lg);}
           .cls-chip{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;padding:4px 10px;border-radius:100px;margin-bottom:14px;}
-          .cls-label{font-family:var(--font-d);font-size:22px;font-weight:900;color:#fff;margin-bottom:4px;}
-          .cls-age{font-size:12px;color:rgba(255,255,255,.45);margin-bottom:12px;}
-          .cls-desc{font-size:13px;color:rgba(255,255,255,.65);line-height:1.7;}
+          .cls-label{font-family:var(--font-d);font-size:22px;font-weight:900;color:var(--navy);margin-bottom:4px;}
+          .cls-age{font-size:12px;color:var(--muted);font-weight:600;margin-bottom:12px;}
+          .cls-desc{font-size:13px;color:var(--muted);line-height:1.7;}
           @media(max-width:720px){.cls-g{grid-template-columns:1fr 1fr;}}
           @media(max-width:480px){.cls-g{grid-template-columns:1fr;}}
 
           /* SUBJECTS */
           .subj-g{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:52px;}
-          .subj-c{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:28px;transition:all .3s;}
+          .subj-c{background:var(--surface);border:1px solid var(--border);border-top:4px solid var(--border);border-radius:var(--radius);padding:28px;transition:all .3s;}
           .subj-c:hover{box-shadow:var(--shadow-lg);transform:translateY(-3px);}
           .subj-hd{display:flex;align-items:center;gap:14px;margin-bottom:18px;}
           .subj-ic{width:46px;height:46px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;}
-          .subj-nm{font-size:19px;font-weight:800;color:var(--navy);}
+          .subj-nm{font-size:19px;font-weight:800;}
           .subj-row{display:flex;flex-direction:column;gap:10px;}
           .subj-item label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);display:block;margin-bottom:3px;}
           .subj-item p{font-size:13px;color:var(--text);line-height:1.6;}
@@ -573,13 +596,14 @@ function HomeInner() {
 
           /* TESTIMONIALS */
           .test-g{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:52px;}
-          .test-c{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:var(--radius);padding:26px;}
-          .test-q{font-size:32px;color:var(--teal);line-height:1;margin-bottom:12px;}
-          .test-txt{font-size:14px;color:rgba(255,255,255,.7);line-height:1.75;margin-bottom:20px;}
+          .test-c{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:28px;transition:all .25s ease;box-shadow:0 2px 14px rgba(10,15,44,.05);}
+          .test-c:hover{transform:translateY(-4px);box-shadow:var(--shadow-lg);}
+          .test-q{font-family:var(--font-d);font-size:48px;color:var(--accent);line-height:.5;margin-bottom:16px;}
+          .test-txt{font-size:14.5px;color:var(--text);font-style:italic;line-height:1.75;margin-bottom:22px;}
           .test-auth{display:flex;align-items:center;gap:12px;}
-          .test-av{width:40px;height:40px;border-radius:12px;background:rgba(0,198,167,.15);display:flex;align-items:center;justify-content:center;color:var(--teal);font-size:16px;}
-          .test-name{font-size:14px;font-weight:700;color:#fff;}
-          .test-role{font-size:12px;color:rgba(255,255,255,.4);}
+          .test-av{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:800;letter-spacing:.02em;flex-shrink:0;}
+          .test-name{font-size:14px;font-weight:700;color:var(--navy);}
+          .test-role{font-size:12px;color:var(--muted);}
           @media(max-width:720px){.test-g{grid-template-columns:1fr;}}
 
           /* TEACHERS */
@@ -596,7 +620,8 @@ function HomeInner() {
 
           /* FAQ */
           .faq-list{display:flex;flex-direction:column;gap:12px;margin-top:52px;max-width:800px;}
-          .faq-item{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);border-radius:var(--radius);overflow:hidden;}
+          .faq-item{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);border-left:3px solid transparent;border-radius:var(--radius);overflow:hidden;transition:border-left-color .25s ease, background .25s ease;}
+          .faq-item:hover{border-left-color:var(--teal);background:rgba(255,255,255,.06);}
           .faq-q{width:100%;display:flex;align-items:center;justify-content:space-between;padding:18px 22px;background:none;border:none;color:#fff;font-family:var(--font-b);font-size:15px;font-weight:600;cursor:pointer;text-align:left;gap:16px;}
           .faq-q i{color:var(--teal);font-size:13px;transition:transform .3s;flex-shrink:0;}
           .faq-q.open i{transform:rotate(45deg);}
@@ -653,7 +678,8 @@ function HomeInner() {
           @media(max-width:520px){.cred-g{grid-template-columns:1fr;}}
 
           /* PORTAL BANNER */
-          .pb{background:linear-gradient(135deg,var(--teal),#0099cc);}
+          /* PORTAL BANNER — second optional photo slot: public/images/community-photo.jpg */
+          .pb{background:linear-gradient(135deg, rgba(0,198,167,.90), rgba(0,153,204,.90)), url('/images/community-photo.jpg') center/cover no-repeat, linear-gradient(135deg,var(--teal),#0099cc);}
           .pb-in{max-width:1200px;margin:0 auto;padding:48px 24px;display:flex;align-items:center;justify-content:space-between;gap:24px;}
           .pb h2{font-family:var(--font-d);font-size:26px;font-weight:900;color:#fff;}
           .pb p{font-size:14px;color:rgba(255,255,255,.8);margin-top:5px;}
@@ -980,7 +1006,7 @@ function HomeInner() {
           <p className="sec-sub">{t('classes_sub')}</p>
           <div className="cls-g">
             {cms.classes.map(cls => (
-              <div key={cls.Id} className="cls-c">
+              <div key={cls.Id} className="cls-c" style={{borderTopColor: cls.Color}}>
                 <div className="cls-chip" style={{background:`${cls.Color}22`, color: cls.Color, border:`1px solid ${cls.Color}44`}}>{cls.Id}</div>
                 <div className="cls-label">{cls.Label}</div>
                 <div className="cls-age">{t('classes_age')} {cls.Age}</div>
@@ -999,10 +1025,10 @@ function HomeInner() {
           <p className="sec-sub">{t('subjects_sub')}</p>
           <div className="subj-g">
             {cms.subjects.map(s => (
-              <div key={s.Name} className="subj-c">
+              <div key={s.Name} className="subj-c" style={{borderTopColor: s.Color}}>
                 <div className="subj-hd">
                   <div className="subj-ic" style={{background:`${s.Color}18`, color: s.Color}}><i className={`fa-solid ${s.Icon}`}></i></div>
-                  <span className="subj-nm">{s.Name}</span>
+                  <span className="subj-nm" style={{color: s.Color}}>{s.Name}</span>
                 </div>
                 <div className="subj-row">
                   <div className="subj-item"><label>{t('subjects_topics_covered')}</label><p>{s.Topics}</p></div>
@@ -1022,16 +1048,19 @@ function HomeInner() {
           <h2 className="sec-h">{t('test_h')}</h2>
           <p className="sec-sub">{t('test_sub')}</p>
           <div className="test-g">
-            {cms.testimonials.map((item, i) => (
-              <div key={i} className="test-c">
-                <div className="test-q">"</div>
-                <p className="test-txt">{item.Text}</p>
-                <div className="test-auth">
-                  <div className="test-av"><i className="fa-solid fa-user"></i></div>
-                  <div><div className="test-name">{item.Name}</div><div className="test-role">{item.Role}</div></div>
+            {cms.testimonials.map((item, i) => {
+              const [c1, c2] = TESTIMONIAL_AVATAR_PALETTE[i % TESTIMONIAL_AVATAR_PALETTE.length];
+              return (
+                <div key={i} className="test-c">
+                  <div className="test-q">"</div>
+                  <p className="test-txt">{item.Text}</p>
+                  <div className="test-auth">
+                    <div className="test-av" style={{background:`linear-gradient(135deg, ${c1}, ${c2})`}}>{initialsOf(item.Name)}</div>
+                    <div><div className="test-name">{item.Name}</div><div className="test-role">{item.Role}</div></div>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </section>
