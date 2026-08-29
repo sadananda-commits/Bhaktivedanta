@@ -95,6 +95,17 @@ function HomeInner() {
     ['#a855f7', '#6366f1'],
   ];
   const initialsOf = (name) => (name || '').trim().split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase();
+  // Subject cover photos — Pexels, free-to-use license, no attribution
+  // required, no real people used as stand-ins for anything. Matched by
+  // subject Name so it still works if the sheet's row order changes;
+  // falls back to the English photo for any name that doesn't match yet.
+  const SUBJECT_PHOTOS = {
+    English:     'https://images.pexels.com/photos/6963779/pexels-photo-6963779.jpeg?auto=compress&cs=tinysrgb&w=800',
+    Mathematics: 'https://images.pexels.com/photos/6238050/pexels-photo-6238050.jpeg?auto=compress&cs=tinysrgb&w=800',
+    Science:     'https://images.pexels.com/photos/9629708/pexels-photo-9629708.jpeg?auto=compress&cs=tinysrgb&w=800',
+    Geography:   'https://images.pexels.com/photos/4611591/pexels-photo-4611591.jpeg?auto=compress&cs=tinysrgb&w=800',
+    History:     'https://images.pexels.com/photos/208284/pexels-photo-208284.jpeg?auto=compress&cs=tinysrgb&w=800',
+  };
   // The live Google Sheet behind /api/content is English-only content
   // (teachers edit it in English) — it has no Danish column today. So:
   //  - English: fetch and prefer live Sheet data, same as before.
@@ -421,13 +432,11 @@ function HomeInner() {
           }
 
           /* HERO */
-          /* HERO — background photo slot. Drop a real photo of your students/
-             classroom at public/images/hero-photo.jpg and it appears here,
-             tinted for readability. Until then, this quietly falls back to
-             the original solid navy — the url() layer just doesn't paint if
-             the file is missing, so nothing ever breaks or shows a broken-
-             image icon. */
-          .hero{background:linear-gradient(180deg, rgba(10,15,44,.90) 0%, rgba(10,15,44,.85) 45%, rgba(10,15,44,.97) 100%), url('/images/hero-photo.jpg') center 30%/cover no-repeat, var(--navy);min-height:90vh;display:flex;align-items:center;position:relative;overflow:hidden;}
+          /* HERO — background photo (Pexels, free-to-use license, no attribution
+             required). Swap this URL for your own classroom/community photo
+             any time — same layered-background trick means nothing breaks
+             either way. */
+          .hero{background:linear-gradient(180deg, rgba(10,15,44,.90) 0%, rgba(10,15,44,.85) 45%, rgba(10,15,44,.97) 100%), url('https://images.pexels.com/photos/7742816/pexels-photo-7742816.jpeg?auto=compress&cs=tinysrgb&w=1920') center 30%/cover no-repeat, var(--navy);min-height:90vh;display:flex;align-items:center;position:relative;overflow:hidden;}
           .hero::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse 60% 60% at 70% 40%,rgba(0,198,167,.13) 0%,transparent 60%),radial-gradient(ellipse 40% 40% at 20% 70%,rgba(245,166,35,.10) 0%,transparent 60%);}
           .hgrid{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);background-size:60px 60px;}
           .hero-in{max-width:1200px;margin:0 auto;padding:100px 24px 80px;display:grid;grid-template-columns:1fr 400px;gap:60px;align-items:center;position:relative;z-index:1;}
@@ -553,8 +562,10 @@ function HomeInner() {
 
           /* SUBJECTS */
           .subj-g{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:52px;}
-          .subj-c{background:var(--surface);border:1px solid var(--border);border-top:4px solid var(--border);border-radius:var(--radius);padding:28px;transition:all .3s;}
+          .subj-c{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;transition:all .3s;}
           .subj-c:hover{box-shadow:var(--shadow-lg);transform:translateY(-3px);}
+          .subj-img{width:100%;height:150px;object-fit:cover;display:block;background:var(--surface-alt);}
+          .subj-body{padding:24px 26px 28px;border-top:4px solid var(--border);}
           .subj-hd{display:flex;align-items:center;gap:14px;margin-bottom:18px;}
           .subj-ic{width:46px;height:46px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;}
           .subj-nm{font-size:19px;font-weight:800;}
@@ -678,8 +689,8 @@ function HomeInner() {
           @media(max-width:520px){.cred-g{grid-template-columns:1fr;}}
 
           /* PORTAL BANNER */
-          /* PORTAL BANNER — second optional photo slot: public/images/community-photo.jpg */
-          .pb{background:linear-gradient(135deg, rgba(0,198,167,.90), rgba(0,153,204,.90)), url('/images/community-photo.jpg') center/cover no-repeat, linear-gradient(135deg,var(--teal),#0099cc);}
+          /* PORTAL BANNER — background photo (Pexels, free-to-use license) */
+          .pb{background:linear-gradient(135deg, rgba(0,198,167,.90), rgba(0,153,204,.90)), url('https://images.pexels.com/photos/6414709/pexels-photo-6414709.jpeg?auto=compress&cs=tinysrgb&w=1600') center/cover no-repeat, linear-gradient(135deg,var(--teal),#0099cc);}
           .pb-in{max-width:1200px;margin:0 auto;padding:48px 24px;display:flex;align-items:center;justify-content:space-between;gap:24px;}
           .pb h2{font-family:var(--font-d);font-size:26px;font-weight:900;color:#fff;}
           .pb p{font-size:14px;color:rgba(255,255,255,.8);margin-top:5px;}
@@ -1025,15 +1036,23 @@ function HomeInner() {
           <p className="sec-sub">{t('subjects_sub')}</p>
           <div className="subj-g">
             {cms.subjects.map(s => (
-              <div key={s.Name} className="subj-c" style={{borderTopColor: s.Color}}>
-                <div className="subj-hd">
-                  <div className="subj-ic" style={{background:`${s.Color}18`, color: s.Color}}><i className={`fa-solid ${s.Icon}`}></i></div>
-                  <span className="subj-nm" style={{color: s.Color}}>{s.Name}</span>
-                </div>
-                <div className="subj-row">
-                  <div className="subj-item"><label>{t('subjects_topics_covered')}</label><p>{s.Topics}</p></div>
-                  <div className="subj-item"><label>{t('subjects_learning_goal')}</label><p>{s.Goal}</p></div>
-                  <div className="subj-item"><label>{t('subjects_teaching_method')}</label><p>{s.Method}</p></div>
+              <div key={s.Name} className="subj-c">
+                <img
+                  src={SUBJECT_PHOTOS[s.Name] || SUBJECT_PHOTOS.English}
+                  alt={s.Name}
+                  className="subj-img"
+                  loading="lazy"
+                />
+                <div className="subj-body" style={{borderTopColor: s.Color}}>
+                  <div className="subj-hd">
+                    <div className="subj-ic" style={{background:`${s.Color}18`, color: s.Color}}><i className={`fa-solid ${s.Icon}`}></i></div>
+                    <span className="subj-nm" style={{color: s.Color}}>{s.Name}</span>
+                  </div>
+                  <div className="subj-row">
+                    <div className="subj-item"><label>{t('subjects_topics_covered')}</label><p>{s.Topics}</p></div>
+                    <div className="subj-item"><label>{t('subjects_learning_goal')}</label><p>{s.Goal}</p></div>
+                    <div className="subj-item"><label>{t('subjects_teaching_method')}</label><p>{s.Method}</p></div>
+                  </div>
                 </div>
               </div>
             ))}
