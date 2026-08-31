@@ -1,5 +1,6 @@
 import Head from 'next/head';
 import Link from 'next/link';
+import { useRouter } from 'next/router';
 import { useState, useEffect } from 'react';
 import { LanguageProvider, useLanguage, LanguageToggle } from '../lib/i18n';
 import LANDING_FALLBACK_DA from '../lib/landingContentDA';
@@ -234,6 +235,26 @@ function HomeInner() {
   // Role selector: null = not yet chosen, 'Student'/'Parent'/'Teacher' = chosen
   const [enrollRole, setEnrollRole] = useState(null);
   const [step, setStep]             = useState(1);
+
+  // ── Resume-into-quiz support ─────────────────────────────────────────────
+  // A visitor who tried a chapter as a guest on /quiz and then chose "I'm
+  // new — enroll free" arrives here as e.g. /?resume=DAN08#enroll. We read
+  // that once, skip straight past the role picker (a guest coming from a
+  // quiz link is always signing up as a Student), and — once enrollment
+  // succeeds — send them to /portal?moduleId=DAN08 instead of the bare
+  // dashboard, so they land right back in the chapter they were trying.
+  const router = useRouter();
+  const [resumeModuleId, setResumeModuleId] = useState('');
+  useEffect(() => {
+    if (!router.isReady) return;
+    const resume = router.query.resume;
+    if (resume && typeof resume === 'string') {
+      setResumeModuleId(resume);
+      setEnrollRole('Student');
+      setStep(1);
+    }
+  }, [router.isReady, router.query.resume]);
+
   const [formData, setFormData]     = useState({
     studentName: '', dob: '', gender: '', schoolName: '', classLevel: '',
     parentName: '', email: '', phone: '', emergencyContact: '', address: '',
@@ -1158,7 +1179,7 @@ function HomeInner() {
               )}
               <p style={{fontSize:'12px',color:'rgba(255,255,255,.45)',marginBottom:'20px',lineHeight:1.7}}>{t('f_cred_warning')}</p>
               {enrollRole === 'Student'
-                ? <a href="/portal"        className="btn btn-accent"><i className="fa-solid fa-arrow-right-to-bracket"></i> {t('f_go_to_portal')}</a>
+                ? <a href={resumeModuleId ? `/portal?moduleId=${encodeURIComponent(resumeModuleId)}` : '/portal'} className="btn btn-accent"><i className="fa-solid fa-arrow-right-to-bracket"></i> {t('f_go_to_portal')}</a>
                 : <a href="/parent-portal" className="btn btn-accent"><i className="fa-solid fa-arrow-right-to-bracket"></i> {t('f_pt_go_to_portal')}</a>
               }
               <button

@@ -154,6 +154,17 @@ function GuestQuizInner() {
     router.push(`/portal?${qs.toString()}`);
   }, [router, moduleId]);
 
+  // Sends a brand-new visitor to the homepage's enrollment section
+  // (index.js has no separate /enroll route — it's the #enroll anchor on
+  // "/"). Passing ?resume=<moduleId> lets index.js skip the role picker
+  // (guests here are always signing up as Students) and, once enrollment
+  // succeeds, send them straight to /portal?moduleId=... instead of the
+  // bare dashboard — see index.js's resumeModuleId handling.
+  const goEnroll = useCallback(() => {
+    const qs = new URLSearchParams({ resume: moduleId || '' });
+    router.push(`/?${qs.toString()}#enroll`);
+  }, [router, moduleId]);
+
   const startGuest = useCallback((e) => {
     e.preventDefault();
     const trimmed = guestName.trim();
@@ -208,8 +219,11 @@ function GuestQuizInner() {
               <button className="gq-btn primary" onClick={() => setStage('name')}>
                 <i className="fa-solid fa-user" /> Continue as Guest
               </button>
+              <button className="gq-btn secondary" onClick={goEnroll}>
+                <i className="fa-solid fa-user-plus" /> I'm New — Enroll Free
+              </button>
               <button className="gq-btn secondary" onClick={goSignIn}>
-                <i className="fa-solid fa-right-to-bracket" /> Sign In / Create Free Account
+                <i className="fa-solid fa-right-to-bracket" /> I Already Have an Account
               </button>
             </div>
           </div>
@@ -243,7 +257,7 @@ function GuestQuizInner() {
               <span>
                 <i className="fa-solid fa-user-clock" /> Guest Mode{scoreLabel ? ` — ${scoreLabel}!` : ` — ${guestName}`}
               </span>
-              <button className="gq-banner-cta" onClick={goSignIn}>
+              <button className="gq-banner-cta" onClick={goEnroll}>
                 {scoreLabel ? 'Create Free Account' : 'Sign Up For Unlimited Access'}
               </button>
             </div>
