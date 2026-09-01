@@ -1982,6 +1982,7 @@ function PortalInner({ initialProfile }) {
 
     const params = new URLSearchParams(window.location.search);
     const moduleId = params.get('moduleId');
+    const linkClassLevel = params.get('classLevel'); // from a public /quiz share link (see pages/quiz.js)
     const assignmentId = params.get('assignmentId');
     if (!moduleId && !assignmentId) { deepLinkAppliedRef.current = true; return; }
 
@@ -1992,8 +1993,22 @@ function PortalInner({ initialProfile }) {
         setActiveModuleId(moduleId);
         setTab('assignments');
         deepLinkAppliedRef.current = true;
+        return;
       }
-      // else: modules may not have loaded yet — try again next render
+      // Not found under the current class scope — by default a student only
+      // sees their OWN class's modules (classFilter===null). A shared /quiz
+      // link can point at any class, so before giving up, widen the scope
+      // to "All Classes" (the same toggle students can already pick by hand
+      // in the Question Bank header) and let the effect re-run once ASSIGN_LMOD
+      // reflects it. Only try this once per class hint to avoid looping if the
+      // module genuinely doesn't exist.
+      if (linkClassLevel && linkClassLevel !== profile.classLevel && classFilter !== 'all') {
+        setClassFilter('all');
+        return; // re-run on next render with the widened ASSIGN_LMOD
+      }
+      // Either no class hint was given, or we already widened and it's still
+      // not there — stop retrying, this module isn't reachable for this account.
+      deepLinkAppliedRef.current = true;
       return;
     }
 
@@ -2003,7 +2018,7 @@ function PortalInner({ initialProfile }) {
       if (row) { setActiveMyAssignmentId(assignmentId); setTab('myassignments'); }
       deepLinkAppliedRef.current = true; // stop trying either way once resolved
     }
-  }, [authed, cfgReady, ASSIGN_LMOD, myAssignments, myAssignmentsLoading]);
+  }, [authed, cfgReady, ASSIGN_LMOD, myAssignments, myAssignmentsLoading, classFilter, profile.classLevel]);
 
   // Re-fetch this student's "Assignments for you" list — used right after
   // the tab is opened and again after completing one, so Status flips to

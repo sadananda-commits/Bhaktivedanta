@@ -150,9 +150,13 @@ function GuestQuizInner() {
   }, [progress.completedAt, sendGuestLead]);
 
   const goSignIn = useCallback(() => {
-    const qs = new URLSearchParams({ moduleId: moduleId || '' });
+    // classLevel is included so portal.js's deep-link effect can tell when
+    // this module belongs to a different class than the signed-in account
+    // and widen the Question Bank's class scope automatically — see the
+    // deepLinkAppliedRef effect in portal.js.
+    const qs = new URLSearchParams({ moduleId: moduleId || '', classLevel: classLevel || '' });
     router.push(`/portal?${qs.toString()}`);
-  }, [router, moduleId]);
+  }, [router, moduleId, classLevel]);
 
   // Sends a brand-new visitor to the homepage's enrollment section
   // (index.js has no separate /enroll route — it's the #enroll anchor on
