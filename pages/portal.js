@@ -2016,13 +2016,11 @@ function PortalInner({ initialProfile }) {
     const linkClassLevel = params.get('classLevel'); // from a public /quiz share link (see pages/quiz.js)
     const linkSubject    = params.get('subject');     // ditto
     const assignmentId = params.get('assignmentId');
-    console.log('[deep-link] effect running', { moduleId, linkClassLevel, linkSubject, assignmentId, ownClass: profile.classLevel, assignLmodCount: ASSIGN_LMOD.length });
     if (!moduleId && !assignmentId) { deepLinkAppliedRef.current = true; return; }
 
     if (moduleId) {
       const mod = ASSIGN_LMOD.find(m => m['Module ID'] === moduleId);
       if (mod) {
-        console.log('[deep-link] found in own-class ASSIGN_LMOD, opening directly', mod);
         setActiveAssignmentSubject(mod.Subject);
         setActiveModuleId(moduleId);
         setTab('assignments');
@@ -2038,13 +2036,10 @@ function PortalInner({ initialProfile }) {
       // /quiz guest page itself does. This works regardless of class or
       // language and needs no widening/waiting.
       if (linkClassLevel && linkSubject) {
-        console.log('[deep-link] not in own class — fetching directly via override', { linkClassLevel, linkSubject });
         setModuleClassOverrides(prev => ({ ...prev, [moduleId]: linkClassLevel }));
         setActiveAssignmentSubject(linkSubject);
         setActiveModuleId(moduleId);
         setTab('assignments');
-      } else {
-        console.warn('[deep-link] module not found AND missing classLevel/subject in URL — cannot resolve', { linkClassLevel, linkSubject });
       }
       // Either way, we've done everything we can with the info in the URL —
       // stop retrying. (If linkClassLevel/linkSubject were missing, or the
