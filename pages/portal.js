@@ -1968,8 +1968,22 @@ function PortalInner({ initialProfile }) {
   // Reflect the currently open quiz in the URL (via replaceState, so it
   // doesn't spam the browser's back-button history) so the address bar
   // itself becomes the share link the moment a student opens a quiz.
+  //
+  // Guarded on deepLinkAppliedRef (declared just above, used by the
+  // deep-link effect right below this one): right after login, this effect
+  // and the deep-link effect both fire in the same pass (both depend on
+  // `authed`), and this one is declared first — so without the guard, it
+  // would run BEFORE the deep-link effect ever gets to read
+  // window.location.search, see tab is still the default 'dashboard' (state
+  // updates from login haven't applied yet), and delete ?moduleId=... as
+  // "cleanup" a split second before the deep-link effect could use it. This
+  // skip only lasts for that one initial pass — once deep-link resolves
+  // (setting the ref AND triggering a re-render via its own setState calls),
+  // this effect runs again normally on the next pass.
+  const deepLinkAppliedRef = useRef(false);
   useEffect(() => {
     if (!authed || typeof window === 'undefined') return;
+    if (!deepLinkAppliedRef.current) return;
     const params = new URLSearchParams(window.location.search);
     let changed = false;
 
@@ -1993,7 +2007,6 @@ function PortalInner({ initialProfile }) {
   // into the matching quiz. Waits for login + config (and, for assignmentId,
   // for the student's own assignment list to finish loading) before giving
   // up — a link opened while logged out will still work right after login.
-  const deepLinkAppliedRef = useRef(false);
   useEffect(() => {
     if (deepLinkAppliedRef.current) return;
     if (!authed || !cfgReady || typeof window === 'undefined') return;
