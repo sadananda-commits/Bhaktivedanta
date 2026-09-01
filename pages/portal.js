@@ -2000,14 +2000,23 @@ function PortalInner({ initialProfile }) {
       // link can point at any class, so before giving up, widen the scope
       // to "All Classes" (the same toggle students can already pick by hand
       // in the Question Bank header) and let the effect re-run once ASSIGN_LMOD
-      // reflects it. Only try this once per class hint to avoid looping if the
-      // module genuinely doesn't exist.
-      if (linkClassLevel && linkClassLevel !== profile.classLevel && classFilter !== 'all') {
-        setClassFilter('all');
-        return; // re-run on next render with the widened ASSIGN_LMOD
+      // reflects it.
+      if (linkClassLevel && linkClassLevel !== profile.classLevel) {
+        if (classFilter !== 'all') {
+          setClassFilter('all');
+          return; // re-run once classFilter flips
+        }
+        // classFilter is already 'all', but the cross-class module/subject
+        // list (crossClassCfg) loads asynchronously — on the render right
+        // after setClassFilter('all') it's typically still null, so
+        // ASSIGN_LMOD is still built from the own-class fallback and the
+        // module legitimately isn't there YET. Wait for that fetch to land
+        // before concluding the module doesn't exist.
+        if (!crossClassCfg) return; // still loading — try again once it lands
       }
-      // Either no class hint was given, or we already widened and it's still
-      // not there — stop retrying, this module isn't reachable for this account.
+      // Either no class hint was given, or we've widened scope AND the
+      // cross-class data has finished loading and it's still not there —
+      // stop retrying, this module isn't reachable for this account.
       deepLinkAppliedRef.current = true;
       return;
     }
@@ -2018,7 +2027,7 @@ function PortalInner({ initialProfile }) {
       if (row) { setActiveMyAssignmentId(assignmentId); setTab('myassignments'); }
       deepLinkAppliedRef.current = true; // stop trying either way once resolved
     }
-  }, [authed, cfgReady, ASSIGN_LMOD, myAssignments, myAssignmentsLoading, classFilter, profile.classLevel]);
+  }, [authed, cfgReady, ASSIGN_LMOD, myAssignments, myAssignmentsLoading, classFilter, profile.classLevel, crossClassCfg]);
 
   // Re-fetch this student's "Assignments for you" list — used right after
   // the tab is opened and again after completing one, so Status flips to
