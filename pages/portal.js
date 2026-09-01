@@ -1012,6 +1012,21 @@ function PortalInner({ initialProfile }) {
   const [chapterStepsCache, setChapterStepsCache] = useState({}); // { [moduleId]: steps[] }
   const [chapterStepsLoading, setChapterStepsLoading] = useState(null); // moduleId currently loading, or null
   const [chapterStepsError, setChapterStepsError] = useState(null);
+  // chapterModuleMetaCache: module row (Title/Subject/Class/etc.) for a
+  // moduleId that ISN'T in ASSIGN_LMOD's own-class list — populated from the
+  // same fetchChapterSteps() response that already returns it alongside the
+  // steps, so this never costs an extra network call. Used as a fallback for
+  // the `module=` prop / breadcrumb title when a deep-linked module (see
+  // moduleClassOverrides below) belongs to a class outside the student's own.
+  const [chapterModuleMetaCache, setChapterModuleMetaCache] = useState({});
+  // moduleClassOverrides: { [moduleId]: classLevel } — set ONLY for a module
+  // opened via a public /quiz share link's "I already have an account" deep
+  // link (see the deepLinkAppliedRef effect below) when that module belongs
+  // to a different class than the signed-in student. Lets loadChapterSteps
+  // fetch it correctly without touching the (own-class-only, and in Danish
+  // UI entirely disabled) classFilter/crossClassCfg preview system. Keyed by
+  // moduleId, so it never affects any other module the student opens normally.
+  const [moduleClassOverrides, setModuleClassOverrides] = useState({});
 
   const loadChapterSteps = useCallback((classLevel, subject, moduleId) => {
     if (!moduleId || chapterStepsCache[moduleId]) return;
@@ -1020,6 +1035,9 @@ function PortalInner({ initialProfile }) {
     fetchChapterSteps(classLevel, subject, moduleId)
       .then(data => {
         setChapterStepsCache(prev => ({ ...prev, [moduleId]: data?.learningSteps || [] }));
+        if (data?.learningModules?.[0]) {
+          setChapterModuleMetaCache(prev => ({ ...prev, [moduleId]: data.learningModules[0] }));
+        }
       })
       .catch(err => {
         console.error('[portal] Failed to load chapter questions:', err.message);
@@ -1266,8 +1284,8 @@ function PortalInner({ initialProfile }) {
   // (Question Bank flow: subject picked, then a topic card clicked.)
   useEffect(() => {
     if (!activeModuleId) return;
-    loadChapterSteps(profile.classLevel, activeAssignmentSubject, activeModuleId);
-  }, [activeModuleId, activeAssignmentSubject, profile.classLevel, loadChapterSteps]);
+    loadChapterSteps(moduleClassOverrides[activeModuleId] || profile.classLevel, activeAssignmentSubject, activeModuleId);
+  }, [activeModuleId, activeAssignmentSubject, profile.classLevel, moduleClassOverrides, loadChapterSteps]);
 
   // ── Same, for the "Assignments for you" flow (parent/teacher-assigned
   // chapters) — uses the ClassLevel/Subject already present on the
@@ -1983,6 +2001,7 @@ function PortalInner({ initialProfile }) {
     const params = new URLSearchParams(window.location.search);
     const moduleId = params.get('moduleId');
     const linkClassLevel = params.get('classLevel'); // from a public /quiz share link (see pages/quiz.js)
+    const linkSubject    = params.get('subject');     // ditto
     const assignmentId = params.get('assignmentId');
     if (!moduleId && !assignmentId) { deepLinkAppliedRef.current = true; return; }
 
@@ -1995,28 +2014,24 @@ function PortalInner({ initialProfile }) {
         deepLinkAppliedRef.current = true;
         return;
       }
-      // Not found under the current class scope — by default a student only
-      // sees their OWN class's modules (classFilter===null). A shared /quiz
-      // link can point at any class, so before giving up, widen the scope
-      // to "All Classes" (the same toggle students can already pick by hand
-      // in the Question Bank header) and let the effect re-run once ASSIGN_LMOD
-      // reflects it.
-      if (linkClassLevel && linkClassLevel !== profile.classLevel) {
-        if (classFilter !== 'all') {
-          setClassFilter('all');
-          return; // re-run once classFilter flips
-        }
-        // classFilter is already 'all', but the cross-class module/subject
-        // list (crossClassCfg) loads asynchronously — on the render right
-        // after setClassFilter('all') it's typically still null, so
-        // ASSIGN_LMOD is still built from the own-class fallback and the
-        // module legitimately isn't there YET. Wait for that fetch to land
-        // before concluding the module doesn't exist.
-        if (!crossClassCfg) return; // still loading — try again once it lands
+      // Not in the student's own-class Question Bank list. Rather than
+      // depend on the class-preview system (classFilter/crossClassCfg —
+      // which is entirely disabled in Danish UI, since quiz content there is
+      // a static hand-translated set with no per-class pills at all — see
+      // the crossClassCfg fetch effect above), fetch this ONE chapter
+      // directly by moduleId+subject+classLevel, exactly the way the public
+      // /quiz guest page itself does. This works regardless of class or
+      // language and needs no widening/waiting.
+      if (linkClassLevel && linkSubject) {
+        setModuleClassOverrides(prev => ({ ...prev, [moduleId]: linkClassLevel }));
+        setActiveAssignmentSubject(linkSubject);
+        setActiveModuleId(moduleId);
+        setTab('assignments');
       }
-      // Either no class hint was given, or we've widened scope AND the
-      // cross-class data has finished loading and it's still not there —
-      // stop retrying, this module isn't reachable for this account.
+      // Either way, we've done everything we can with the info in the URL —
+      // stop retrying. (If linkClassLevel/linkSubject were missing, or the
+      // fetch above turns out empty, the chapter screen's own "couldn't load"
+      // state — or an empty module — is the honest outcome to show.)
       deepLinkAppliedRef.current = true;
       return;
     }
@@ -2027,7 +2042,7 @@ function PortalInner({ initialProfile }) {
       if (row) { setActiveMyAssignmentId(assignmentId); setTab('myassignments'); }
       deepLinkAppliedRef.current = true; // stop trying either way once resolved
     }
-  }, [authed, cfgReady, ASSIGN_LMOD, myAssignments, myAssignmentsLoading, classFilter, profile.classLevel, crossClassCfg]);
+  }, [authed, cfgReady, ASSIGN_LMOD, myAssignments, myAssignmentsLoading]);
 
   // Re-fetch this student's "Assignments for you" list — used right after
   // the tab is opened and again after completing one, so Status flips to
@@ -3241,7 +3256,7 @@ function PortalInner({ initialProfile }) {
                     <i className="fa-solid fa-chevron-right asgn-crumb-sep" />
                     <span className="asgn-crumb" onClick={()=>setActiveModuleId(null)}>{activeAssignmentSubject}</span>
                     <i className="fa-solid fa-chevron-right asgn-crumb-sep" />
-                    <span className="asgn-crumb-current">{ASSIGN_LMOD.find(m=>m['Module ID']===activeModuleId)?.Title}</span>
+                    <span className="asgn-crumb-current">{(ASSIGN_LMOD.find(m=>m['Module ID']===activeModuleId) || chapterModuleMetaCache[activeModuleId])?.Title}</span>
                     <button className={`asgn-share-btn${shareCopied?' copied':''}`} onClick={copyPublicQuizLink} title="Copy a link anyone can open — no account needed">
                       <i className={`fa-solid ${shareCopied ? 'fa-check' : 'fa-share-nodes'}`} /> {shareCopied ? 'Copied!' : 'Share'}
                     </button>
@@ -3256,7 +3271,7 @@ function PortalInner({ initialProfile }) {
                         <div className="content">
                           <div className="card" style={{textAlign:'center',borderColor:'rgba(239,68,68,.25)'}}>
                             <i className="fa-solid fa-triangle-exclamation" style={{fontSize:'24px',color:'#f87171',marginBottom:'10px',display:'block'}} />
-                            Couldn't load this chapter's questions. <button className="lp-back" onClick={()=>loadChapterSteps(profile.classLevel, activeAssignmentSubject, activeModuleId)}>Try again</button>
+                            Couldn't load this chapter's questions. <button className="lp-back" onClick={()=>loadChapterSteps(moduleClassOverrides[activeModuleId] || profile.classLevel, activeAssignmentSubject, activeModuleId)}>Try again</button>
                           </div>
                         </div>
                       );
@@ -3265,7 +3280,7 @@ function PortalInner({ initialProfile }) {
                     return (
                       <LearningModulePlayer
                         key={activeModuleId}
-                        module={ASSIGN_LMOD.find(m=>m['Module ID']===activeModuleId)}
+                        module={ASSIGN_LMOD.find(m=>m['Module ID']===activeModuleId) || chapterModuleMetaCache[activeModuleId]}
                         steps={fullSteps}
                         progress={learnProgress[activeModuleId]}
                         onSave={patch=>saveLearnProgress(activeModuleId, patch)}
