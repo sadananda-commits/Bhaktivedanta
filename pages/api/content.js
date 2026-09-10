@@ -25,7 +25,7 @@ export default async function handler(req, res) {
       // Return source:'sheets' with empty arrays so index.js still renders fallback gracefully
       return res.status(200).json({ source: 'sheets', _error: '403_redeploy_needed',
         hero:{}, about:[], classes:[], subjects:[], schedules:[], fees:[],
-        testimonials:[], teachers:[], faqs:[], contact:{} });
+        testimonials:[], teachers:[], faqs:[], utilities:[], contact:{} });
     }
 
     if (!r.ok) throw new Error(`HTTP ${r.status}`);

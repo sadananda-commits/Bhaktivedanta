@@ -47,6 +47,11 @@ const FALLBACK = {
     { Icon: 'fa-gamepad',             IconBg: 'rgba(168,85,247,.1)',  IconColor: '#a855f7',      Heading: 'Kahoot-Style Live Quizzes',       Body: 'Teachers and parents run interactive, timed quizzes that make revision genuinely fun — no third-party app required.' },
     { Icon: 'fa-shield-halved',       IconBg: 'rgba(34,197,94,.1)',   IconColor: '#22c55e',      Heading: 'A Safe, Community-Run Space',     Body: 'Built and moderated by people the community already knows and trusts, not an anonymous platform run for profit.' },
   ],
+  utilities: [
+    { Label: 'Question Bank',        Url: '/portal',  Description: 'Practice chapter-wise questions by class and subject with instant feedback.' },
+    { Label: 'Parent & Teacher Portal', Url: '/parent-portal', Description: 'Track student progress, assign chapters, and host live quizzes.' },
+    { Label: 'Community WhatsApp Group', Url: 'https://wa.me/919999999999', Description: 'Get announcements and support directly from the community.' },
+  ],
   contact: {
     whatsappNumber: '919999999999',
     phone:          '+91 99999 99999',
@@ -180,6 +185,7 @@ function HomeInner() {
           subjects:     data.subjects?.length                  ? data.subjects     : FALLBACK.subjects,
           testimonials: data.testimonials?.length              ? data.testimonials : FALLBACK.testimonials,
           faqs:         data.faqs?.length                      ? data.faqs         : FALLBACK.faqs,
+          utilities:    data.utilities?.length                 ? data.utilities    : FALLBACK.utilities,
           contact:      Object.keys(data.contact || {}).length ? data.contact      : FALLBACK.contact,
         });
         // ── Announcement strip: check if the sheet returned an AnnouncementDocUrl
@@ -565,6 +571,25 @@ function HomeInner() {
             .pd-lb-cards{display:block;}
           }
 
+          /* Utilities: links table, fed from the "Utilities" sheet tab */
+          .util-table-wrap{margin-top:26px;}
+          .util-table{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden;}
+          .util-table thead{background:var(--surface-alt);}
+          .util-table th{text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:13px 16px;}
+          .util-table td{padding:15px 16px;font-size:14px;border-top:1px solid var(--border);vertical-align:top;}
+          .util-link{display:inline-flex;align-items:center;gap:8px;font-weight:700;color:var(--navy);text-decoration:none;white-space:nowrap;}
+          .util-link:hover{color:var(--teal);}
+          .util-link i{color:var(--teal);font-size:12px;}
+          .util-desc{color:var(--muted);line-height:1.6;}
+          .util-empty{text-align:center;color:var(--muted);font-size:13px;padding:30px;background:var(--surface-alt);border-radius:12px;margin-top:22px;}
+          .util-cards{display:none;}
+          .util-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:10px;}
+          .util-card .util-link{margin-bottom:6px;}
+          @media(max-width:640px){
+            .util-table-wrap .util-table{display:none;}
+            .util-cards{display:block;}
+          }
+
           .pd-cta{margin-top:44px;padding-top:36px;border-top:1px solid rgba(255,255,255,.08);text-align:center;}
           .pd-cta p{font-size:14px;color:rgba(255,255,255,.6);margin-bottom:16px;}
           @media(max-width:900px){.pd-stats-g{grid-template-columns:1fr 1fr;}.pd-row{grid-template-columns:1fr;}}
@@ -763,6 +788,7 @@ function HomeInner() {
             <a href="#features" className="nl">{t('nav_features')}</a>
             <a href="#classes"  className="nl">{t('nav_classes')}</a>
             <a href="#subjects" className="nl">{t('nav_subjects')}</a>
+            <a href="#utilities" className="nl">Utilities</a>
             <a href="#contact"  className="nl">{t('nav_contact')}</a>
             <a href="/portal"        className="n-portal"><i className="fa-solid fa-lock-open" style={{fontSize:'11px'}}></i> {t('nav_student_login')}</a>
             <a href="/parent-portal" className="n-portal" style={{background:'rgba(168,85,247,.15)',borderColor:'rgba(168,85,247,.3)',color:'#c084fc'}}><i className="fa-solid fa-users-between-lines" style={{fontSize:'11px'}}></i> {t('nav_parent_login')}</a>
@@ -787,6 +813,7 @@ function HomeInner() {
           <a href="#features" className="nl" onClick={()=>setMobileNavOpen(false)}>{t('nav_features')}</a>
           <a href="#classes"  className="nl" onClick={()=>setMobileNavOpen(false)}>{t('nav_classes')}</a>
           <a href="#subjects" className="nl" onClick={()=>setMobileNavOpen(false)}>{t('nav_subjects')}</a>
+          <a href="#utilities" className="nl" onClick={()=>setMobileNavOpen(false)}>Utilities</a>
           <a href="#contact"  className="nl" onClick={()=>setMobileNavOpen(false)}>{t('nav_contact')}</a>
           <a href="/portal"        className="n-portal" style={{marginTop:'10px',textAlign:'center'}}><i className="fa-solid fa-lock-open" style={{fontSize:'11px'}}></i> {t('nav_student_login')}</a>
           <a href="/parent-portal" className="n-portal" style={{textAlign:'center',marginTop:'8px',background:'rgba(168,85,247,.15)',borderColor:'rgba(168,85,247,.3)',color:'#c084fc'}}><i className="fa-solid fa-users-between-lines" style={{fontSize:'11px'}}></i> {t('nav_parent_login')}</a>
@@ -1078,6 +1105,55 @@ function HomeInner() {
               </div>
             ))}
           </div>
+        </div>
+      </section>
+
+      {/* ── UTILITIES ── */}
+      <section id="utilities" className="sec">
+        <div className="sec-in">
+          <p className="sec-lbl">Resources</p>
+          <h2 className="sec-h">Useful Links &amp; Utilities</h2>
+          <p className="sec-sub">Handy tools and resources for students, parents, and teachers — kept up to date from our shared resource sheet.</p>
+
+          {cms.utilities && cms.utilities.length > 0 ? (
+            <div className="util-table-wrap">
+              {/* Desktop/tablet: real table. Mobile: stacked cards (same
+                  breakpoint pattern used by the leaderboard table above). */}
+              <table className="util-table">
+                <thead>
+                  <tr>
+                    <th>Link</th>
+                    <th>Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cms.utilities.map((u, i) => (
+                    <tr key={i}>
+                      <td>
+                        <a href={u.Url} target="_blank" rel="noopener noreferrer" className="util-link">
+                          <i className="fa-solid fa-arrow-up-right-from-square"></i> {u.Label}
+                        </a>
+                      </td>
+                      <td className="util-desc">{u.Description}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              <div className="util-cards">
+                {cms.utilities.map((u, i) => (
+                  <div key={i} className="util-card">
+                    <a href={u.Url} target="_blank" rel="noopener noreferrer" className="util-link">
+                      <i className="fa-solid fa-arrow-up-right-from-square"></i> {u.Label}
+                    </a>
+                    <div className="util-desc">{u.Description}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="util-empty">No links available right now — check back soon.</div>
+          )}
         </div>
       </section>
 
