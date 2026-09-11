@@ -122,7 +122,23 @@ export default async function handler(req, res) {
 
     const stats       = statsRes.ok ? await statsRes.json() : {};
     const leaderboard = leaderboardRes.ok ? await leaderboardRes.json() : {};
-    if (stats.error) throw new Error(stats.error);
+
+    // A problem with the `portalStats` action (bad deployment, transient
+    // Apps Script error, an unexpected row shape in StudentProgress, etc.)
+    // used to `throw` here, which aborted the whole handler and fell into
+    // the catch block below — wiping out the ENTIRE response, including
+    // leaderboardOverall/topPerformers even though those come from the
+    // completely separate `leaderboard` action fetched above and had
+    // nothing to do with whatever broke portalStats. That's the most likely
+    // reason the Top Students list can go empty even when the leaderboard
+    // itself is fine. Now a portalStats failure only zeroes the
+    // portalStats-derived fields (totalStudents, questions attempted/
+    // correct, recentActivity, resultsByDate) — the leaderboard-derived
+    // fields still populate normally.
+    const statsOk = statsRes.ok && !stats.error;
+    if (!statsOk) {
+      console.error('[portal-stats] portalStats action failed:', stats.error || `HTTP ${statsRes.status}`);
+    }
 
     const totalQuestionsAvailable = questionCounts.reduce((sum, n) => sum + n, 0);
     const totalTopicsAvailable    = topicCounts.reduce((sum, n) => sum + n, 0);
@@ -138,10 +154,10 @@ export default async function handler(req, res) {
     };
 
     const payload = {
-      totalStudents:           stats.totalStudents || 0,
+      totalStudents:           statsOk ? (stats.totalStudents || 0) : 0,
       totalQuestionsAvailable: totalQuestionsAvailable,
-      totalQuestionsAttempted: stats.totalQuestionsAttempted || 0,
-      totalCorrectAnswers:     stats.totalCorrectAnswers || 0,
+      totalQuestionsAttempted: statsOk ? (stats.totalQuestionsAttempted || 0) : 0,
+      totalCorrectAnswers:     statsOk ? (stats.totalCorrectAnswers || 0) : 0,
       totalSubjectsAvailable:  totalSubjectsAvailable,
       totalTopicsAvailable:    totalTopicsAvailable,
       topPerformers,
@@ -151,11 +167,12 @@ export default async function handler(req, res) {
       // paginates client-side from this array so there's no need for the
       // client to request more than one page of raw data.
       leaderboardOverall: overall.slice(0, 50),
-      recentActivity: stats.recentActivity || [],
+      recentActivity: statsOk ? (stats.recentActivity || []) : [],
       // NEW — real per-date quiz results (score, points, accuracy), scoped
       // to the requested `days` window. Backs /leaderboard's "Results By
       // Date" tab. Passed through as-is from the Apps Script response.
-      resultsByDate: stats.resultsByDate || [],
+      resultsByDate: statsOk ? (stats.resultsByDate || []) : [],
+      _portalStatsError: statsOk ? undefined : (stats.error || `HTTP ${statsRes.status}`),
     };
     cacheByDays[days] = { data: payload, at: Date.now() };
     res.setHeader('X-Cache', 'MISS');
