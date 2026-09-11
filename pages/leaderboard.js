@@ -40,10 +40,21 @@
 // called with the same `days` param as the ranked leaderboard. If an entry
 // doesn't carry a recognizable date field, it's bucketed under "Undated"
 // rather than dropped.
+//
+// "QUIZ RESULTS" (Online Quizzes): built from /api/quiz-leaderboard, which
+// aggregates every Online Quiz's own `leaderboard` array (Firestore
+// `quizzes/{quizId}.leaderboard`) into one cross-quiz ranking, split into
+// Live and Self-Paced sections the same way OnlineQuizHost.js's own Final
+// Results screen already splits them (`mode !== 'solo'` vs `=== 'solo'`).
+// Unlike the sheet-backed tabs above, quizzes have no subject — the
+// analogous filter here is "Quiz" (which quiz's results to show), and the
+// Window filter is approximate for this tab: no document stores a true
+// "completed at" time, so it uses each player's join time as a stand-in
+// (see pages/api/quiz-leaderboard.js for the full explanation).
 
 import Head from 'next/head';
 import Link from 'next/link';
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 
 const TIME_WINDOWS = [
   { label: 'Today', days: 1 },
@@ -81,12 +92,17 @@ export default function LeaderboardPage() {
   const [sortKey, setSortKey]   = useState('rank');
   const [query, setQuery]       = useState('');
   const [page, setPage]         = useState(0);
-  const [view, setView]         = useState('ranked'); // 'ranked' | 'byDate'
+  const [view, setView]         = useState('ranked'); // 'ranked' | 'byDate' | 'quizzes'
 
   const [data, setData]         = useState(null);   // raw /api/student/leaderboard payload
   const [dataErr, setDataErr]   = useState(false);
   const [stats, setStats]       = useState(null);   // raw /api/portal-stats payload
   const [actErr, setActErr]     = useState(false);
+
+  const [quizData, setQuizData]       = useState(null); // raw /api/quiz-leaderboard payload
+  const [quizErr, setQuizErr]         = useState(false);
+  const [quizFilter, setQuizFilter]   = useState('overall'); // 'overall' | a quiz title
+  const [quizSortKey, setQuizSortKey] = useState('rank');
 
   useEffect(() => {
     let cancelled = false;
@@ -107,6 +123,18 @@ export default function LeaderboardPage() {
       .then(r => r.json())
       .then(d => { if (!cancelled) setStats(d); })
       .catch(() => { if (!cancelled) setActErr(true); });
+    return () => { cancelled = true; };
+  }, [days]);
+
+  // Online Quizzes cross-quiz aggregate — same `days` window as the other
+  // two fetches, so switching Window keeps every tab in sync.
+  useEffect(() => {
+    let cancelled = false;
+    setQuizErr(false);
+    fetch(`/api/quiz-leaderboard?days=${days}`)
+      .then(r => r.json())
+      .then(d => { if (!cancelled) setQuizData(d); })
+      .catch(() => { if (!cancelled) setQuizErr(true); });
     return () => { cancelled = true; };
   }, [days]);
 
@@ -183,6 +211,31 @@ export default function LeaderboardPage() {
   }), [activityByDate]);
 
   const noDatesAtAll = activityByDate.length > 0 && activityByDate.every(([k]) => k === 'Undated');
+
+  const quizList = useMemo(() => quizData?.quizzes || [], [quizData]);
+
+  // section: 'live' | 'solo' — pulls that section's overall or per-quiz
+  // rows, applies the shared name search + this tab's own sort key.
+  // `points` is aliased from `totalScore` so SORTS' 'points' key (shared
+  // with the Ranked tab) works unchanged here.
+  const quizSectionRows = useCallback((section) => {
+    const src = quizData?.[section];
+    if (!src) return [];
+    const raw = quizFilter === 'overall' ? (src.overall || []) : (src.byQuiz?.[quizFilter] || []);
+    const withPoints = raw.map(r => ({ ...r, points: r.totalScore }));
+    const filtered = query.trim()
+      ? withPoints.filter(r => (r.studentName || '').toLowerCase().includes(query.trim().toLowerCase()))
+      : withPoints;
+    return [...filtered].sort((a, b) => {
+      if (quizSortKey === 'points')    return b.points - a.points;
+      if (quizSortKey === 'attempted') return b.attempted - a.attempted;
+      if (quizSortKey === 'accuracy')  return (b.accuracy || 0) - (a.accuracy || 0);
+      return a.rank - b.rank;
+    });
+  }, [quizData, quizFilter, query, quizSortKey]);
+
+  const liveQuizRows = useMemo(() => quizSectionRows('live'), [quizSectionRows]);
+  const soloQuizRows = useMemo(() => quizSectionRows('solo'), [quizSectionRows]);
 
   return (
     <>
@@ -358,13 +411,23 @@ export default function LeaderboardPage() {
               </div>
             </div>
 
-            <div className="lb-fgroup">
-              <span className="lb-flabel">Subject</span>
-              <select className="lb-select" value={subject} onChange={e => setSubject(e.target.value)}>
-                <option value="overall">All Subjects</option>
-                {subjects.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
-            </div>
+            {view !== 'quizzes' ? (
+              <div className="lb-fgroup">
+                <span className="lb-flabel">Subject</span>
+                <select className="lb-select" value={subject} onChange={e => setSubject(e.target.value)}>
+                  <option value="overall">All Subjects</option>
+                  {subjects.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+            ) : (
+              <div className="lb-fgroup">
+                <span className="lb-flabel">Quiz</span>
+                <select className="lb-select" value={quizFilter} onChange={e => setQuizFilter(e.target.value)}>
+                  <option value="overall">All Quizzes</option>
+                  {quizList.map(q => <option key={q.quizId} value={q.title}>{q.title}</option>)}
+                </select>
+              </div>
+            )}
 
             <div className="lb-search">
               <i className="fa-solid fa-magnifying-glass"></i>
@@ -374,6 +437,7 @@ export default function LeaderboardPage() {
             <div className="lb-view-toggle">
               <button className={`lb-pill${view === 'ranked' ? ' on' : ''}`} onClick={() => setView('ranked')}><i className="fa-solid fa-ranking-star"></i> Ranked</button>
               <button className={`lb-pill${view === 'byDate' ? ' on' : ''}`} onClick={() => setView('byDate')}><i className="fa-solid fa-calendar-days"></i> By Date</button>
+              <button className={`lb-pill${view === 'quizzes' ? ' on' : ''}`} onClick={() => setView('quizzes')}><i className="fa-solid fa-gamepad"></i> Quiz Results</button>
             </div>
           </div>
         </div>
@@ -382,8 +446,9 @@ export default function LeaderboardPage() {
           <div className="lb-table-section"><div className="lb-error">Couldn't load the leaderboard right now — please try again shortly.</div></div>
         ) : (
           <>
-            {/* ── Stat cards ── */}
-            <div className="lb-stats">
+            {/* ── Stat cards (Ranked/By-Date tabs only — Quiz Results has its
+                own separate data source, so these totals wouldn't apply) ── */}
+            {view !== 'quizzes' && <div className="lb-stats">
               <div className="lb-stat-c" style={{'--sc': '#22c55e'}}>
                 <div className="lb-stat-ic"><i className="fa-solid fa-users"></i></div>
                 <div className="lb-stat-v">{data ? fmt(summary.totalParticipants) : <span className="lb-skel" />}</div>
@@ -404,7 +469,7 @@ export default function LeaderboardPage() {
                 <div className="lb-stat-v">{data ? `${summary.avgAccuracy}%` : <span className="lb-skel" />}</div>
                 <div className="lb-stat-l">Avg. Accuracy</div>
               </div>
-            </div>
+            </div>}
 
             {view === 'ranked' ? (
               <>
@@ -509,7 +574,7 @@ export default function LeaderboardPage() {
                   </div>
                 </div>
               </>
-            ) : (
+            ) : view === 'byDate' ? (
               /* ── By-date view ── */
               <div className="lb-table-section">
                 <div className="lb-panel">
@@ -570,10 +635,106 @@ export default function LeaderboardPage() {
                   )}
                 </div>
               </div>
+            ) : (
+              /* ── Quiz Results view (Online Quizzes) ── */
+              <div className="lb-table-section" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                {quizErr ? (
+                  <div className="lb-panel"><div className="lb-empty">Couldn't load quiz results right now.</div></div>
+                ) : !quizData ? (
+                  <div className="lb-panel"><div className="lb-empty"><i className="fa-solid fa-circle-notch fa-spin"></i> Loading quiz results…</div></div>
+                ) : (
+                  <>
+                    <QuizResultsPanel
+                      title="Live Quiz Results" icon="fa-tower-broadcast"
+                      rows={liveQuizRows} sortKey={quizSortKey} setSortKey={setQuizSortKey}
+                      emptyLabel="No live quiz results for this filter yet."
+                    />
+                    <QuizResultsPanel
+                      title="Self-Paced Results" icon="fa-person-walking-arrow-right"
+                      rows={soloQuizRows} sortKey={quizSortKey} setSortKey={setQuizSortKey}
+                      emptyLabel="No self-paced quiz results for this filter yet."
+                    />
+                    <div className="lb-note">
+                      Window uses each player's join time as an approximate result date — a
+                      self-paced result can land a little later than when the player actually
+                      finished, since Online Quizzes doesn't record a separate completion time.
+                    </div>
+                  </>
+                )}
+              </div>
             )}
           </>
         )}
       </div>
     </>
+  );
+}
+
+// Shared table/card layout for one Online Quiz results section (Live or
+// Self-Paced) — mirrors the Full Rankings panel's markup/classes above, but
+// capped at 20 rows with no separate pagination (quiz rosters are small
+// enough this hasn't been worth the extra state yet — narrow with the Quiz
+// filter or the name search to see more).
+function QuizResultsPanel({ title, icon, rows, sortKey, setSortKey, emptyLabel }) {
+  const shown = rows.slice(0, 20);
+  return (
+    <div className="lb-panel">
+      <div className="lb-panel-hd">
+        <div className="lb-panel-title"><i className={`fa-solid ${icon}`}></i> {title}</div>
+        <div className="lb-sort-row">
+          {SORTS.map(s => (
+            <button key={s.key} className={`lb-sort-chip${sortKey === s.key ? ' on' : ''}`} onClick={() => setSortKey(s.key)}>
+              <i className={`fa-solid ${s.icon}`}></i> {s.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="lb-empty">{emptyLabel}</div>
+      ) : (
+        <>
+          <table className="lb-table">
+            <thead>
+              <tr>
+                <th>#</th><th>Student</th><th>Quiz</th><th>Questions</th><th>Score</th><th>Accuracy</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((row, i) => (
+                <tr key={`${row.quizId}-${row.participantId}`}>
+                  <td><span className={`lb-rank-badge${i < 3 && sortKey === 'rank' ? ` top${i + 1}` : ''}`}>{i + 1}</span></td>
+                  <td className="lb-name">{row.studentName}</td>
+                  <td>{row.quizTitle}</td>
+                  <td>{row.attempted}</td>
+                  <td><span className="lb-pts-pill"><i className="fa-solid fa-star"></i> {row.points}</span></td>
+                  <td><span className="lb-acc-pill">{row.accuracy}%</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <div className="lb-cards">
+            {shown.map((row, i) => (
+              <div key={`${row.quizId}-${row.participantId}`} className="lb-card">
+                <span className={`lb-rank-badge${i < 3 && sortKey === 'rank' ? ` top${i + 1}` : ''}`}>{i + 1}</span>
+                <div className="lb-card-body">
+                  <div className="lb-name">{row.studentName}</div>
+                  <div className="lb-card-meta">
+                    <span>{row.quizTitle}</span>
+                    <span>{row.points} pts</span>
+                    <span>{row.accuracy}% acc.</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {rows.length > shown.length && (
+            <div className="lb-note">Showing top {shown.length} of {rows.length} — narrow with the Quiz filter or search to see more.</div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
