@@ -79,21 +79,39 @@ async function countQuestionsInTab(sheetId, tabName) {
   }
 }
 
-let cache   = null;
-let cacheAt = 0;
-const TTL   = 60 * 1000;
+// Cache is keyed BY `days` — it used to be a single shared object, which
+// meant the first request with any ?days= value would get cached and then
+// served back to every other caller regardless of what they asked for
+// (including the home page's own all-time stats). Each day-window now gets
+// its own cache slot so /leaderboard's Window filter (Today/7d/30d/90d/All
+// time) and the home page's unscoped call never clobber each other.
+// Restricted to the same allowed windows the leaderboard endpoint uses —
+// anything else collapses to all-time so this object can't grow unbounded
+// from arbitrary query values.
+const ALLOWED_DAYS = new Set([0, 1, 7, 30, 90]);
+const cacheByDays = {};
+const TTL = 60 * 1000;
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).end();
 
-  if (cache && Date.now() - cacheAt < TTL) {
+  const requestedDays = Number(req.query.days);
+  const days = ALLOWED_DAYS.has(requestedDays) ? requestedDays : 0;
+
+  const cached = cacheByDays[days];
+  if (cached && Date.now() - cached.at < TTL) {
     res.setHeader('X-Cache', 'HIT');
-    return res.status(200).json(cache);
+    return res.status(200).json(cached.data);
   }
 
   try {
     const [statsRes, leaderboardRes, questionCounts, topicCounts] = await Promise.all([
-      fetch(`${SCRIPT_URL}?action=portalStats`, { signal: AbortSignal.timeout(12000) }),
+      // `days` scopes portalStats' resultsByDate/questions-attempted feed —
+      // this is the only one of these four calls the Window filter affects.
+      fetch(`${SCRIPT_URL}?action=portalStats&days=${days}`, { signal: AbortSignal.timeout(12000) }),
+      // Top Performers / Top Students stay all-time regardless of `days` —
+      // that section is deliberately framed as an all-time honor roll, not
+      // something the Window filter should reshuffle.
       fetch(`${SCRIPT_URL}?action=leaderboard&days=0`, { signal: AbortSignal.timeout(12000) }),
       Promise.all(Object.keys(SHEETS.subjects).map(name => countQuestionsInTab(SHEETS.subjects[name], 'Learning Steps'))),
       // Total Topics Available (Req #6) — same per-subject sheets, just the
@@ -119,7 +137,7 @@ export default async function handler(req, res) {
       ),
     };
 
-    cache = {
+    const payload = {
       totalStudents:           stats.totalStudents || 0,
       totalQuestionsAvailable: totalQuestionsAvailable,
       totalQuestionsAttempted: stats.totalQuestionsAttempted || 0,
@@ -134,18 +152,22 @@ export default async function handler(req, res) {
       // client to request more than one page of raw data.
       leaderboardOverall: overall.slice(0, 50),
       recentActivity: stats.recentActivity || [],
+      // NEW — real per-date quiz results (score, points, accuracy), scoped
+      // to the requested `days` window. Backs /leaderboard's "Results By
+      // Date" tab. Passed through as-is from the Apps Script response.
+      resultsByDate: stats.resultsByDate || [],
     };
-    cacheAt = Date.now();
+    cacheByDays[days] = { data: payload, at: Date.now() };
     res.setHeader('X-Cache', 'MISS');
-    return res.status(200).json(cache);
+    return res.status(200).json(payload);
 
   } catch (err) {
     console.error('[portal-stats]', err.message);
-    if (cache) { res.setHeader('X-Cache', 'STALE'); return res.status(200).json(cache); }
+    if (cacheByDays[days]) { res.setHeader('X-Cache', 'STALE'); return res.status(200).json(cacheByDays[days].data); }
     return res.status(200).json({
       totalStudents: 0, totalQuestionsAvailable: 0, totalQuestionsAttempted: 0,
       totalCorrectAnswers: 0, totalSubjectsAvailable: 0, totalTopicsAvailable: 0,
-      topPerformers: { overall: null, bySubject: {} }, leaderboardOverall: [], recentActivity: [],
+      topPerformers: { overall: null, bySubject: {} }, leaderboardOverall: [], recentActivity: [], resultsByDate: [],
       _error: err.message,
     });
   }

@@ -31,11 +31,15 @@
 // hasn't started returning it yet, the Points column/card just hides
 // itself instead of showing zeroes.
 //
-// "RESULTS BY DATE": built from /api/portal-stats's `recentActivity` feed,
-// grouped by day. If an activity entry doesn't carry a recognizable date
-// field (checked as date/timestamp/at/attemptedAt), it's bucketed under
-// "Undated" rather than dropped, and a note is shown suggesting the
-// activity log include a date field for a cleaner view.
+// "RESULTS BY DATE": built from /api/portal-stats's `resultsByDate` feed —
+// real per-day quiz results (score, points, accuracy), not just "worked on
+// X". Falls back to the older `recentActivity` feed (no scores) for
+// deployments whose Apps Script hasn't been updated yet, same defensive
+// pattern used for the Points column above. The Window filter (Today/7d/
+// 30d/90d/All time) now also scopes this tab, since /api/portal-stats is
+// called with the same `days` param as the ranked leaderboard. If an entry
+// doesn't carry a recognizable date field, it's bucketed under "Undated"
+// rather than dropped.
 
 import Head from 'next/head';
 import Link from 'next/link';
@@ -81,7 +85,7 @@ export default function LeaderboardPage() {
 
   const [data, setData]         = useState(null);   // raw /api/student/leaderboard payload
   const [dataErr, setDataErr]   = useState(false);
-  const [activity, setActivity] = useState(null);   // portalStats.recentActivity
+  const [stats, setStats]       = useState(null);   // raw /api/portal-stats payload
   const [actErr, setActErr]     = useState(false);
 
   useEffect(() => {
@@ -94,14 +98,26 @@ export default function LeaderboardPage() {
     return () => { cancelled = true; };
   }, [days]);
 
+  // Re-fetched whenever the Window filter changes, so "Results By Date"
+  // respects the same time window as the ranked table.
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/portal-stats')
+    setActErr(false);
+    fetch(`/api/portal-stats?days=${days}`)
       .then(r => r.json())
-      .then(d => { if (!cancelled) setActivity(d?.recentActivity || []); })
+      .then(d => { if (!cancelled) setStats(d); })
       .catch(() => { if (!cancelled) setActErr(true); });
     return () => { cancelled = true; };
-  }, []);
+  }, [days]);
+
+  // Prefer the richer, score-carrying resultsByDate feed; fall back to the
+  // legacy recentActivity feed (no scores) if a deployment hasn't returned
+  // resultsByDate yet.
+  const activity = useMemo(() => {
+    if (!stats) return null;
+    return (stats.resultsByDate && stats.resultsByDate.length) ? stats.resultsByDate : (stats.recentActivity || []);
+  }, [stats]);
+  const hasResultScores = useMemo(() => !!(stats?.resultsByDate && stats.resultsByDate.length), [stats]);
 
   useEffect(() => { setPage(0); }, [days, subject, sortKey, query, view]);
 
@@ -158,8 +174,13 @@ export default function LeaderboardPage() {
         const key = d && !isNaN(d) ? d.toISOString().slice(0, 10) : 'Undated';
         (groups[key] = groups[key] || []).push(a);
       });
-    return Object.entries(groups).sort((a, b) => (a[0] < b[0] ? 1 : -1)).slice(0, 20);
+    return Object.entries(groups).sort((a, b) => (a[0] < b[0] ? 1 : -1)).slice(0, 30);
   }, [activity, subject]);
+
+  const dateSummary = useMemo(() => ({
+    totalResults:   activityByDate.reduce((s, [, items]) => s + items.length, 0),
+    daysShown:      activityByDate.filter(([k]) => k !== 'Undated').length,
+  }), [activityByDate]);
 
   const noDatesAtAll = activityByDate.length > 0 && activityByDate.every(([k]) => k === 'Undated');
 
@@ -286,10 +307,12 @@ export default function LeaderboardPage() {
           .lb-date-tag{font-family:var(--font-d);font-weight:800;font-size:14.5px;}
           .lb-date-count{font-size:11px;color:rgba(255,255,255,.4);font-weight:600;background:rgba(255,255,255,.06);padding:3px 10px;border-radius:100px;}
           .lb-date-items{padding:6px 22px 16px;display:flex;flex-direction:column;gap:2px;}
-          .lb-date-row{display:flex;align-items:flex-start;gap:11px;padding:9px 4px;font-size:13px;color:rgba(255,255,255,.75);line-height:1.6;}
-          .lb-date-dot{width:6px;height:6px;border-radius:50%;background:var(--teal);margin-top:7px;flex-shrink:0;}
+          .lb-date-row{display:flex;align-items:center;gap:11px;padding:9px 4px;font-size:13px;color:rgba(255,255,255,.75);line-height:1.6;flex-wrap:wrap;}
+          .lb-date-dot{width:6px;height:6px;border-radius:50%;background:var(--teal);margin-top:2px;flex-shrink:0;align-self:flex-start;}
+          .lb-date-text{flex:1;min-width:200px;}
           .lb-date-row strong{color:#fff;font-weight:700;}
           .lb-date-subj{color:rgba(255,255,255,.4);}
+          .lb-date-badges{display:flex;align-items:center;gap:6px;flex-shrink:0;margin-left:auto;}
 
           .lb-empty,.lb-error{text-align:center;color:rgba(255,255,255,.4);font-size:13px;padding:44px 20px;}
           .lb-skel{display:inline-block;width:44px;height:22px;border-radius:6px;background:rgba(255,255,255,.08);animation:lbsk 1.4s ease-in-out infinite;}
@@ -492,37 +515,56 @@ export default function LeaderboardPage() {
                 <div className="lb-panel">
                   <div className="lb-panel-hd">
                     <div className="lb-panel-title"><i className="fa-solid fa-calendar-days"></i> Results By Date</div>
+                    {activity && activityByDate.length > 0 && (
+                      <span className="lb-date-count">{fmt(dateSummary.totalResults)} result{dateSummary.totalResults === 1 ? '' : 's'} · {fmt(dateSummary.daysShown)} day{dateSummary.daysShown === 1 ? '' : 's'}</span>
+                    )}
                   </div>
 
                   {actErr ? (
-                    <div className="lb-empty">Couldn't load recent activity right now.</div>
+                    <div className="lb-empty">Couldn't load recent results right now.</div>
                   ) : !activity ? (
-                    <div className="lb-empty"><i className="fa-solid fa-circle-notch fa-spin"></i> Loading activity…</div>
+                    <div className="lb-empty"><i className="fa-solid fa-circle-notch fa-spin"></i> Loading results…</div>
                   ) : activityByDate.length === 0 ? (
-                    <div className="lb-empty">No activity to show for this subject yet.</div>
+                    <div className="lb-empty">No quiz results for this filter combination yet.</div>
                   ) : (
                     <>
                       {activityByDate.map(([dateKey, items]) => (
                         <div key={dateKey} className="lb-date-group">
                           <div className="lb-date-hd">
                             <span className="lb-date-tag">{relativeDay(dateKey)}</span>
-                            <span className="lb-date-count">{items.length} attempt{items.length === 1 ? '' : 's'}</span>
+                            <span className="lb-date-count">{items.length} result{items.length === 1 ? '' : 's'}</span>
                           </div>
                           <div className="lb-date-items">
-                            {items.map((a, i) => (
-                              <div key={i} className="lb-date-row">
-                                <span className="lb-date-dot"></span>
-                                <span>
-                                  <strong>{a.studentName}</strong> worked on <strong>{a.topic || a.subject}</strong>
-                                  {a.subject && a.topic ? <span className="lb-date-subj"> · {a.subject}</span> : null}
-                                </span>
-                              </div>
-                            ))}
+                            {items.map((a, i) => {
+                              const hasScore = typeof a.pointsScored === 'number' && typeof a.maxPoints === 'number';
+                              return (
+                                <div key={i} className="lb-date-row">
+                                  <span className="lb-date-dot"></span>
+                                  <span className="lb-date-text">
+                                    <strong>{a.studentName}</strong>{' '}
+                                    {hasScore
+                                      ? <>scored <strong>{fmt(a.pointsScored)}/{fmt(a.maxPoints)}</strong> on <strong>{a.topic || a.subject || 'a quiz'}</strong></>
+                                      : <>worked on <strong>{a.topic || a.subject}</strong></>}
+                                    {a.subject && (a.topic || hasScore) ? <span className="lb-date-subj"> · {a.subject}</span> : null}
+                                    {hasScore && <span className="lb-date-subj"> · {fmt(a.attempted)} question{a.attempted === 1 ? '' : 's'}</span>}
+                                  </span>
+                                  {hasScore && (
+                                    <span className="lb-date-badges">
+                                      <span className="lb-pts-pill"><i className="fa-solid fa-star"></i> {fmt(a.pointsScored)} pts</span>
+                                      <span className="lb-acc-pill">{a.accuracy}%</span>
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
                       ))}
                       {noDatesAtAll && (
-                        <div className="lb-note">Activity entries here don't carry a date field yet — everything is grouped under "Undated" until the activity feed includes one (date / timestamp / at / attemptedAt).</div>
+                        <div className="lb-note">Results here don't carry a date field yet — everything is grouped under "Undated" until the underlying rows include one (Date / Timestamp).</div>
+                      )}
+                      {!hasResultScores && !noDatesAtAll && (
+                        <div className="lb-note">Showing recent activity without scores — once your Apps Script deployment returns resultsByDate, this view will show full quiz results (points, accuracy, questions answered).</div>
                       )}
                     </>
                   )}
