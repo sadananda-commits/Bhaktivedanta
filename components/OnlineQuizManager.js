@@ -15,6 +15,7 @@ import { quizApi } from '../lib/quizApi';
 import { QuizFonts } from '../lib/quizTheme';
 import QuizQuestionUploader from './QuizQuestionUploader';
 import QuizQuestionManager from './QuizQuestionManager';
+import QuizWorkbookUploader from './QuizWorkbookUploader';
 
 // Short, easy-to-read-aloud host code: no 0/O/1/I so it's unambiguous on a
 // projector or read out over a classroom.
@@ -34,6 +35,7 @@ export default function OnlineQuizManager({ hostEmail }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showCreate, setShowCreate] = useState(false);
+  const [showWorkbookImport, setShowWorkbookImport] = useState(false);
   const [copiedCode, setCopiedCode] = useState(null);
   const [copiedHostCode, setCopiedHostCode] = useState(null);
   const [uploaderForQuiz, setUploaderForQuiz] = useState(null);
@@ -103,12 +105,40 @@ export default function OnlineQuizManager({ hostEmail }) {
           <div className="qxm-h1">Online Quizzes</div>
           <div className="qxm-sub">Create a quiz and host it live for your class</div>
         </div>
-        <button className="qxm-btn qxm-btn-primary" onClick={() => setShowCreate(v => !v)}>
-          <i className={`fa-solid ${showCreate ? 'fa-xmark' : 'fa-plus'}`} /> {showCreate ? 'Cancel' : 'New Quiz'}
-        </button>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <button
+            className="qxm-btn qxm-btn-outline"
+            onClick={() => { setShowWorkbookImport(v => !v); setShowCreate(false); }}
+          >
+            <i className={`fa-solid ${showWorkbookImport ? 'fa-xmark' : 'fa-file-import'}`} /> {showWorkbookImport ? 'Cancel' : 'Import Workbook'}
+          </button>
+          <button
+            className="qxm-btn qxm-btn-primary"
+            onClick={() => { setShowCreate(v => !v); setShowWorkbookImport(false); }}
+          >
+            <i className={`fa-solid ${showCreate ? 'fa-xmark' : 'fa-plus'}`} /> {showCreate ? 'Cancel' : 'New Quiz'}
+          </button>
+        </div>
       </div>
 
       {showCreate && <CreateQuizForm hostEmail={hostEmail} onCreated={() => { setShowCreate(false); load(); }} />}
+
+      {showWorkbookImport && (
+        <div className="qxm-form">
+          <div className="qxm-eyebrow">Bulk create</div>
+          <div className="qxm-h1" style={{ fontSize: 19, marginBottom: 4 }}>Import a Quiz Workbook</div>
+          <p className="qxm-hint" style={{ marginTop: 2 }}>
+            Upload one Excel workbook with a tab per quiz — each tab becomes its own quiz, filled with that
+            tab's questions, in one go. Good for loading a whole term's worth of quizzes at once instead of
+            creating and uploading them one at a time.
+          </p>
+          <QuizWorkbookUploader
+            hostEmail={hostEmail}
+            existingQuizIds={quizzes.map(q => q.quizId)}
+            onImported={load}
+          />
+        </div>
+      )}
 
       {error && <div className="qxm-error">⚠ {error}</div>}
 
