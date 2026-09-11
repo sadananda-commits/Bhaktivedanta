@@ -8,28 +8,30 @@
 // doesn't recompute any scores — it only reads and regroups what each
 // quiz doc already has, then merges across quizzes and re-ranks.
 //
-// DATA SOURCE: reads Firestore directly through lib/firebaseClient.js —
-// the same public, rules-gated client already used for realtime updates
-// elsewhere in the app. firestore.rules allows public read on `quizzes`
-// and its `participants` subcollection, so no firebase-admin / service
-// account is needed for this route. The `participants` read below is a
-// bare `collectionGroup()` call with no where()/orderBy(), so it needs no
-// composite index either.
+// DATA SOURCE: reads Firestore through lib/firebaseAdmin.js using a
+// service account, which bypasses firestore.rules entirely. This route
+// switched from the client SDK (lib/firebaseClient.js) because the
+// public rules were rejecting server-side reads with "Missing or
+// insufficient permissions" — the client SDK always evaluates rules,
+// and there's no authenticated user on the server to satisfy them. The
+// Admin SDK reads as a trusted backend instead, so no rule changes are
+// needed to keep this working. The `participants` read below is a bare
+// collectionGroup() call with no where()/orderBy(), so it needs no
+// composite index.
 //
 // TIME WINDOW — APPROXIMATE: no document anywhere stores a true "result
 // completed at" timestamp. The only real per-answer timestamp
-// (`answers/{id}.answeredAt`) lives in a subcollection firestore.rules
-// explicitly denies public read on, so this route can't see it with the
-// client SDK. Instead it uses each participant's `joinTime` (live) or
-// `soloStartedAt` (solo) as a stand-in for "when this result happened" —
-// accurate for live quizzes (joining and playing happen back-to-back), only
-// approximate for self-paced ones (a player can keep going for a while
-// after joining). If exact per-result timestamps ever matter enough to be
-// worth it, this route would need to move to lib/firebaseAdmin.js so it
-// can read `answers` too.
+// (`answers/{id}.answeredAt`) lives in a subcollection this route still
+// doesn't read from (to keep the query cheap), so it uses each
+// participant's `joinTime` (live) or `soloStartedAt` (solo) as a
+// stand-in for "when this result happened" — accurate for live quizzes
+// (joining and playing happen back-to-back), only approximate for
+// self-paced ones (a player can keep going for a while after joining).
+// Now that this route is on the Admin SDK, reading `answers` directly
+// for exact per-result timestamps is possible if that precision is ever
+// worth the extra read.
 
-import { collection, collectionGroup, getDocs } from 'firebase/firestore';
-import { db } from '../../lib/firebaseClient';
+import { db } from '../../lib/firebaseAdmin';
 
 const ALLOWED_DAYS = new Set([0, 1, 7, 30, 90]);
 const cacheByDays = {};
@@ -66,8 +68,8 @@ export default async function handler(req, res) {
 
   try {
     const [quizzesSnap, participantsSnap] = await Promise.all([
-      getDocs(collection(db, 'quizzes')),
-      getDocs(collectionGroup(db, 'participants')),
+      db.collection('quizzes').get(),
+      db.collectionGroup('participants').get(),
     ]);
 
     // "<quizId>::<participantId>" -> { mode, timestamp } — built once so the
