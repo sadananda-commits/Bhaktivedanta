@@ -49,6 +49,7 @@ const FALLBACK = {
   ],
   utilities: [
     { Label: 'Question Bank',        Url: '/portal',  Description: 'Practice chapter-wise questions by class and subject with instant feedback.' },
+    { Label: 'Leaderboard',          Url: '/leaderboard', Description: 'See where everyone ranks — filter by subject, time window, and date. No login needed.' },
     { Label: 'Parent & Teacher Portal', Url: '/parent-portal', Description: 'Track student progress, assign chapters, and host live quizzes.' },
     { Label: 'Community WhatsApp Group', Url: 'https://wa.me/919999999999', Description: 'Get announcements and support directly from the community.' },
   ],
