@@ -738,15 +738,11 @@ export default function OnlineQuizParticipant({ quizCode }) {
               much later, bumps this list and can see exactly where they
               landed among everyone who's completed it so far. */}
           <h3 className="qx-leaderboard-title">Self-Paced Leaderboard</h3>
-          <ol className="qx-leaderboard">
-            {(soloLeaderboard || []).slice(0, 10).map(r => (
-              <li key={r.participantId} className={r.participantId === participantId ? 'qx-me' : ''}>
-                <span className="qx-lb-rank">#{r.rank}</span>
-                <span className="qx-lb-name">{r.name}</span>
-                <span className="qx-lb-score">{r.totalScore}</span>
-              </li>
-            ))}
-          </ol>
+          <ParticipantResultsTable
+            rows={soloLeaderboard || []}
+            participantId={participantId}
+            emptyLabel="No one has taken this quiz self-paced yet."
+          />
           <button className="qx-btn" style={{ background: 'var(--qx-surface-2)', color: 'var(--qx-text)' }} onClick={() => {
             quizApi.getResults(quizCode).then(r => setSoloLeaderboard(r.leaderboard.filter(x => x.mode === 'solo'))).catch(() => {});
           }}>
@@ -846,32 +842,20 @@ export default function OnlineQuizParticipant({ quizCode }) {
             </div>
           )}
           <h3 className="qx-leaderboard-title">Live Leaderboard</h3>
-          <ol className="qx-leaderboard">
-            {liveLeaderboard.length
-              ? liveLeaderboard.slice(0, 10).map(r => (
-                <li key={r.participantId} className={r.participantId === participantId ? 'qx-me' : ''}>
-                  <span className="qx-lb-rank">#{r.rank}</span>
-                  <span className="qx-lb-name">{r.name}</span>
-                  <span className="qx-lb-score">{r.totalScore}</span>
-                </li>
-              ))
-              : <li><span className="qx-muted">No one played live.</span></li>}
-          </ol>
+          <ParticipantResultsTable
+            rows={liveLeaderboard}
+            participantId={participantId}
+            emptyLabel="No one played live."
+          />
 
           {/* Keeps growing after this screen first loads, since self-paced
               never closes — this section is worth re-checking later. */}
           <h3 className="qx-leaderboard-title">Self-Paced Leaderboard</h3>
-          <ol className="qx-leaderboard">
-            {soloLb.length
-              ? soloLb.slice(0, 10).map(r => (
-                <li key={r.participantId}>
-                  <span className="qx-lb-rank">#{r.rank}</span>
-                  <span className="qx-lb-name">{r.name}</span>
-                  <span className="qx-lb-score">{r.totalScore}</span>
-                </li>
-              ))
-              : <li><span className="qx-muted">No one has taken this quiz self-paced yet.</span></li>}
-          </ol>
+          <ParticipantResultsTable
+            rows={soloLb}
+            participantId={participantId}
+            emptyLabel="No one has taken this quiz self-paced yet."
+          />
           <button className="qx-btn" style={{ background: 'var(--qx-surface-2)', color: 'var(--qx-text)' }} onClick={() => {
             quizApi.getResults(quizCode).then(r => setLeaderboard(r.leaderboard)).catch(() => {});
           }}>
@@ -905,6 +889,37 @@ function Confetti() {
           animationDuration: `${p.duration}s`, transform: `rotate(${p.rotate}deg)`,
         }} />
       ))}
+    </div>
+  );
+}
+
+// Full leaderboard table with correct/incorrect/avg-response columns — same
+// shape as the host's ResultsTable, so participants see exactly what the
+// host sees on the "Final Results" screens. No top-N trimming: every row
+// that's in `rows` gets rendered.
+function ParticipantResultsTable({ rows, participantId, emptyLabel }) {
+  if (!rows || !rows.length) {
+    return <p className="qx-muted" style={{ margin: '0 0 18px' }}>{emptyLabel}</p>;
+  }
+  return (
+    <div className="qx-results-table-scroll">
+      <table className="qx-results-table">
+        <thead>
+          <tr><th>Rank</th><th>Name</th><th>Score</th><th>Correct</th><th>Incorrect</th><th>Avg (ms)</th></tr>
+        </thead>
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.participantId} className={r.participantId === participantId ? 'qx-me' : ''}>
+              <td>{r.rank}</td>
+              <td>{r.name}</td>
+              <td>{r.totalScore}</td>
+              <td>{r.correctAnswers}</td>
+              <td>{r.incorrectAnswers}</td>
+              <td>{r.avgResponseMs}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -1033,6 +1048,12 @@ function ParticipantStyles() {
         font-weight: 700; padding: 10px 16px; border-radius: var(--qx-radius-sm);
         background: var(--qx-surface-2); display: inline-block; margin: 6px 0 4px;
       }
+
+      .qx-results-table-scroll { overflow-x: auto; margin-bottom: 18px; }
+      .qx-results-table { width: 100%; border-collapse: collapse; min-width: 460px; }
+      .qx-results-table th, .qx-results-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--qx-border); }
+      .qx-results-table th { font-family: var(--qx-font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--qx-muted); }
+      .qx-results-table tr.qx-me td { background: var(--qx-accent-dim); font-weight: 700; color: var(--qx-accent); }
 
       .qx-my-result { margin: 16px 0 24px; }
       .qx-my-rank { font-family: var(--qx-font-display); font-size: 28px; font-weight: 600; color: var(--qx-accent); }
