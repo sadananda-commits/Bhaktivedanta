@@ -1,12 +1,24 @@
 // pages/api/quiz-leaderboard.js
 //
-// Aggregates every Online Quiz's own `leaderboard` array (Firestore
-// quizzes/{quizId}.leaderboard — see the fields dump you shared for DAY1)
-// into one cross-quiz leaderboard, split into Live and Self-Paced ("solo")
-// sections — the same split OnlineQuizHost.js's own Final Results screen
-// already uses (`r.mode !== 'solo'` vs `r.mode === 'solo'`). This route
-// doesn't recompute any scores — it only reads and regroups what each
-// quiz doc already has, then merges across quizzes and re-ranks.
+// Aggregates results across every Online Quiz into one cross-quiz
+// leaderboard, split into Live and Self-Paced ("solo") sections — the same
+// split OnlineQuizHost.js's own Final Results screen already uses.
+//
+// LIVE rows come straight from each quiz doc's own `leaderboard` array
+// (Firestore quizzes/{quizId}.leaderboard) — a one-time frozen snapshot
+// pages/api/quiz.js's endQuiz() writes when the host ends the live round,
+// already carrying correctAnswers/incorrectAnswers/avgResponseMs/mode:'live'.
+//
+// SOLO rows do NOT exist anywhere in that array — self-paced never gets
+// "frozen" the way the live cohort does (see quiz.js's own comment above
+// computeSoloLeaderboard: someone can finish a self-paced attempt at any
+// time, indefinitely, so there's no single moment to snapshot). quiz.js
+// instead recomputes solo standings from scratch on every getResults call,
+// straight from each quiz's participants + answers subcollections. This
+// route mirrors that exact computation across every quiz — filtering to
+// participants with mode:'solo' who've actually finished
+// (soloQuestionIndex >= totalQuestions), then scoring each one from their
+// own answers docs — instead of reading a field that would just be empty.
 //
 // GROUPING KEY: per-quiz groups (`byQuiz`) are keyed by quizId (the
 // DAY17-style code from the quiz's URL), not by title — a quiz's title is
@@ -27,21 +39,16 @@
 // insufficient permissions" — the client SDK always evaluates rules,
 // and there's no authenticated user on the server to satisfy them. The
 // Admin SDK reads as a trusted backend instead, so no rule changes are
-// needed to keep this working. The `participants` read below is a bare
-// collectionGroup() call with no where()/orderBy(), so it needs no
-// composite index.
+// needed to keep this working. Both collectionGroup() reads below (
+// `participants` and `answers`) are bare — no where()/orderBy() — so
+// neither needs a composite index.
 //
 // TIME WINDOW — APPROXIMATE: no document anywhere stores a true "result
-// completed at" timestamp. The only real per-answer timestamp
-// (`answers/{id}.answeredAt`) lives in a subcollection this route still
-// doesn't read from (to keep the query cheap), so it uses each
-// participant's `joinTime` (live) or `soloStartedAt` (solo) as a
-// stand-in for "when this result happened" — accurate for live quizzes
-// (joining and playing happen back-to-back), only approximate for
-// self-paced ones (a player can keep going for a while after joining).
-// Now that this route is on the Admin SDK, reading `answers` directly
-// for exact per-result timestamps is possible if that precision is ever
-// worth the extra read.
+// completed at" timestamp. For solo rows this uses the participant's own
+// `soloStartedAt` (falling back to `joinTime`) as a stand-in for "when
+// this result happened" — that's actually when they started their LAST
+// question, not when they finished, so it's approximate the same way the
+// rest of this route already documents. For live rows it uses `joinTime`.
 
 import { db } from '../../lib/firebaseAdmin';
 
@@ -49,8 +56,8 @@ const ALLOWED_DAYS = new Set([0, 1, 7, 30, 90]);
 const cacheByDays = {};
 const TTL = 60 * 1000;
 
-// Same tie-break endQuiz_ used in the pre-Firebase Apps Script version:
-// higher score wins; ties go to whoever answered faster on average.
+// Same tie-break endQuiz() uses in quiz.js: higher score wins; ties go to
+// whoever answered faster on average.
 function rankAndShape(rows) {
   const sorted = [...rows].sort((a, b) =>
     b.totalScore - a.totalScore || (a.avgResponseMs ?? Infinity) - (b.avgResponseMs ?? Infinity)
@@ -99,21 +106,38 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [quizzesSnap, participantsSnap] = await Promise.all([
+    const [quizzesSnap, participantsSnap, answersSnap] = await Promise.all([
       db.collection('quizzes').get(),
       db.collectionGroup('participants').get(),
+      db.collectionGroup('answers').get(),
     ]);
 
-    // "<quizId>::<participantId>" -> { mode, timestamp } — built once so the
-    // per-leaderboard-row loop below is a plain lookup, not a nested query.
-    const participantMeta = {};
+    // "<quizId>::<participantId>" -> participant fields — built once so the
+    // per-quiz loop below is a plain lookup, not a nested query.
+    const participantsByKey = {};
+    // "<quizId>" -> [participant, ...] — same data, grouped for the solo scan.
+    const participantsByQuiz = {};
     participantsSnap.forEach(docSnap => {
       const quizId = docSnap.ref.parent.parent?.id;
       if (!quizId) return;
       const p = docSnap.data();
-      const mode = p.mode === 'solo' ? 'solo' : 'live';
-      const timestamp = mode === 'solo' ? (p.soloStartedAt || p.joinTime) : p.joinTime;
-      participantMeta[`${quizId}::${docSnap.id}`] = { mode, timestamp: timestamp || '' };
+      const entry = { participantId: docSnap.id, ...p };
+      participantsByKey[`${quizId}::${docSnap.id}`] = entry;
+      (participantsByQuiz[quizId] = participantsByQuiz[quizId] || []).push(entry);
+    });
+
+    // "<quizId>::<participantId>" -> [answer, ...] — every answer doc for
+    // that participant on that quiz, used to score finished solo attempts
+    // exactly the way computeSoloLeaderboard() does in quiz.js.
+    const answersByKey = {};
+    answersSnap.forEach(docSnap => {
+      const quizId = docSnap.ref.parent.parent?.id;
+      if (!quizId) return;
+      const a = docSnap.data();
+      const pid = a.participantId;
+      if (!pid) return;
+      const key = `${quizId}::${pid}`;
+      (answersByKey[key] = answersByKey[key] || []).push(a);
     });
 
     const cutoff = days > 0 ? Date.now() - days * 86400000 : 0;
@@ -125,12 +149,13 @@ export default async function handler(req, res) {
       const q = docSnap.data();
       const quizId = q.quizId || docSnap.id;
       const quizTitle = q.title || quizId;
+      const totalQuestions = Number(q.totalQuestions) || 0;
       quizTitleById[quizId] = quizTitle;
 
+      // ── Live: read straight from the frozen snapshot ──
       (q.leaderboard || []).forEach(r => {
-        const meta = participantMeta[`${quizId}::${r.participantId}`];
-        const mode = (r.mode === 'solo' || meta?.mode === 'solo') ? 'solo' : 'live';
-        const timestamp = meta?.timestamp || q.createdAt || '';
+        const participant = participantsByKey[`${quizId}::${r.participantId}`];
+        const timestamp = participant?.joinTime || q.createdAt || '';
 
         if (cutoff) {
           const ms = timestamp ? Date.parse(timestamp) : 0;
@@ -141,7 +166,7 @@ export default async function handler(req, res) {
         const incorrect = r.incorrectAnswers ?? 0;
         const attempted = correct + incorrect;
 
-        const row = {
+        live.push({
           quizId,
           quizTitle,
           participantId: r.participantId,
@@ -153,9 +178,45 @@ export default async function handler(req, res) {
           accuracy: attempted ? Math.round((correct / attempted) * 100) : 0,
           avgResponseMs: typeof r.avgResponseMs === 'number' ? r.avgResponseMs : null,
           timestamp,
-        };
-        (mode === 'solo' ? solo : live).push(row);
+        });
       });
+
+      // ── Solo: never stored — recompute from participants + answers,
+      // same as computeSoloLeaderboard() in quiz.js. Only participants who
+      // have actually finished every question count; someone partway
+      // through their own attempt shouldn't show up with a partial score.
+      (participantsByQuiz[quizId] || [])
+        .filter(p => p.mode === 'solo' && p.status !== 'left' &&
+          totalQuestions > 0 && Number(p.soloQuestionIndex) >= totalQuestions)
+        .forEach(p => {
+          const timestamp = p.soloStartedAt || p.joinTime || q.createdAt || '';
+          if (cutoff) {
+            const ms = timestamp ? Date.parse(timestamp) : 0;
+            if (!ms || ms < cutoff) return; // outside the requested window
+          }
+
+          const mine = answersByKey[`${quizId}::${p.participantId}`] || [];
+          const correct = mine.filter(a => a.isCorrect === true).length;
+          const totalScore = mine.reduce((sum, a) => sum + (Number(a.pointsEarned) || 0), 0);
+          const avgResponseMs = mine.length
+            ? Math.round(mine.reduce((sum, a) => sum + (Number(a.responseDurationMs) || 0), 0) / mine.length)
+            : null;
+          const incorrect = Math.max(0, totalQuestions - correct);
+
+          solo.push({
+            quizId,
+            quizTitle,
+            participantId: p.participantId,
+            studentName: p.name || 'A student',
+            totalScore,
+            correctAnswers: correct,
+            incorrectAnswers: incorrect,
+            attempted: totalQuestions,
+            accuracy: totalQuestions ? Math.round((correct / totalQuestions) * 100) : 0,
+            avgResponseMs,
+            timestamp,
+          });
+        });
     });
 
     // Collapse repeat attempts under the same name (same quiz, same mode)
