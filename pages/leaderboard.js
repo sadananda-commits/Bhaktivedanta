@@ -47,10 +47,14 @@
 // Live and Self-Paced sections the same way OnlineQuizHost.js's own Final
 // Results screen already splits them (`mode !== 'solo'` vs `=== 'solo'`).
 // Unlike the sheet-backed tabs above, quizzes have no subject — the
-// analogous filter here is "Quiz" (which quiz's results to show), and the
-// Window filter is approximate for this tab: no document stores a true
-// "completed at" time, so it uses each player's join time as a stand-in
-// (see pages/api/quiz-leaderboard.js for the full explanation).
+// analogous filter here is "Quiz" (which quiz's results to show, keyed by
+// quizId — the DAY17-style code from the quiz's own URL, not its title),
+// and the Window filter is approximate for this tab: no document stores a
+// true "completed at" time, so it uses each player's join time as a
+// stand-in (see pages/api/quiz-leaderboard.js for the full explanation).
+// That same API also collapses repeat attempts under one name (same quiz,
+// same mode) down to that name's best attempt, since there's no login to
+// tell two attempts by "Priya" apart otherwise.
 
 import Head from 'next/head';
 import Link from 'next/link';
@@ -424,7 +428,11 @@ export default function LeaderboardPage() {
                 <span className="lb-flabel">Quiz</span>
                 <select className="lb-select" value={quizFilter} onChange={e => setQuizFilter(e.target.value)}>
                   <option value="overall">All Quizzes</option>
-                  {quizList.map(q => <option key={q.quizId} value={q.title}>{q.title}</option>)}
+                  {quizList.map(q => (
+                    <option key={q.quizId} value={q.quizId}>
+                      {q.quizId}{q.title && q.title !== q.quizId ? ` — ${q.title}` : ''}
+                    </option>
+                  ))}
                 </select>
               </div>
             )}

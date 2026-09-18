@@ -8,6 +8,18 @@
 // doesn't recompute any scores — it only reads and regroups what each
 // quiz doc already has, then merges across quizzes and re-ranks.
 //
+// GROUPING KEY: per-quiz groups (`byQuiz`) are keyed by quizId (the
+// DAY17-style code from the quiz's URL), not by title — a quiz's title is
+// optional and falls back to its quizId, so keying by title would silently
+// break filtering the day someone actually sets a distinct title.
+//
+// DEDUPE: with no login, a student just retypes their name each attempt,
+// so retaking a quiz (mainly self-paced, which allows replays) used to
+// show up as several rows under one name. dedupeBestPerName() collapses
+// those to that name's single best attempt (by score, then by average
+// response time) before ranking — scoped to one quizId + mode, so it never
+// merges a name across different quizzes or across live vs. solo.
+//
 // DATA SOURCE: reads Firestore through lib/firebaseAdmin.js using a
 // service account, which bypasses firestore.rules entirely. This route
 // switched from the client SDK (lib/firebaseClient.js) because the
@@ -49,9 +61,29 @@ function rankAndShape(rows) {
 
 function groupByQuiz(rows) {
   const groups = {};
-  rows.forEach(r => { (groups[r.quizTitle] = groups[r.quizTitle] || []).push(r); });
+  rows.forEach(r => { (groups[r.quizId] = groups[r.quizId] || []).push(r); });
   Object.keys(groups).forEach(k => { groups[k] = rankAndShape(groups[k]); });
   return groups;
+}
+
+// No login means a student just retypes their name each attempt, so a
+// retaken quiz (mainly self-paced, which allows replays) shows up as
+// several rows under one name. Collapse those down to that name's single
+// best attempt on that quiz, using the same tie-break as rankAndShape:
+// higher score wins, ties go to whoever answered faster on average.
+// Scoped to quizId + mode, so this never touches a name's rows on a
+// *different* quiz or in the other (live/solo) section.
+function dedupeBestPerName(rows) {
+  const bestByKey = {};
+  rows.forEach(r => {
+    const key = `${r.quizId}::${(r.studentName || '').trim().toLowerCase()}`;
+    const existing = bestByKey[key];
+    if (!existing) { bestByKey[key] = r; return; }
+    const better = r.totalScore > existing.totalScore ||
+      (r.totalScore === existing.totalScore && (r.avgResponseMs ?? Infinity) < (existing.avgResponseMs ?? Infinity));
+    if (better) bestByKey[key] = r;
+  });
+  return Object.values(bestByKey);
 }
 
 export default async function handler(req, res) {
@@ -126,9 +158,16 @@ export default async function handler(req, res) {
       });
     });
 
+    // Collapse repeat attempts under the same name (same quiz, same mode)
+    // down to that name's best attempt before either ranking kicks in, so
+    // a retaken quiz can't inflate "overall" with duplicate rows or push
+    // someone else out of a per-quiz leaderboard.
+    const dedupedLive = dedupeBestPerName(live);
+    const dedupedSolo = dedupeBestPerName(solo);
+
     const payload = {
-      live: { overall: rankAndShape(live).slice(0, 500), byQuiz: groupByQuiz(live) },
-      solo: { overall: rankAndShape(solo).slice(0, 500), byQuiz: groupByQuiz(solo) },
+      live: { overall: rankAndShape(dedupedLive).slice(0, 500), byQuiz: groupByQuiz(dedupedLive) },
+      solo: { overall: rankAndShape(dedupedSolo).slice(0, 500), byQuiz: groupByQuiz(dedupedSolo) },
       quizzes: Object.entries(quizTitleById).map(([quizId, title]) => ({ quizId, title })),
     };
 
