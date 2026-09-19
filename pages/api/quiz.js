@@ -188,28 +188,56 @@ function computeScore(isCorrect, responseDurationMs, timeLimitSec, qDoc, quizDat
   return Math.round(minPoints + (questionPoints - minPoints) * fractionRemaining);
 }
 
-// Running leaderboard computed from every answer submitted so far — used to
-// show "where do I stand" after each round, distinct from the frozen
-// `leaderboard` field written once at endQuiz.
-async function computeStandings(quizId) {
-  const [participantsSnap, answersSnap] = await Promise.all([
-    db.collection('quizzes').doc(quizId).collection('participants').get(),
-    db.collection('quizzes').doc(quizId).collection('answers').get(),
-  ]);
-  const answers = answersSnap.docs.map(d => d.data());
+// Reads one participant's aggregate score/correct/response-time totals.
+// Prefers the running totals submitAnswer/submitSoloAnswer now maintain on
+// the participant doc itself (zero extra reads). Falls back to a single
+// SCOPED query of just this participant's own answers — bounded by however
+// many questions exist, never by how many other people have played — for
+// participant docs written before this change, so old data keeps working
+// correctly while it ages out naturally.
+async function participantAggregate(quizRef, pDoc) {
+  const participant = pDoc.data();
+  if (typeof participant.runningAnsweredCount === 'number') {
+    return {
+      totalScore: Number(participant.runningScore) || 0,
+      correctCount: Number(participant.runningCorrectCount) || 0,
+      answeredCount: participant.runningAnsweredCount,
+      responseMsSum: Number(participant.runningResponseMsSum) || 0,
+    };
+  }
+  const snap = await quizRef.collection('answers').where('participantId', '==', pDoc.id).get();
+  const mine = snap.docs.map(d => d.data());
+  return {
+    totalScore: mine.reduce((sum, a) => sum + (Number(a.pointsEarned) || 0), 0),
+    correctCount: mine.filter(a => a.isCorrect === true).length,
+    answeredCount: mine.length,
+    responseMsSum: mine.reduce((sum, a) => sum + (Number(a.responseDurationMs) || 0), 0),
+  };
+}
 
-  const standings = participantsSnap.docs
+// Running leaderboard computed from every participant's own running totals —
+// used to show "where do I stand" after each round, distinct from the
+// frozen `leaderboard` field written once at endQuiz.
+//
+// Takes an already-fetched participantsSnap (the caller, broadcastQuestionEnded,
+// needs one anyway for its own participantCount) instead of fetching its own
+// copy, and no longer touches the `answers` collection at all for anyone
+// with running totals — see the Sept 2026 read-quota incident this fixed:
+// this used to re-read every answer ever submitted, every single question,
+// an O(questions²) cost that scaled with both quiz length and class size.
+async function computeStandings(quizRef, participantsSnap) {
+  const eligible = participantsSnap.docs.filter(pDoc =>
     // Self-paced takers are excluded from the LIVE running standings shown
     // between questions — their scores aren't "final" yet and mixing them
     // in would blur the Live/Self-Paced split that's meant to only really
     // show up in the final results (see endQuiz).
-    .filter(pDoc => pDoc.data().status !== 'left' && !isSolo(pDoc.data()))
-    .map(pDoc => {
-      const participant = pDoc.data();
-      const mine = answers.filter(a => a.participantId === pDoc.id);
-      const totalScore = mine.reduce((sum, a) => sum + (Number(a.pointsEarned) || 0), 0);
-      return { participantId: pDoc.id, name: participant.name, totalScore };
-    });
+    pDoc.data().status !== 'left' && !isSolo(pDoc.data())
+  );
+
+  const standings = await Promise.all(eligible.map(async (pDoc) => {
+    const agg = await participantAggregate(quizRef, pDoc);
+    return { participantId: pDoc.id, name: pDoc.data().name, totalScore: agg.totalScore };
+  }));
 
   standings.sort((a, b) => b.totalScore - a.totalScore);
   standings.forEach((r, i) => { r.rank = i + 1; });
@@ -710,7 +738,7 @@ async function broadcastQuestionEnded(quizId, quizRef, qNum) {
   const incorrectCount = answers.length - correctCount; // among those who answered
   const noAnswerCount = Math.max(0, participantCount - answers.length); // timed out with nothing submitted
 
-  const standings = await computeStandings(quizId);
+  const standings = await computeStandings(quizRef, participantsSnap);
 
   await quizRef.update({
     reveal: {
@@ -752,7 +780,16 @@ async function submitAnswer(p) {
   // transaction here makes "does it already exist" and "write it" atomic,
   // which is actually a stronger guarantee than the original Sheets-based
   // check had.
+  //
+  // Also maintains running totals (score/correct/responseMs/answered count)
+  // directly on the participant doc — see the big comment above
+  // computeStandings for why: without these, showing "standings so far"
+  // after every question meant re-reading every answer ever submitted, an
+  // O(questions²) cost that was the real driver of a Sept 2026 read-quota
+  // incident. `.set(..., {merge:true})` rather than `.update()` so this
+  // still works even if a participant doc were ever missing these fields.
   const answerRef = quizRef.collection('answers').doc(`${p.participantId}_${qNum}`);
+  const participantRef = quizRef.collection('participants').doc(p.participantId);
   await db.runTransaction(async (txn) => {
     const existing = await txn.get(answerRef);
     if (existing.exists) throw new Error('Already answered this question.');
@@ -766,6 +803,12 @@ async function submitAnswer(p) {
       pointsEarned,
     });
     txn.update(quizRef, { answeredCount: FieldValue.increment(1) });
+    txn.set(participantRef, {
+      runningScore: FieldValue.increment(pointsEarned),
+      runningCorrectCount: FieldValue.increment(isCorrect ? 1 : 0),
+      runningAnsweredCount: FieldValue.increment(1),
+      runningResponseMsSum: FieldValue.increment(responseDurationMs),
+    }, { merge: true });
   });
 
   // Personal feedback goes back in the direct HTTP response, not the
@@ -882,11 +925,7 @@ async function endQuiz(p) {
   const idx = Number(quizData.currentQuestionIndex);
   if (idx >= 0) await broadcastQuestionEnded(quizId, quizRef, idx + 1);
 
-  const [participantsSnap, answersSnap] = await Promise.all([
-    quizRef.collection('participants').get(),
-    quizRef.collection('answers').get(),
-  ]);
-  const answers = answersSnap.docs.map(d => d.data());
+  const participantsSnap = await quizRef.collection('participants').get();
   const totalQuestions = Number(quizData.totalQuestions) || 0;
 
   // Only the LIVE cohort gets scored/frozen here — self-paced participants
@@ -895,31 +934,27 @@ async function endQuiz(p) {
   // joinSoloQuiz), so there's no single moment where "final" self-paced
   // results could ever be frozen — getResults below recomputes those fresh
   // on every call instead.
-  const liveResults = participantsSnap.docs
+  const liveResults = await Promise.all(participantsSnap.docs
     .filter(pDoc => pDoc.data().status !== 'left' && !isSolo(pDoc.data()))
-    .map(pDoc => {
+    .map(async (pDoc) => {
       const participant = pDoc.data();
-      const mine = answers.filter(a => a.participantId === pDoc.id);
-      const correct = mine.filter(a => a.isCorrect === true).length;
-      const totalScore = mine.reduce((sum, a) => sum + (Number(a.pointsEarned) || 0), 0);
-      const avgResponseMs = mine.length
-        ? Math.round(mine.reduce((s, a) => s + (Number(a.responseDurationMs) || 0), 0) / mine.length)
-        : 0;
+      const agg = await participantAggregate(quizRef, pDoc);
+      const avgResponseMs = agg.answeredCount ? Math.round(agg.responseMsSum / agg.answeredCount) : 0;
       return {
         participantId: pDoc.id,
         // Matches what OnlineQuizHost.js's Final Results screen and CSV
         // export actually read (r.name / r.rank) — same shape getResults
         // below returns.
         name: participant.name,
-        totalScore,
+        totalScore: agg.totalScore,
         // Counted against the total question count, not just answered ones —
         // a skipped/timed-out question is still an incorrect, not invisible.
-        correctAnswers: correct,
-        incorrectAnswers: Math.max(0, totalQuestions - correct),
+        correctAnswers: agg.correctCount,
+        incorrectAnswers: Math.max(0, totalQuestions - agg.correctCount),
         avgResponseMs,
         mode: 'live',
       };
-    });
+    }));
 
   liveResults.sort((a, b) => b.totalScore - a.totalScore || a.avgResponseMs - b.avgResponseMs);
   liveResults.forEach((r, i) => { r.rank = i + 1; });
@@ -1093,6 +1128,11 @@ async function submitSoloAnswer(p) {
 
   // Same doc-ID-as-guard trick as the live submitAnswer — participantId_qNum
   // makes "already exists" and "write it" atomic inside the transaction.
+  // Also maintains the same running totals used on the live side (see the
+  // comment in submitAnswer / above computeSoloLeaderboard) — solo's own
+  // O(n²) cost was actually worse than live's, since computeSoloLeaderboard
+  // re-scans EVERY solo participant's ENTIRE answer history on EVERY single
+  // completion, not just once per question.
   const answerRef = quizRef.collection('answers').doc(`${p.participantId}_${qNum}`);
   await db.runTransaction(async (txn) => {
     const existing = await txn.get(answerRef);
@@ -1106,6 +1146,12 @@ async function submitSoloAnswer(p) {
       responseDurationMs,
       pointsEarned,
     });
+    txn.set(participantRef, {
+      runningScore: FieldValue.increment(pointsEarned),
+      runningCorrectCount: FieldValue.increment(isCorrect ? 1 : 0),
+      runningAnsweredCount: FieldValue.increment(1),
+      runningResponseMsSum: FieldValue.increment(responseDurationMs),
+    }, { merge: true });
   });
 
   // No leaderboard-patching needed here (unlike an earlier version of this
@@ -1162,59 +1208,76 @@ async function soloNextQuestion(p) {
 // (reload-after-finishing) for the exact same reason.
 async function soloCompletionPayload(quizRef, quizData, participantId, participant) {
   const totalQuestions = Number(quizData.totalQuestions) || 0;
-  const answersSnap = await quizRef.collection('answers').where('participantId', '==', participantId).get();
-  const answers = answersSnap.docs.map(d => d.data());
-  const correct = answers.filter(a => a.isCorrect === true).length;
+  // `participant` here was read at the top of soloNextQuestion, strictly
+  // after the last submitSoloAnswer for this attempt already committed —
+  // so its running totals are already final. Falls back to a scoped
+  // per-participant answers read only for a pre-migration doc missing
+  // those fields (see participantAggregate's own comment for why).
+  let totalScore, correct, answeredCount;
+  if (typeof participant.runningAnsweredCount === 'number') {
+    totalScore = Number(participant.runningScore) || 0;
+    correct = Number(participant.runningCorrectCount) || 0;
+    answeredCount = participant.runningAnsweredCount;
+  } else {
+    const answersSnap = await quizRef.collection('answers').where('participantId', '==', participantId).get();
+    const answers = answersSnap.docs.map(d => d.data());
+    correct = answers.filter(a => a.isCorrect === true).length;
+    totalScore = answers.reduce((sum, a) => sum + (Number(a.pointsEarned) || 0), 0);
+    answeredCount = answers.length;
+  }
   const summary = {
     name: participant.name,
-    totalScore: answers.reduce((sum, a) => sum + (Number(a.pointsEarned) || 0), 0),
+    totalScore,
     correctAnswers: correct,
-    incorrectAnswers: Math.max(0, answers.length - correct),
-    questionsAnswered: answers.length,
+    incorrectAnswers: Math.max(0, answeredCount - correct),
+    questionsAnswered: answeredCount,
     totalQuestions,
   };
   const leaderboard = await computeSoloLeaderboard(quizRef, totalQuestions);
   return { summary, leaderboard };
 }
 
-// Computes the self-paced leaderboard FROM SCRATCH every time it's called —
-// there's no stored/frozen version of this, unlike the live cohort's
-// leaderboard field (see endQuiz). That's deliberate: self-paced
-// participants can finish at any time, indefinitely, so "the" self-paced
-// ranking is only ever "as of right now" — every call here IS the report
-// updating "as and when anyone else takes the test".
+// Computes the self-paced leaderboard from every finished participant's own
+// running totals — there's no stored/frozen version of this, unlike the
+// live cohort's leaderboard field (see endQuiz). Self-paced participants can
+// finish at any time, indefinitely, so "the" self-paced ranking is only
+// ever "as of right now" — every call here IS the report updating "as and
+// when anyone else takes the test".
+//
+// This used to ALSO re-read every answer ever submitted by anyone, on every
+// single call — and because it's called on every solo completion (not just
+// once per question, like the live side), this was actually the worse of
+// the two O(n²) costs behind the Sept 2026 read-quota incident: 34 people
+// finishing one quiz meant 34 full re-scans of an answers collection that
+// kept growing underneath them. Now it only reads `participants` — no
+// `answers` read at all for anyone with running totals — via the same
+// participantAggregate() helper computeStandings uses.
 //
 // Only counts participants who've actually FINISHED (soloQuestionIndex >=
 // totalQuestions) — someone three questions into their own attempt
 // shouldn't show up mid-list with an inflated partial score.
 async function computeSoloLeaderboard(quizRef, totalQuestions) {
-  const [participantsSnap, answersSnap] = await Promise.all([
-    quizRef.collection('participants').get(),
-    quizRef.collection('answers').get(),
-  ]);
-  const answers = answersSnap.docs.map(d => d.data());
+  const participantsSnap = await quizRef.collection('participants').get();
 
-  const rows = participantsSnap.docs
-    .filter(pDoc => pDoc.data().status !== 'left' && isSolo(pDoc.data()) &&
-      Number(pDoc.data().soloQuestionIndex) >= totalQuestions)
-    .map(pDoc => {
-      const participant = pDoc.data();
-      const mine = answers.filter(a => a.participantId === pDoc.id);
-      const correct = mine.filter(a => a.isCorrect === true).length;
-      const totalScore = mine.reduce((sum, a) => sum + (Number(a.pointsEarned) || 0), 0);
-      const avgResponseMs = mine.length
-        ? Math.round(mine.reduce((s, a) => s + (Number(a.responseDurationMs) || 0), 0) / mine.length)
-        : 0;
-      return {
-        participantId: pDoc.id,
-        name: participant.name,
-        totalScore,
-        correctAnswers: correct,
-        incorrectAnswers: Math.max(0, totalQuestions - correct),
-        avgResponseMs,
-        mode: 'solo',
-      };
-    });
+  const finished = participantsSnap.docs.filter(pDoc =>
+    pDoc.data().status !== 'left' && isSolo(pDoc.data()) &&
+    Number(pDoc.data().soloQuestionIndex) >= totalQuestions
+  );
+
+  const rows = await Promise.all(finished.map(async (pDoc) => {
+    const participant = pDoc.data();
+    const agg = await participantAggregate(quizRef, pDoc);
+    const avgResponseMs = agg.answeredCount ? Math.round(agg.responseMsSum / agg.answeredCount) : 0;
+    return {
+      participantId: pDoc.id,
+      name: participant.name,
+      totalScore: agg.totalScore,
+      correctAnswers: agg.correctCount,
+      incorrectAnswers: Math.max(0, totalQuestions - agg.correctCount),
+      avgResponseMs,
+      mode: 'solo',
+    };
+  }));
 
   rows.sort((a, b) => b.totalScore - a.totalScore || a.avgResponseMs - b.avgResponseMs);
   rows.forEach((r, i) => { r.rank = i + 1; });
