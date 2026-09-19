@@ -82,6 +82,9 @@ const FALLBACK = {
 
 function HomeInner() {
   const { lang, t } = useLanguage();
+  // Inline EN/DA picker for the new enrolment strings (Adult + merged Parent/Teacher).
+  // Move these into lib/i18n later if you prefer everything in one place.
+  const L = (en, da) => (lang === 'da' ? da : en);
   // Canonical English subject names (as recorded by the backend/leaderboard,
   // see pages/portal.js's onAnswer call) mapped to their Danish display
   // names, for showing translated subject names next to backend-supplied
@@ -239,8 +242,11 @@ function HomeInner() {
 
   const [formStatus, setFormStatus] = useState({ state: 'idle', studentId: '', username: '', tempPassword: '', note: '' });
   const [openFaq, setOpenFaq]       = useState(null);
-  // Role selector: null = not yet chosen, 'Student'/'Parent'/'Teacher' = chosen
+  // Role selector: null = not yet chosen, otherwise 'Student' | 'Adult' | 'ParentTeacher'.
+  // Inside the merged Parent/Guardian-or-Teacher form, ptRole holds the actual
+  // role sent to /api/enroll-pt ('Parent' | 'Teacher').
   const [enrollRole, setEnrollRole] = useState(null);
+  const [ptRole, setPtRole]         = useState('');
   const [step, setStep]             = useState(1);
 
   // ── Resume-into-quiz support ─────────────────────────────────────────────
@@ -267,12 +273,6 @@ function HomeInner() {
     parentName: '', email: '', phone: '', emergencyContact: '', address: '',
     teacherId: '', timeSlot: '', learningMode: '', subjects: [],
   });
-  // Parent / Teacher form data (separate — never mixes with student fields)
-  const [ptFormData, setPtFormData] = useState({
-    fullName: '', email: '', phone: '', address: '',
-    linkedStudentId: '', subject: '', qualification: '',
-  });
-
   const saveStepAndAdvance = (e, nextStep) => {
     const fd = new FormData(e.currentTarget.closest('form'));
     const updates = {};
@@ -320,37 +320,62 @@ function HomeInner() {
     }
   };
 
-  // ── PT form: save details and advance to confirm step ───────────────────
-  const saveStepAndAdvancePT = (e, nextStep) => {
-    const fd = new FormData(e.currentTarget.closest('form'));
-    setPtFormData(prev => ({
-      ...prev,
-      fullName:        fd.get('fullName')        || prev.fullName,
-      email:           fd.get('email')           || prev.email,
-      phone:           fd.get('phone')           || prev.phone,
-      address:         fd.get('address')         || prev.address,
-      linkedStudentId: fd.get('linkedStudentId') || prev.linkedStudentId,
-      subject:         fd.get('subject')         || prev.subject,
-      qualification:   fd.get('qualification')   || prev.qualification,
-    }));
-    setStep(nextStep);
-  };
-
-  // ── Parent / Teacher registration submit ────────────────────────────────
+  // ── Parent / Guardian or Teacher registration (single page) ─────────────
   const handleEnrollPT = async (e) => {
     e.preventDefault();
-    setFormStatus({ state: 'loading', studentId: '', username: '', tempPassword: '' });
+    if (!ptRole) return; // the required radio normally blocks this first
+    const fd = new FormData(e.currentTarget);
+    const body = {
+      role:            ptRole,
+      fullName:        fd.get('fullName')  || '',
+      email:           fd.get('email')     || '',
+      phone:           fd.get('phone')     || '',
+      address:         fd.get('address')   || '',
+      linkedStudentId: ptRole === 'Parent'  ? (fd.get('linkedStudentId') || '') : '',
+      subject:         ptRole === 'Teacher' ? (fd.get('subject')         || '') : '',
+      qualification:   ptRole === 'Teacher' ? (fd.get('qualification')   || '') : '',
+    };
+    setFormStatus({ state: 'loading', studentId: '', username: '', tempPassword: '', note: '' });
     try {
       const res  = await fetch('/api/enroll-pt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role: enrollRole, ...ptFormData }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (res.ok && data.success) {
         setFormStatus({ state: 'success', studentId: data.id, username: data.username, tempPassword: data.tempPassword, note: data.note || '' });
-        setPtFormData({ fullName:'', email:'', phone:'', address:'', linkedStudentId:'', subject:'', qualification:'' });
         setStep(1);
+      } else {
+        setFormStatus({ state: 'error', message: data.message || t('f_generic_error'), studentId: '', username: '', tempPassword: '' });
+      }
+    } catch {
+      setFormStatus({ state: 'error', message: t('f_connection_failed'), studentId: '', username: '', tempPassword: '' });
+    }
+  };
+
+  // ── Adult registration (single page, question-bank access) ──────────────
+  const handleEnrollAdult = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    const body = {
+      fullName:    fd.get('fullName') || '',
+      dob:         fd.get('dob')      || '',
+      email:       fd.get('email')    || '',
+      gender:      fd.get('gender')   || '',
+      phone:       fd.get('phone')    || '',
+      gdprConsent: fd.get('gdprConsent') === 'on',
+    };
+    setFormStatus({ state: 'loading', studentId: '', username: '', tempPassword: '', note: '' });
+    try {
+      const res  = await fetch('/api/enroll-adult', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setFormStatus({ state: 'success', studentId: data.studentId, username: data.username, tempPassword: data.tempPassword, note: '' });
       } else {
         setFormStatus({ state: 'error', message: data.message || t('f_generic_error'), studentId: '', username: '', tempPassword: '' });
       }
@@ -362,6 +387,8 @@ function HomeInner() {
   // ── Convenience shorthands ──────────────────────────────────────────────
   const h = cms.hero;
   const c = cms.contact;
+  // Latest allowed date of birth for the Adult form (today minus 18 years).
+  const adultMaxDob = (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 18); return d.toISOString().slice(0, 10); })();
 
   // Derive the table's row data once per render from the raw ranked list.
   // `attempted` isn't guaranteed present on every backend row (see the
@@ -696,6 +723,12 @@ function HomeInner() {
           .role-card-desc{font-size:12px;color:rgba(255,255,255,.5);line-height:1.5;}
           .role-card-arrow{font-size:12px;color:rgba(255,255,255,.3);margin-top:4px;}
           @media(max-width:640px){.role-selector-g{grid-template-columns:1fr;}}
+          .pill-g{display:flex;flex-wrap:wrap;gap:10px;}
+          .pill{display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);color:rgba(255,255,255,.8);font-size:14px;cursor:pointer;transition:all .2s;}
+          .pill:hover{background:rgba(255,255,255,.1);}
+          .pill input{accent-color:var(--teal);}
+          .consent-box{display:flex;gap:12px;align-items:flex-start;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:14px 16px;font-size:13px;color:rgba(255,255,255,.7);line-height:1.7;cursor:pointer;margin:6px 0 18px;}
+          .consent-box input{margin-top:4px;accent-color:var(--teal);flex-shrink:0;width:16px;height:16px;}
           .steps{display:flex;gap:0;margin-bottom:36px;}
           .step-item{flex:1;display:flex;flex-direction:column;align-items:center;position:relative;}
           .step-item:not(:last-child)::after{content:'';position:absolute;top:18px;left:50%;width:100%;height:2px;background:rgba(255,255,255,.1);}
@@ -1228,16 +1261,16 @@ function HomeInner() {
                 </div>
                 <div>
                   <div style={{fontWeight:800,fontSize:'17px',color:'#fff'}}>
-                    {enrollRole === 'Student' ? t('f_success_title') : t('f_pt_success_title')}
+                    {enrollRole === 'Student' ? t('f_success_title') : enrollRole === 'Adult' ? L("You're registered!", 'Du er tilmeldt!') : t('f_pt_success_title')}
                   </div>
                   <div style={{fontSize:'12px',color:'rgba(255,255,255,.5)'}}>
-                    {enrollRole === 'Student' ? t('f_success_sub') : t('f_pt_success_sub')}
+                    {enrollRole === 'Student' ? t('f_success_sub') : enrollRole === 'Adult' ? L('Your profile is ready — log in to start practising.', 'Din profil er klar — log ind for at begynde at øve dig.') : t('f_pt_success_sub')}
                   </div>
                 </div>
               </div>
               <div className="cred-g">
                 <div className="cred-box">
-                  <div className="cred-lbl">{enrollRole === 'Student' ? t('f_cred_student_id') : t('f_pt_cred_id')}</div>
+                  <div className="cred-lbl">{enrollRole === 'Student' ? t('f_cred_student_id') : enrollRole === 'Adult' ? L('Your ID', 'Dit ID') : t('f_pt_cred_id')}</div>
                   <div className="cred-val" style={{color:'var(--teal)'}}>{formStatus.studentId}</div>
                 </div>
                 <div className="cred-box">
@@ -1257,10 +1290,12 @@ function HomeInner() {
               <p style={{fontSize:'12px',color:'rgba(255,255,255,.45)',marginBottom:'20px',lineHeight:1.7}}>{t('f_cred_warning')}</p>
               {enrollRole === 'Student'
                 ? <a href={resumeModuleId ? `/portal?moduleId=${encodeURIComponent(resumeModuleId)}` : '/portal'} className="btn btn-accent"><i className="fa-solid fa-arrow-right-to-bracket"></i> {t('f_go_to_portal')}</a>
+                : enrollRole === 'Adult'
+                ? <a href="/portal" className="btn btn-accent"><i className="fa-solid fa-arrow-right-to-bracket"></i> {t('f_go_to_portal')}</a>
                 : <a href="/parent-portal" className="btn btn-accent"><i className="fa-solid fa-arrow-right-to-bracket"></i> {t('f_pt_go_to_portal')}</a>
               }
               <button
-                onClick={()=>{ setFormStatus({state:'idle',studentId:'',username:'',tempPassword:'',note:''}); setEnrollRole(null); setStep(1); }}
+                onClick={()=>{ setFormStatus({state:'idle',studentId:'',username:'',tempPassword:'',note:''}); setEnrollRole(null); setPtRole(''); setStep(1); }}
                 style={{display:'block',marginTop:'14px',background:'none',border:'none',color:'rgba(255,255,255,.4)',fontSize:'12px',cursor:'pointer',textDecoration:'underline'}}>
                 Register someone else
               </button>
@@ -1275,15 +1310,17 @@ function HomeInner() {
               </div>
               <div className="role-selector-g">
                 {[
-                  { role:'Student', icon:'fa-user-graduate', label:t('enroll_role_student'), desc:t('enroll_role_student_d'), color:'var(--teal)' },
-                  { role:'Parent',  icon:'fa-heart',         label:t('enroll_role_parent'),  desc:t('enroll_role_parent_d'),  color:'#a855f7'    },
-                  { role:'Teacher', icon:'fa-chalkboard-user',label:t('enroll_role_teacher'),desc:t('enroll_role_teacher_d'), color:'var(--accent)'},
+                  { role:'Student',       icon:'fa-user-graduate', label:t('enroll_role_student'), desc:t('enroll_role_student_d'), color:'var(--teal)' },
+                  { role:'Adult',         icon:'fa-id-card',       label:L('Adult','Voksen'),
+                    desc:L('Practise for the Danish Tests, Driving Licence Theory Test and Citizenship Test','Øv dig til danskprøverne, teoriprøven til kørekort og indfødsretsprøven'), color:'#60a5fa' },
+                  { role:'ParentTeacher', icon:'fa-people-group',  label:L('Parent / Guardian or Teacher','Forælder / værge eller lærer'),
+                    desc:L('Follow your child’s progress or set up as a teacher','Følg dit barns fremskridt eller opret dig som lærer'), color:'#a855f7' },
                 ].map(r => (
                   <button
                     key={r.role}
                     type="button"
                     className="role-card"
-                    onClick={() => { setEnrollRole(r.role); setStep(1); setFormStatus({state:'idle',studentId:'',username:'',tempPassword:'',note:''}); }}
+                    onClick={() => { setEnrollRole(r.role); setPtRole(''); setStep(1); setFormStatus({state:'idle',studentId:'',username:'',tempPassword:'',note:''}); }}
                   >
                     <div className="role-card-icon" style={{background:`${r.color}18`,color:r.color}}>
                       <i className={`fa-solid ${r.icon}`}></i>
@@ -1407,113 +1444,129 @@ function HomeInner() {
               </div>
             </form>
 
+          ) : enrollRole === 'Adult' ? (
+            /* ── ADULT: single-page form ── */
+            <form onSubmit={handleEnrollAdult}>
+              <div className="form-wrap">
+                <button type="button" onClick={()=>{setEnrollRole(null);setStep(1);}} style={{background:'none',border:'none',color:'rgba(255,255,255,.45)',fontSize:'12px',cursor:'pointer',marginBottom:'16px',display:'flex',alignItems:'center',gap:'6px'}}>
+                  <i className="fa-solid fa-arrow-left"></i> {t('enroll_role_heading')}
+                </button>
+                <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'20px',padding:'10px 14px',background:'rgba(96,165,250,.08)',borderRadius:'10px',border:'1px solid rgba(96,165,250,.2)'}}>
+                  <i className="fa-solid fa-id-card" style={{color:'#60a5fa'}}></i>
+                  <span style={{fontSize:'13px',fontWeight:700,color:'#60a5fa'}}>
+                    {L('Adult','Voksen')} — {L('Question bank for the Danish Tests, Driving Licence Theory Test and Citizenship Test','Spørgsmålsbank til danskprøverne, teoriprøven til kørekort og indfødsretsprøven')}
+                  </span>
+                </div>
+
+                <div className="fg-2">
+                  <div className="fg"><label className="fl">{L('Full name *','Fulde navn *')}</label><input name="fullName" required autoComplete="name" className="fi" placeholder={L('Your full name','Dit fulde navn')} /></div>
+                  <div className="fg"><label className="fl">{L('Date of birth *','Fødselsdato *')}</label><input name="dob" type="date" required max={adultMaxDob} className="fi" /></div>
+                </div>
+                <div className="fg-2">
+                  <div className="fg"><label className="fl">{L('Email address *','E-mailadresse *')}</label><input name="email" type="email" required autoComplete="email" className="fi" placeholder="name@email.com" /></div>
+                  <div className="fg"><label className="fl">{L('Phone no. *','Telefonnr. *')}</label><input name="phone" type="tel" required autoComplete="tel" className="fi" placeholder="+45 12 34 56 78" /></div>
+                </div>
+                <div className="fg-2">
+                  <div className="fg">
+                    <label className="fl">{L('Gender','Køn')}</label>
+                    <div className="pill-g">
+                      {[['Male','Mand'],['Female','Kvinde'],['Other','Andet'],['Prefer not to say','Ønsker ikke at oplyse']].map(([val, da]) => (
+                        <label key={val} className="pill"><input type="radio" name="gender" value={val} /> {L(val, da)}</label>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="fg">
+                    <label className="fl">{L('Class / Level','Hold / niveau')}</label>
+                    <input className="fi" value="Adult" readOnly disabled style={{opacity:.7}} />
+                  </div>
+                </div>
+
+                <label className="consent-box">
+                  <input type="checkbox" name="gdprConsent" required />
+                  <span>
+                    {L(
+                      'I consent to Vedanta Academy storing and processing my personal data (name, date of birth, email and phone number) to create and manage my account, in line with the GDPR.',
+                      'Jeg giver samtykke til, at Vedanta Academy gemmer og behandler mine personoplysninger (navn, fødselsdato, e-mail og telefonnummer) for at oprette og administrere min konto i overensstemmelse med GDPR.'
+                    )}
+                    {c.email && <> {L('You can ask for access to, or deletion of, your data at any time: ','Du kan til enhver tid bede om indsigt i eller sletning af dine data: ')}{c.email}</>} *
+                  </span>
+                </label>
+
+                {formStatus.state==='error' && <div className="status-err">⚠ {formStatus.message}</div>}
+                <button type="submit" className="btn-submit" disabled={formStatus.state==='loading'}>
+                  {formStatus.state==='loading'
+                    ? <><i className="fa-solid fa-circle-notch fa-spin"></i> {t('f_creating_account')}</>
+                    : <><i className="fa-solid fa-paper-plane"></i> {L('Create My Account','Opret min konto')}</>}
+                </button>
+              </div>
+            </form>
+
           ) : (
-            /* ── PARENT / TEACHER: 2-step flow ── */
+            /* ── PARENT / GUARDIAN OR TEACHER: one simple form ── */
             <form onSubmit={handleEnrollPT}>
               <div className="form-wrap">
                 <button type="button" onClick={()=>{setEnrollRole(null);setStep(1);}} style={{background:'none',border:'none',color:'rgba(255,255,255,.45)',fontSize:'12px',cursor:'pointer',marginBottom:'16px',display:'flex',alignItems:'center',gap:'6px'}}>
                   <i className="fa-solid fa-arrow-left"></i> {t('enroll_role_heading')}
                 </button>
-                {/* Role badge */}
-                <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'20px',padding:'10px 14px',
-                  background: enrollRole==='Teacher' ? 'rgba(245,166,35,.08)' : 'rgba(168,85,247,.08)',
-                  borderRadius:'10px',
-                  border: enrollRole==='Teacher' ? '1px solid rgba(245,166,35,.2)' : '1px solid rgba(168,85,247,.2)'}}>
-                  <i className={`fa-solid ${enrollRole==='Teacher'?'fa-chalkboard-user':'fa-heart'}`}
-                    style={{color: enrollRole==='Teacher' ? 'var(--accent)' : '#a855f7'}}></i>
-                  <span style={{fontSize:'13px',fontWeight:700,color: enrollRole==='Teacher' ? 'var(--accent)' : '#a855f7'}}>
-                    {enrollRole==='Teacher' ? t('enroll_role_teacher') : t('enroll_role_parent')} — {enrollRole==='Teacher' ? t('enroll_role_teacher_d') : t('enroll_role_parent_d')}
-                  </span>
+                <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'20px',padding:'10px 14px',background:'rgba(168,85,247,.08)',borderRadius:'10px',border:'1px solid rgba(168,85,247,.2)'}}>
+                  <i className="fa-solid fa-people-group" style={{color:'#a855f7'}}></i>
+                  <span style={{fontSize:'13px',fontWeight:700,color:'#a855f7'}}>{L('Parent / Guardian or Teacher','Forælder / værge eller lærer')}</span>
                 </div>
 
-                {/* Step indicator — 2 steps only */}
-                <div className="steps">
-                  {['Your Details', 'Review & Confirm'].map((s,i)=>(
-                    <div key={i} className={`step-item${step>i+1?' done':step===i+1?' active':''}`}>
-                      <div className="step-circle">{step>i+1?<i className="fa-solid fa-check"></i>:i+1}</div>
-                      <span className="step-lbl">{s}</span>
-                    </div>
-                  ))}
+                {/* Which one are you? */}
+                <div className="fg">
+                  <label className="fl">{L('I am registering as *','Jeg registrerer mig som *')}</label>
+                  <div className="pill-g">
+                    {[['Parent', L('Parent / Guardian','Forælder / værge')], ['Teacher', L('Teacher','Lærer')]].map(([val, label]) => (
+                      <label key={val} className="pill" style={ptRole===val ? {borderColor:'var(--teal)',background:'rgba(0,198,167,.12)',color:'#fff'} : undefined}>
+                        <input type="radio" name="ptRole" value={val} required checked={ptRole===val} onChange={()=>setPtRole(val)} /> {label}
+                      </label>
+                    ))}
+                  </div>
                 </div>
 
-                {/* STEP 1 — Personal details */}
-                {step===1 && (
-                  <div>
-                    <div className="fg-2">
-                      <div className="fg"><label className="fl">{t('f_pt_full_name')}</label><input name="fullName" required className="fi" placeholder={t('f_pt_full_name_ph')} defaultValue={ptFormData.fullName} /></div>
-                      <div className="fg"><label className="fl">{t('f_pt_email')}</label><input name="email" type="email" required className="fi" placeholder="name@email.com" defaultValue={ptFormData.email} /></div>
-                    </div>
-                    <div className="fg-2">
-                      <div className="fg"><label className="fl">{t('f_pt_phone')}</label><input name="phone" type="tel" required className="fi" placeholder={t('f_pt_phone_ph')} defaultValue={ptFormData.phone} /></div>
-                      <div className="fg"><label className="fl">{t('f_pt_address')}</label><input name="address" className="fi" placeholder={t('f_pt_address_ph')} defaultValue={ptFormData.address} /></div>
-                    </div>
+                <div className="fg-2">
+                  <div className="fg"><label className="fl">{t('f_pt_full_name')}</label><input name="fullName" required className="fi" placeholder={t('f_pt_full_name_ph')} /></div>
+                  <div className="fg"><label className="fl">{t('f_pt_email')}</label><input name="email" type="email" required className="fi" placeholder="name@email.com" /></div>
+                </div>
+                <div className="fg-2">
+                  <div className="fg"><label className="fl">{t('f_pt_phone')}</label><input name="phone" type="tel" required className="fi" placeholder={t('f_pt_phone_ph')} /></div>
+                  <div className="fg"><label className="fl">{t('f_pt_address')}</label><input name="address" className="fi" placeholder={t('f_pt_address_ph')} /></div>
+                </div>
 
-                    {/* Parent-only: child's student ID */}
-                    {enrollRole === 'Parent' && (
-                      <div className="fg">
-                        <label className="fl">{t('f_pt_child_id')}</label>
-                        <input name="linkedStudentId" className="fi" placeholder={t('f_pt_child_id_ph')} defaultValue={ptFormData.linkedStudentId} />
-                        <p style={{fontSize:'12px',color:'rgba(255,255,255,.35)',marginTop:'6px',lineHeight:1.7}}>{t('f_pt_child_id_help')}</p>
-                      </div>
-                    )}
-
-                    {/* Teacher-only: subject + qualification */}
-                    {enrollRole === 'Teacher' && (
-                      <div className="fg-2">
-                        <div className="fg"><label className="fl">{t('f_pt_subject')}</label><input name="subject" className="fi" placeholder={t('f_pt_subject_ph')} defaultValue={ptFormData.subject} /></div>
-                        <div className="fg"><label className="fl">{t('f_pt_qualification')}</label><input name="qualification" className="fi" placeholder={t('f_pt_qualification_ph')} defaultValue={ptFormData.qualification} /></div>
-                      </div>
-                    )}
-
-                    <div className="step-nav">
-                      <span></span>
-                      <button type="button" className="btn-next" onClick={(e)=>saveStepAndAdvancePT(e,2)}>
-                        {t('f_review_confirm')} <i className="fa-solid fa-arrow-right"></i>
-                      </button>
-                    </div>
+                {/* Parent / Guardian-only: child's student ID */}
+                {ptRole === 'Parent' && (
+                  <div className="fg">
+                    <label className="fl">{t('f_pt_child_id')}</label>
+                    <input name="linkedStudentId" className="fi" placeholder={t('f_pt_child_id_ph')} />
+                    <p style={{fontSize:'12px',color:'rgba(255,255,255,.35)',marginTop:'6px',lineHeight:1.7}}>{t('f_pt_child_id_help')}</p>
                   </div>
                 )}
 
-                {/* STEP 2 — Review & confirm */}
-                {step===2 && (
-                  <div>
-                    <div style={{background:'rgba(255,255,255,.04)',border:'1px solid rgba(255,255,255,.09)',borderRadius:'12px',padding:'20px',marginBottom:'20px'}}>
-                      <p style={{fontSize:'12px',fontWeight:700,color:'var(--teal)',marginBottom:'14px',letterSpacing:'0.5px',textTransform:'uppercase'}}>{t('f_review_title')}</p>
-                      <div className="review-g">
-                        <div><span style={{color:'rgba(255,255,255,.4)'}}>{t('f_pt_review_role')}</span>{enrollRole}</div>
-                        <div><span style={{color:'rgba(255,255,255,.4)'}}>{t('f_pt_review_name')}</span>{ptFormData.fullName || '—'}</div>
-                        <div><span style={{color:'rgba(255,255,255,.4)'}}>{t('f_pt_review_email')}</span>{ptFormData.email || '—'}</div>
-                        <div><span style={{color:'rgba(255,255,255,.4)'}}>{t('f_pt_review_phone')}</span>{ptFormData.phone || '—'}</div>
-                        {enrollRole==='Parent' && ptFormData.linkedStudentId && (
-                          <div><span style={{color:'rgba(255,255,255,.4)'}}>Child ID: </span>{ptFormData.linkedStudentId}</div>
-                        )}
-                        {enrollRole==='Teacher' && ptFormData.subject && (
-                          <div><span style={{color:'rgba(255,255,255,.4)'}}>{t('f_pt_subject')}: </span>{ptFormData.subject}</div>
-                        )}
-                        {enrollRole==='Teacher' && ptFormData.qualification && (
-                          <div><span style={{color:'rgba(255,255,255,.4)'}}>{t('f_pt_qualification')}: </span>{ptFormData.qualification}</div>
-                        )}
-                      </div>
-                    </div>
-                    <div style={{background:'rgba(255,255,255,.03)',border:'1px solid rgba(255,255,255,.07)',borderRadius:'10px',padding:'14px 18px',marginBottom:'16px'}}>
-                      <p style={{fontSize:'12px',color:'rgba(255,255,255,.4)',lineHeight:1.8}}>
-                        {enrollRole==='Parent'
-                          ? 'Your account will be created instantly. Log in to the Parent & Teacher Portal with the credentials shown on the next screen. Your child\'s profile will be linked within 24 hours if you didn\'t provide their Student ID.'
-                          : 'Your teacher account will be created instantly. The academy will configure your student access. Log in to the Parent & Teacher Portal with the credentials shown on the next screen.'}
-                      </p>
-                    </div>
-                    {formStatus.state==='error' && <div className="status-err">⚠ {formStatus.message}</div>}
-                    <button type="submit" className="btn-submit" disabled={formStatus.state==='loading'}>
-                      {formStatus.state==='loading'
-                        ? <><i className="fa-solid fa-circle-notch fa-spin"></i> {t('f_creating_account')}</>
-                        : <><i className="fa-solid fa-paper-plane"></i> Create My Account</>}
-                    </button>
-                    <div className="step-nav" style={{marginTop:'12px'}}>
-                      <button type="button" className="btn-back" onClick={()=>setStep(1)}><i className="fa-solid fa-arrow-left"></i> {t('f_back')}</button>
-                      <span></span>
-                    </div>
+                {/* Teacher-only: subject + qualification */}
+                {ptRole === 'Teacher' && (
+                  <div className="fg-2">
+                    <div className="fg"><label className="fl">{t('f_pt_subject')}</label><input name="subject" className="fi" placeholder={t('f_pt_subject_ph')} /></div>
+                    <div className="fg"><label className="fl">{t('f_pt_qualification')}</label><input name="qualification" className="fi" placeholder={t('f_pt_qualification_ph')} /></div>
                   </div>
                 )}
+
+                {ptRole && (
+                  <div style={{background:'rgba(255,255,255,.03)',border:'1px solid rgba(255,255,255,.07)',borderRadius:'10px',padding:'14px 18px',margin:'6px 0 16px'}}>
+                    <p style={{fontSize:'12px',color:'rgba(255,255,255,.4)',lineHeight:1.8}}>
+                      {ptRole==='Parent'
+                        ? "Your account will be created instantly. Log in to the Parent & Teacher Portal with the credentials shown on the next screen. Your child's profile will be linked within 24 hours if you didn't provide their Student ID."
+                        : 'Your teacher account will be created instantly. The academy will configure your student access. Log in to the Parent & Teacher Portal with the credentials shown on the next screen.'}
+                    </p>
+                  </div>
+                )}
+
+                {formStatus.state==='error' && <div className="status-err">⚠ {formStatus.message}</div>}
+                <button type="submit" className="btn-submit" disabled={formStatus.state==='loading'}>
+                  {formStatus.state==='loading'
+                    ? <><i className="fa-solid fa-circle-notch fa-spin"></i> {t('f_creating_account')}</>
+                    : <><i className="fa-solid fa-paper-plane"></i> Create My Account</>}
+                </button>
               </div>
             </form>
           )}
