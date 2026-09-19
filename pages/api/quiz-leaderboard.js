@@ -15,38 +15,45 @@
 // on every getResults call, straight from a single quiz's `participants` +
 // `answers` subcollections. This route mirrors that per quiz.
 //
-// READ BUDGET — this is the part that matters most here (see the Sept 2026
-// "50K reads/day exceeded" outage): a naive version of this route reads
-// EVERY answer document, for EVERY participant (live included), for EVERY
-// quiz, on every cache miss — and the live cohort's answers are pure waste
-// to read here, since their scores are already sitting frozen in
-// `leaderboard`. Two changes bring that down by roughly two orders of
-// magnitude:
-//   1. ONE shared cache for the whole raw dataset, not one per `days`
-//      filter. The old version cached "days=0", "days=7", "days=30" etc.
-//      completely separately, so a visitor clicking through the Window
-//      pills multiplied Firestore reads by up to 5x for identical
-//      underlying data. Now there's a single `rawCache` with everything
-//      un-filtered by date; each `days` value just filters that same
-//      in-memory array — zero extra reads.
-//   2. Solo scoring no longer touches collectionGroup('answers') at all.
-//      For each quiz, only participants who are mode:'solo', still
-//      "present" (status !== 'left'), and have actually finished
-//      (soloQuestionIndex >= totalQuestions) get their answers read — via
-//      a targeted `quizRef.collection('answers').where('participantId',
-//      'in', [...])` query, chunked to Firestore's 'in' limit. This reads
-//      only the documents genuinely needed to score them, instead of
-//      every question every player (live or solo) ever answered.
-// `participants` is still read as one collectionGroup — it's a much
-// smaller collection (one doc per person per quiz, not one per question),
-// so it isn't the expensive part, and every live row still needs its
-// participant doc for a join-time timestamp.
+// READ BUDGET — CACHE IS FIRESTORE-BACKED, NOT IN-MEMORY. This route used
+// to cache its (expensive) raw dataset in a plain module-level variable
+// (`let rawCache`). That only helps if the *same* serverless instance
+// handles the next request — Vercel gives no such guarantee, especially
+// for a lightly-trafficked route like this one, so in practice nearly
+// every request could hit a cold instance and pay full price again. That
+// was the real cause of the Sept 2026 "30K reads from basically no
+// traffic" incident: a single page load could cold-start straight into a
+// full rebuild that scores every finished self-paced attempt across
+// EVERY quiz, all-time (hundreds of participants × ~15 answers each).
 //
-// CACHE TTL: 5 minutes (RAW_TTL below), not 60 seconds. This is a
-// leaderboard, not a live scoreboard — a few minutes of staleness costs
-// nothing, and cutting refresh frequency 5x cuts reads 5x on top of the
-// two changes above. If reads are still a concern, raising this further
-// (e.g. 15 minutes) is the single easiest lever to pull.
+// The fix: the raw dataset lives in one small Firestore document
+// (CACHE_DOC below), not server memory. Every instance — cold-started or
+// not — checks that single document first:
+//   - fresh (< RAW_TTL old)  -> use its payload directly. Costs exactly
+//     ONE read, no matter which instance handles the request.
+//   - stale or missing       -> rebuild (the expensive part, described
+//     below), then write the result back to that same document so every
+//     OTHER instance — this one included, next time — reads the cheap
+//     path instead of rebuilding again. This is what actually bounds the
+//     expensive rebuild to "at most once per RAW_TTL, globally" instead
+//     of "at most once per RAW_TTL, per lucky warm instance."
+//
+// The rebuild itself is still the targeted version from the previous fix:
+//   - Live rows never touch `answers` at all — their scores are already
+//     frozen in `leaderboard`.
+//   - Solo rows only read the `answers` of participants who are actually
+//     mode:'solo' and actually finished (soloQuestionIndex >=
+//     totalQuestions), via a small `where('participantId', 'in', [...])`
+//     query per quiz — not a full collectionGroup('answers') scan of
+//     every question everyone (live included) ever answered.
+// `participants` is still read as one collectionGroup — much smaller than
+// `answers` (one doc per person per quiz, not one per question), and every
+// live row still needs its participant doc for a join-time timestamp.
+//
+// CACHE TTL: 10 minutes (RAW_TTL below). This is a leaderboard, not a live
+// scoreboard — staleness measured in minutes costs nothing, and the
+// Firestore-backed cache means this TTL is now a genuinely global bound on
+// rebuild frequency, not a per-instance best-effort one.
 //
 // GROUPING KEY: per-quiz groups (`byQuiz`) are keyed by quizId (the
 // DAY17-style code from the quiz's URL), not by title — a quiz's title is
@@ -73,10 +80,13 @@
 import { db } from '../../lib/firebaseAdmin';
 
 const ALLOWED_DAYS = new Set([0, 1, 7, 30, 90]);
-const RAW_TTL = 5 * 60 * 1000; // 5 minutes — see READ BUDGET comment above
-const ANSWERS_IN_CHUNK = 10;   // conservative Firestore 'in'-clause batch size
+const RAW_TTL = 10 * 60 * 1000; // 10 minutes — see READ BUDGET comment above
+const ANSWERS_IN_CHUNK = 10;    // conservative Firestore 'in'-clause batch size
 
-let rawCache = null; // { at, quizzes, live, solo } — shared across every `days` value
+// One small doc holds the entire raw (un-filtered-by-day) dataset, shared
+// across every serverless instance — see the CACHE IS FIRESTORE-BACKED
+// comment above for why this replaced a module-level variable.
+const CACHE_DOC = db.collection('system').doc('quizLeaderboardCache');
 
 function chunkArray(arr, size) {
   const out = [];
@@ -121,10 +131,12 @@ function dedupeBestPerName(rows) {
   return Object.values(bestByKey);
 }
 
-// One full pass over every quiz. Reads: 1 `quizzes` collection scan, 1
-// `participants` collectionGroup scan, plus one small targeted `answers`
-// query per chunk of finished-solo-participants per quiz (0 queries for a
-// quiz with no finished solo attempts). Called at most once per RAW_TTL.
+// One full pass over every quiz — the expensive path, only meant to run
+// once per RAW_TTL window, globally (see CACHE_DOC above). Reads: 1
+// `quizzes` collection scan, 1 `participants` collectionGroup scan, plus
+// one small targeted `answers` query per chunk of finished-solo-
+// participants per quiz (0 queries for a quiz with no finished solo
+// attempts).
 async function buildRawData() {
   const [quizzesSnap, participantsSnap] = await Promise.all([
     db.collection('quizzes').get(),
@@ -179,8 +191,7 @@ async function buildRawData() {
     });
 
     // ── Solo: never stored — recompute, but ONLY read the answers of
-    // participants who are actually solo and actually finished. This is
-    // the read-budget-critical part; see the file header comment.
+    // participants who are actually solo and actually finished.
     const finishedSolo = (participantsByQuiz[quizId] || []).filter(p =>
       p.mode === 'solo' && p.status !== 'left' &&
       totalQuestions > 0 && Number(p.soloQuestionIndex) >= totalQuestions
@@ -230,6 +241,31 @@ async function buildRawData() {
   };
 }
 
+// Reads the shared Firestore cache doc (1 read). Rebuilds and writes it
+// back (the expensive path + 1 write) only when it's missing or stale —
+// and because this check lives in Firestore, not server memory, that's
+// true across every instance, not just whichever one happens to be warm.
+async function getRawData() {
+  const snap = await CACHE_DOC.get();
+  const cached = snap.exists ? snap.data() : null;
+
+  if (cached?.computedAt && Date.now() - cached.computedAt < RAW_TTL && cached.payload) {
+    return { raw: JSON.parse(cached.payload), cacheStatus: 'HIT' };
+  }
+
+  const raw = await buildRawData();
+  // Best-effort write-back — if it fails (e.g. a race with another
+  // instance also rebuilding right now), the freshly-built `raw` is still
+  // returned to THIS request either way, so nothing breaks; the next
+  // request just rebuilds again a little sooner than ideal.
+  try {
+    await CACHE_DOC.set({ computedAt: Date.now(), payload: JSON.stringify(raw) });
+  } catch (err) {
+    console.error('[quiz-leaderboard] cache write failed', err.message);
+  }
+  return { raw, cacheStatus: 'MISS' };
+}
+
 function withinWindow(row, cutoff) {
   if (!cutoff) return true;
   const ms = row.timestamp ? Date.parse(row.timestamp) : 0;
@@ -254,22 +290,22 @@ export default async function handler(req, res) {
   const days = ALLOWED_DAYS.has(requestedDays) ? requestedDays : 0;
 
   try {
-    let cacheHit = true;
-    if (!rawCache || Date.now() - rawCache.at > RAW_TTL) {
-      cacheHit = false;
-      const data = await buildRawData();
-      rawCache = { at: Date.now(), ...data };
-    }
-    res.setHeader('X-Cache', cacheHit ? 'HIT' : 'MISS');
-    return res.status(200).json(buildPayload(rawCache, days));
+    const { raw, cacheStatus } = await getRawData();
+    res.setHeader('X-Cache', cacheStatus);
+    return res.status(200).json(buildPayload(raw, days));
 
   } catch (err) {
     console.error('[quiz-leaderboard]', err.message);
-    if (rawCache) {
-      // Serve stale raw data rather than nothing — still zero extra reads.
-      res.setHeader('X-Cache', 'STALE');
-      return res.status(200).json(buildPayload(rawCache, days));
-    }
+    // Last resort: try the cache doc directly, even if it's stale — still
+    // just the one read, and far better than a blank leaderboard.
+    try {
+      const snap = await CACHE_DOC.get();
+      if (snap.exists && snap.data().payload) {
+        res.setHeader('X-Cache', 'STALE');
+        return res.status(200).json(buildPayload(JSON.parse(snap.data().payload), days));
+      }
+    } catch (_) { /* fall through to the empty payload below */ }
+
     return res.status(200).json({
       live: { overall: [], byQuiz: {} },
       solo: { overall: [], byQuiz: {} },
