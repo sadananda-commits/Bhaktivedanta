@@ -1253,6 +1253,28 @@ async function soloCompletionPayload(quizRef, quizData, participantId, participa
 // `answers` read at all for anyone with running totals — via the same
 // participantAggregate() helper computeStandings uses.
 //
+// No login means a student just retypes their name each attempt, so
+// self-paced replays (allowed by design — see the file-level comment
+// above joinSoloQuiz) show up as several separate participant docs for
+// the same person. Collapse those down to that name's single best
+// attempt before ranking, same tie-break used everywhere else in this
+// file: higher score wins, ties go to whoever answered faster on
+// average. Matching (and kept in sync with) dedupeBestPerName in
+// pages/api/quiz-leaderboard.js, which does the same thing for the
+// cross-quiz leaderboard.
+function dedupeBestPerName(rows) {
+  const bestByName = {};
+  rows.forEach(r => {
+    const key = String(r.name || '').trim().toLowerCase();
+    const existing = bestByName[key];
+    if (!existing) { bestByName[key] = r; return; }
+    const better = r.totalScore > existing.totalScore ||
+      (r.totalScore === existing.totalScore && (r.avgResponseMs ?? Infinity) < (existing.avgResponseMs ?? Infinity));
+    if (better) bestByName[key] = r;
+  });
+  return Object.values(bestByName);
+}
+
 // Only counts participants who've actually FINISHED (soloQuestionIndex >=
 // totalQuestions) — someone three questions into their own attempt
 // shouldn't show up mid-list with an inflated partial score.
@@ -1279,8 +1301,16 @@ async function computeSoloLeaderboard(quizRef, totalQuestions) {
     };
   }));
 
-  rows.sort((a, b) => b.totalScore - a.totalScore || a.avgResponseMs - b.avgResponseMs);
-  rows.forEach((r, i) => { r.rank = i + 1; });
-  return rows;
+  // Retaking (mainly self-paced, which allows replays) used to leave every
+  // attempt in the results/leaderboard screens under the same name — keep
+  // only each person's best attempt here, so it's true everywhere this
+  // function is used: getResults (public results page), endQuiz's returned
+  // solo half, and soloCompletionPayload (the "you're done!" screen +
+  // getSoloState's completed branch).
+  const deduped = dedupeBestPerName(rows);
+
+  deduped.sort((a, b) => b.totalScore - a.totalScore || a.avgResponseMs - b.avgResponseMs);
+  deduped.forEach((r, i) => { r.rank = i + 1; });
+  return deduped;
 }
 
