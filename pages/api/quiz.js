@@ -582,7 +582,10 @@ async function getQuizState(p) {
     description: data.description,
     status: data.status,
     currentQuestionIndex: data.currentQuestionIndex,
-    currentQuestion: data.currentQuestion || null,
+    // serverNow lets each device measure how far its own clock is from the
+    // server's, so countdowns never depend on the device clock being right.
+    serverNow: nowIso(),
+    currentQuestion: data.currentQuestion ? { ...data.currentQuestion, serverNow: nowIso() } : null,
     totalQuestions: data.totalQuestions || 0,
     participantCount: data.participantCount || 0,
     // Surfaced separately from participantCount (which only ever counts
@@ -1068,7 +1071,7 @@ async function joinSoloQuiz(p) {
     participantId: participantRef.id,
     quizId,
     title: quizData.title,
-    question: { ...publicQuestion(qSnap.data(), quizData), startedAt },
+    question: { ...publicQuestion(qSnap.data(), quizData), startedAt, serverNow: nowIso() },
   };
 }
 
@@ -1093,10 +1096,23 @@ async function getSoloState(p) {
     return { ok: true, completed: true, summary, leaderboard };
   }
 
+  // If this question was already answered (they answered, then reloaded or
+  // reopened the tab before pressing Next), say so and hand back the saved
+  // result — the player then shows the feedback screen + Next button rather
+  // than restarting an expired countdown that would auto-submit a second time.
+  const answerSnap = await quizRef.collection('answers').doc(`${p.participantId}_${idx + 1}`).get();
+  const answered = answerSnap.exists ? {
+    isCorrect: !!answerSnap.data().isCorrect,
+    pointsEarned: Number(answerSnap.data().pointsEarned) || 0,
+    correctAnswer: qSnap.data().correctAnswer,
+    explanation: qSnap.data().explanation || '',
+  } : null;
+
   return {
     ok: true,
     title: quizData.title,
-    question: { ...publicQuestion(qSnap.data(), quizData), startedAt: participant.soloStartedAt },
+    question: { ...publicQuestion(qSnap.data(), quizData), startedAt: participant.soloStartedAt, serverNow: nowIso() },
+    answered,
   };
 }
 
@@ -1134,9 +1150,14 @@ async function submitSoloAnswer(p) {
   // re-scans EVERY solo participant's ENTIRE answer history on EVERY single
   // completion, not just once per question.
   const answerRef = quizRef.collection('answers').doc(`${p.participantId}_${qNum}`);
+  // A repeat submit for the same question (page reload after answering, a
+  // retry, a double-tap) is not an error — it just gets the original result
+  // back, so the player lands on the normal feedback screen + Next button
+  // instead of an "Already answered" dead end.
+  let duplicate = null;
   await db.runTransaction(async (txn) => {
     const existing = await txn.get(answerRef);
-    if (existing.exists) throw new Error('Already answered this question.');
+    if (existing.exists) { duplicate = existing.data(); return; }
     txn.set(answerRef, {
       participantId: p.participantId,
       qNum,
@@ -1153,6 +1174,17 @@ async function submitSoloAnswer(p) {
       runningResponseMsSum: FieldValue.increment(responseDurationMs),
     }, { merge: true });
   });
+
+  if (duplicate) {
+    return {
+      ok: true,
+      isCorrect: !!duplicate.isCorrect,
+      pointsEarned: Number(duplicate.pointsEarned) || 0,
+      correctAnswer: question.correctAnswer,
+      explanation: question.explanation || '',
+      alreadyAnswered: true,
+    };
+  }
 
   // No leaderboard-patching needed here (unlike an earlier version of this
   // function) — solo standings are never frozen in the first place, see
@@ -1198,7 +1230,7 @@ async function soloNextQuestion(p) {
   const startedAt = nowIso();
   await participantRef.update({ soloQuestionIndex: nextIdx, soloStartedAt: startedAt });
 
-  return { ok: true, question: { ...publicQuestion(qSnap.data(), quizData), startedAt } };
+  return { ok: true, question: { ...publicQuestion(qSnap.data(), quizData), startedAt, serverNow: nowIso() } };
 }
 
 // Bundles a just-finished solo participant's own score together with the

@@ -119,6 +119,10 @@ export default function OnlineQuizParticipant({ quizCode }) {
   const wasDisconnectedRef = useRef(false);
   const lastTickPlayedRef = useRef(null);
   const submittedRef = useRef(false); // guards against manual + auto-submit racing
+  // How far this device's clock is from the server's (server minus device, ms).
+  // Deadlines are server-time; the countdown adds this offset to Date.now() so
+  // a device clock that is fast or slow can't make a question look expired.
+  const clockOffsetRef = useRef(0);
   const timeUpPlayedRef = useRef(false);
 
   useEffect(() => { setMutedState(isMuted()); }, []);
@@ -126,17 +130,20 @@ export default function OnlineQuizParticipant({ quizCode }) {
 
   // Seeds a fetched/advanced solo question into the same state the live
   // question screen reads from, so both phases can share one render block.
-  const applySoloQuestion = useCallback((q, title) => {
+  const applySoloQuestion = useCallback((q, title, answered) => {
+    if (q && q.serverNow) clockOffsetRef.current = Date.parse(q.serverNow) - Date.now();
     if (title !== undefined) setQuizTitle(title || '');
     setQuestion(q);
     setDeadline(Date.parse(q.startedAt || Date.now()) + q.timeLimitSec * 1000);
     setTotalSeconds(q.timeLimitSec);
     setSelectedLetters([]);
-    setHasAnswered(false);
-    setAnswerFeedback(null);
+    // `answered` = the server says this question already has a saved answer
+    // (reload after answering): show its feedback + Next, never re-submit.
+    setHasAnswered(!!answered);
+    setAnswerFeedback(answered || null);
     setPointsDisplay(0);
-    submittedRef.current = false;
-    timeUpPlayedRef.current = false;
+    submittedRef.current = !!answered;
+    timeUpPlayedRef.current = !!answered;
     setPhase('solo');
   }, []);
 
@@ -161,7 +168,7 @@ export default function OnlineQuizParticipant({ quizCode }) {
         setTakeMode('solo');
         quizApi.getSoloState(quizCode, soloSaved.participantId).then(res => {
           if (res.completed) { setSoloSummary(res.summary); setSoloLeaderboard(res.leaderboard || null); setPhase('solo-done'); }
-          else applySoloQuestion(res.question, res.title);
+          else applySoloQuestion(res.question, res.title, res.answered);
         }).catch(() => {});
         return;
       }
@@ -177,6 +184,8 @@ export default function OnlineQuizParticipant({ quizCode }) {
   }, [quizCode]);
 
   const applyState = useCallback((state) => {
+    const sn = state.serverNow || (state.currentQuestion && state.currentQuestion.serverNow);
+    if (sn) clockOffsetRef.current = Date.parse(sn) - Date.now();
     setQuizTitle(state.title || '');
     setParticipantCount(state.participantCount || 0);
     if (state.status === 'ended') {
@@ -381,7 +390,7 @@ export default function OnlineQuizParticipant({ quizCode }) {
   useEffect(() => {
     if ((phase !== 'live' && phase !== 'solo') || !deadline || paused) return; // frozen while paused — no interval runs at all (solo never pauses)
     const tick = () => {
-      const s = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      const s = Math.max(0, Math.ceil((deadline - (Date.now() + clockOffsetRef.current)) / 1000));
       setSecondsLeft(s);
       if (!hasAnswered && s <= 5 && s > 0 && lastTickPlayedRef.current !== s) {
         lastTickPlayedRef.current = s;
@@ -719,7 +728,10 @@ export default function OnlineQuizParticipant({ quizCode }) {
   }
 
   if (phase === 'solo-done' && soloSummary) {
-    const mine = (soloLeaderboard || []).find(r => r.participantId === participantId);
+    // Leaderboard keeps one row per name (their best attempt), so a retake
+    // that wasn't the best is matched by name instead of participantId.
+    const mine = (soloLeaderboard || []).find(r => r.participantId === participantId) ||
+      (soloLeaderboard || []).find(r => String(r.name || '').trim().toLowerCase() === String(soloSummary.name || '').trim().toLowerCase());
     return (
       <div className="qx-root qx-wrap">
         <QuizFonts /><QuizThemeStyles /><ParticipantStyles />
