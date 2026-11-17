@@ -22,6 +22,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { quizApi } from '../lib/quizApi';
 import { subscribeToQuiz, onConnectionStateChange } from '../lib/quizFirestore';
 import { quizSounds } from '../lib/quizSounds';
+import ExplanationTable from './ExplanationTable';
 import { QuizFonts, QuizThemeStyles, ShapeIcon, OPTION_LABELS, OPTION_COLORS } from '../lib/quizTheme';
 
 export default function OnlineQuizHost({ quizCode, hostCode }) {
@@ -448,7 +449,7 @@ export default function OnlineQuizHost({ quizCode, hostCode }) {
           {reveal.explanation && (
             <div className="qxh-explanation">
               <span className="qxh-explanation-label"><i className="fa-solid fa-lightbulb" /> Explanation</span>
-              <p>{reveal.explanation}</p>
+              <ExplanationTable text={reveal.explanation} correctAnswer={reveal.correctAnswer} />
             </div>
           )}
 

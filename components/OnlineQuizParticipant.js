@@ -13,6 +13,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { quizApi } from '../lib/quizApi';
 import { subscribeToQuiz, onConnectionStateChange } from '../lib/quizFirestore';
 import { quizSounds, isMuted, setMuted } from '../lib/quizSounds';
+import ExplanationTable from './ExplanationTable';
 import { QuizFonts, QuizThemeStyles, ShapeIcon, OPTION_LABELS, OPTION_COLORS } from '../lib/quizTheme';
 
 // ── Brand ──────────────────────────────────────────────────────────────
@@ -705,7 +706,7 @@ export default function OnlineQuizParticipant({ quizCode }) {
                 {answerFeedback.explanation && (
                   <div className="qx-explanation">
                     <span className="qx-explanation-label"><i className="fa-solid fa-lightbulb" /> Explanation</span>
-                    <p>{answerFeedback.explanation}</p>
+                    <ExplanationTable text={answerFeedback.explanation} correctAnswer={answerFeedback.correctAnswer} />
                   </div>
                 )}
               </>
@@ -794,7 +795,7 @@ export default function OnlineQuizParticipant({ quizCode }) {
           {reveal.explanation && (
             <div className="qx-explanation">
               <span className="qx-explanation-label"><i className="fa-solid fa-lightbulb" /> Explanation</span>
-              <p>{reveal.explanation}</p>
+              <ExplanationTable text={reveal.explanation} correctAnswer={reveal.correctAnswer} />
             </div>
           )}
 
