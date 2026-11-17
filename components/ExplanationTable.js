@@ -76,12 +76,23 @@ export default function ExplanationTable({ text, correctAnswer }) {
   const fromServer = String(correctAnswer || '').toUpperCase().match(/[A-H]/g) || [];
   const correct = fromServer.length ? new Set(fromServer) : correctLetters;
 
+  // Correct answer(s) first; the rest keep their A, B, C, D order.
+  const ordered = [...options].sort(
+    (a, b) => (correct.has(b.letter) ? 1 : 0) - (correct.has(a.letter) ? 1 : 0)
+  );
+
   return (
     <div className="qxe">
       <style>{EXPLANATION_CSS}</style>
       {intro.length > 0 && <p className="qxe-intro">{intro.join(' ')}</p>}
       <div className="qxe-scroll">
         <table className="qxe-table">
+          <colgroup>
+            <col className="qxe-c-opt" />
+            <col className="qxe-c-word" />
+            <col className="qxe-c-mean" />
+            <col />
+          </colgroup>
           <thead>
             <tr>
               <th>Option</th>
@@ -91,7 +102,7 @@ export default function ExplanationTable({ text, correctAnswer }) {
             </tr>
           </thead>
           <tbody>
-            {options.map((o) => {
+            {ordered.map((o) => {
               const meaning = pickField(o.fields, 'meaning');
               const danish = pickField(o.fields, 'danish');
               const english = pickField(o.fields, 'english');
@@ -128,11 +139,16 @@ const EXPLANATION_CSS = `
   .qxe { font-size: 13px; line-height: 1.45; color: var(--qx-text, inherit); }
   .qxe-plain { margin: 0; font-size: 14px; line-height: 1.5; white-space: pre-wrap; color: var(--qx-text, inherit); }
   .qxe-intro { margin: 0 0 8px; }
-  .qxe-scroll { overflow-x: auto; border-radius: 10px; border: 1px solid rgba(255,255,255,0.14); }
-  .qxe-table { width: 100%; border-collapse: collapse; }
+  .qxe-scroll { overflow: hidden; border-radius: 10px; border: 1px solid rgba(255,255,255,0.14); }
+  /* Fixed layout + wrapping text: the table always fits its box, so no sideways scrolling. */
+  .qxe-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  .qxe-c-opt { width: 46px; }
+  .qxe-c-word { width: 24%; }
+  .qxe-c-mean { width: 22%; }
+  .qxe-table td, .qxe-table th { overflow-wrap: anywhere; word-break: break-word; }
   .qxe-table th {
     text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
-    padding: 8px 10px; background: rgba(255,255,255,0.07); white-space: nowrap;
+    padding: 8px 10px; background: rgba(255,255,255,0.07);
   }
   .qxe-table td { padding: 9px 10px; vertical-align: top; border-top: 1px solid rgba(255,255,255,0.10); }
   .qxe-letter {
@@ -141,7 +157,7 @@ const EXPLANATION_CSS = `
   }
   .qxe-word { font-weight: 700; }
   .qxe-badge {
-    display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 99px; font-size: 11px; font-weight: 800;
+    display: table; margin-top: 4px; padding: 1px 8px; border-radius: 99px; font-size: 11px; font-weight: 800;
     background: var(--qx-success, #34e7b4); color: #04241d; white-space: nowrap;
   }
   .qxe-correct td { background: rgba(52,231,180,0.16); border-top-color: rgba(52,231,180,0.35); }
@@ -150,6 +166,8 @@ const EXPLANATION_CSS = `
   .qxe-en { opacity: 0.8; margin-top: 2px; }
   .qxe-foot { margin-top: 8px; font-size: 12.5px; }
   @media (max-width: 520px) {
+    .qxe-table colgroup { display: none; }
+    .qxe-badge { display: inline-block; margin: 0 0 0 8px; }
     .qxe-table thead { display: none; }
     .qxe-table, .qxe-table tbody, .qxe-table tr, .qxe-table td { display: block; width: 100%; }
     .qxe-table td { border-top: none; padding: 3px 10px; }
