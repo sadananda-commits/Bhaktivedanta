@@ -698,15 +698,9 @@ export default function OnlineQuizParticipant({ quizCode }) {
                   {answerFeedback.isCorrect ? '✓ Correct!' : '✗ Not quite'}
                 </div>
                 <div className="qx-points">+{pointsDisplay} pts</div>
-                {!answerFeedback.isCorrect && answerFeedback.correctAnswer && (
-                  <div className="qx-muted" style={{ marginTop: 4 }}>
-                    Correct answer: <strong>{answerFeedback.correctAnswer}</strong>
-                  </div>
-                )}
-                {answerFeedback.explanation && (
-                  <div className="qx-explanation">
-                    <span className="qx-explanation-label"><i className="fa-solid fa-lightbulb" /> Explanation</span>
-                    <ExplanationTable text={answerFeedback.explanation} correctAnswer={answerFeedback.correctAnswer} />
+                {answerFeedback.correctAnswer && (
+                  <div className="qx-muted" style={{ marginTop: 6, fontSize: 16 }}>
+                    Correct answer: <strong>{formatCorrectAnswer(answerFeedback.correctAnswer, question?.options)}</strong>
                   </div>
                 )}
               </>
@@ -722,6 +716,12 @@ export default function OnlineQuizParticipant({ quizCode }) {
                   ? <><i className="fa-solid fa-flag-checkered" /> Finish</>
                   : <><i className="fa-solid fa-forward" /> Next Question</>}
             </button>
+            {/* Optional deeper dive, closed until the learner asks for it. */}
+            {answerFeedback && !answerFeedback.error && answerFeedback.explanation && (
+              <div style={{ marginTop: 16 }}>
+                <ExplanationTable collapsible text={answerFeedback.explanation} correctAnswer={answerFeedback.correctAnswer} />
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -793,9 +793,8 @@ export default function OnlineQuizParticipant({ quizCode }) {
           </div>
 
           {reveal.explanation && (
-            <div className="qx-explanation">
-              <span className="qx-explanation-label"><i className="fa-solid fa-lightbulb" /> Explanation</span>
-              <ExplanationTable text={reveal.explanation} correctAnswer={reveal.correctAnswer} />
+            <div style={{ margin: '14px 0' }}>
+              <ExplanationTable collapsible text={reveal.explanation} correctAnswer={reveal.correctAnswer} />
             </div>
           )}
 
@@ -935,6 +934,12 @@ function ParticipantResultsTable({ rows, participantId, emptyLabel }) {
       </table>
     </div>
   );
+}
+
+// "C" -> "C – far-reaching" (uses the question's own option text when known).
+function formatCorrectAnswer(correct, options) {
+  const letters = String(correct || '').split(',').map(s => s.trim()).filter(Boolean);
+  return letters.map(l => (options && options[l] ? `${l} – ${options[l]}` : l)).join(', ');
 }
 
 function ParticipantStyles() {

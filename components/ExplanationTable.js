@@ -65,11 +65,31 @@ function pickField(fields, name) {
   return fields.find((f) => f.label.toLowerCase() === name);
 }
 
-export default function ExplanationTable({ text, correctAnswer }) {
+// collapsible: wraps everything in a closed-by-default drop-down ("Show
+// explanation"), so the answer screen stays clean until the learner asks for it.
+function Wrap({ collapsible, children }) {
+  if (!collapsible) return children;
+  return (
+    <details className="qxe-details">
+      <summary>
+        <span className="qxe-show"><i className="fa-solid fa-lightbulb" /> Show explanation</span>
+        <span className="qxe-hide"><i className="fa-solid fa-lightbulb" /> Hide explanation</span>
+      </summary>
+      <div className="qxe-body">{children}</div>
+    </details>
+  );
+}
+
+export default function ExplanationTable({ text, correctAnswer, collapsible = false }) {
   const { options, intro, correctLine, correctLetters } = parseExplanation(text);
 
   if (options.length < 2) {
-    return <p className="qxe-plain">{text}</p>;
+    return (
+      <div className="qxe">
+        <style>{EXPLANATION_CSS}</style>
+        <Wrap collapsible={collapsible}><p className="qxe-plain">{text}</p></Wrap>
+      </div>
+    );
   }
 
   // The server's own correctAnswer ("C" or "A,C") wins over the text's last line.
@@ -84,6 +104,7 @@ export default function ExplanationTable({ text, correctAnswer }) {
   return (
     <div className="qxe">
       <style>{EXPLANATION_CSS}</style>
+      <Wrap collapsible={collapsible}>
       {intro.length > 0 && <p className="qxe-intro">{intro.join(' ')}</p>}
       <div className="qxe-scroll">
         <table className="qxe-table">
@@ -131,12 +152,27 @@ export default function ExplanationTable({ text, correctAnswer }) {
         </table>
       </div>
       {correctLine && <div className="qxe-foot">Correct answer: <strong>{correctLine}</strong></div>}
+      </Wrap>
     </div>
   );
 }
 
 const EXPLANATION_CSS = `
-  .qxe { font-size: 13px; line-height: 1.45; color: var(--qx-text, inherit); }
+  .qxe { font-size: 13px; line-height: 1.45; color: var(--qx-text, inherit); text-align: left; }
+  .qxe-details { margin-top: 4px; }
+  .qxe-details > summary {
+    list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 10px 14px; border-radius: 10px; font-size: 13.5px; font-weight: 700;
+    border: 1px solid rgba(255,255,255,0.18); background: rgba(255,255,255,0.05);
+  }
+  .qxe-details > summary::-webkit-details-marker { display: none; }
+  .qxe-details > summary::after { content: '▾'; font-size: 14px; transition: transform .15s; }
+  .qxe-details[open] > summary::after { transform: rotate(180deg); }
+  .qxe-details > summary:hover { background: rgba(255,255,255,0.09); }
+  .qxe-hide { display: none; }
+  .qxe-details[open] .qxe-show { display: none; }
+  .qxe-details[open] .qxe-hide { display: inline; }
+  .qxe-body { margin-top: 10px; }
   .qxe-plain { margin: 0; font-size: 14px; line-height: 1.5; white-space: pre-wrap; color: var(--qx-text, inherit); }
   .qxe-intro { margin: 0 0 8px; }
   .qxe-scroll { overflow: hidden; border-radius: 10px; border: 1px solid rgba(255,255,255,0.14); }
