@@ -14,6 +14,8 @@ import { quizApi } from '../lib/quizApi';
 import { subscribeToQuiz, onConnectionStateChange } from '../lib/quizFirestore';
 import { quizSounds, isMuted, setMuted } from '../lib/quizSounds';
 import ExplanationTable from './ExplanationTable';
+import SoloCompletion from './SoloCompletion';
+import { BhaktivedantaLogo, LogoMark, BrandStyles } from './QuizBrand';
 import { QuizFonts, QuizThemeStyles, ShapeIcon, OPTION_LABELS, OPTION_COLORS } from '../lib/quizTheme';
 
 // ── Brand ──────────────────────────────────────────────────────────────
@@ -21,39 +23,19 @@ import { QuizFonts, QuizThemeStyles, ShapeIcon, OPTION_LABELS, OPTION_COLORS } f
 // see, so it carries the portal's name — everything else (host panel,
 // question screens) stays on the existing "live classroom scoreboard"
 // identity from quizTheme.js untouched.
-const PORTAL_NAME = 'Bhakti Vedanta Quiz Portal';
+const PORTAL_NAME = 'Bhaktivedanta Quiz';
 
-// Simple abstract lotus-flame emblem — deliberately generic/non-iconographic
-// artwork (not a reproduction of any organization's actual logo), built
-// from the same mint/marigold accent pair as the rest of the theme so it
-// reads as part of the same design system rather than a bolted-on badge.
+// The emblem and full logo live in ./QuizBrand (lotus rising from an open
+// book); BrandMark keeps its old name so the lobby graphic below still works.
 function BrandMark({ size = 64 }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 64 64" className="qx-brandmark" aria-hidden="true">
-      <defs>
-        <linearGradient id="qxBrandGrad" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="var(--qx-accent-2)" />
-          <stop offset="100%" stopColor="var(--qx-accent)" />
-        </linearGradient>
-      </defs>
-      <circle cx="32" cy="32" r="30" fill="var(--qx-surface-2)" stroke="url(#qxBrandGrad)" strokeWidth="2" />
-      {/* four lotus-like petals fanning from the center, echoing the shape-coded
-          option tiles (circle/triangle/square/diamond) used elsewhere */}
-      {[0, 90, 180, 270].map(deg => (
-        <path key={deg} d="M32 32 C 26 22, 26 12, 32 8 C 38 12, 38 22, 32 32 Z"
-          fill="url(#qxBrandGrad)" opacity="0.9" transform={`rotate(${deg} 32 32)`} />
-      ))}
-      <circle cx="32" cy="32" r="7" fill="var(--qx-bg)" stroke="url(#qxBrandGrad)" strokeWidth="2" />
-    </svg>
-  );
+  return <LogoMark size={size} />;
 }
 
 function BrandHeader() {
   return (
     <div className="qx-brand">
-      <BrandMark />
       <div className="qx-eyebrow">Welcome to the</div>
-      <h1 className="qx-title qx-brand-title">{PORTAL_NAME}</h1>
+      <BhaktivedantaLogo size={88} />
     </div>
   );
 }
@@ -242,6 +224,39 @@ export default function OnlineQuizParticipant({ quizCode }) {
 
   // ── Solo: click "Next"/"Finish" ────────────────────────────────────
   const [soloAdvancing, setSoloAdvancing] = useState(false);
+
+  // ── Solo: "Retry Quiz" ───────────────────────────────────────────────
+  // Starts a brand-new attempt at THIS quiz (same quizCode — never another
+  // day). A new attempt is a new participant record, exactly like the first
+  // join, so nothing from the previous run (answers, selections, timers,
+  // scores) carries over, and the leaderboard keeps applying its existing
+  // "best attempt per name" rule. Name/age are reused so no re-typing.
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState('');
+  async function handleRetry() {
+    const who = (name || (soloSummary && soloSummary.name) || '').trim();
+    if (!who) { setPhase('join'); return; }
+    setRetrying(true);
+    setRetryError('');
+    try {
+      sessionStorage.removeItem(soloStorageKey);
+      const res = await quizApi.joinSoloQuiz(quizCode, who, age ? Number(age) : '');
+      setName(who);
+      setTakeMode('solo');
+      setParticipantId(res.participantId);
+      sessionStorage.setItem(soloStorageKey, JSON.stringify({ participantId: res.participantId, name: who }));
+      setSoloSummary(null);
+      setSoloLeaderboard(null);
+      setReveal(null);
+      quizSounds.join();
+      applySoloQuestion(res.question, res.title); // resets selections, feedback, timer, submit guard
+      if (typeof window !== 'undefined') window.scrollTo(0, 0);
+    } catch (err) {
+      setRetryError(err.message || "We couldn't start a new attempt. Please try again.");
+    } finally {
+      setRetrying(false);
+    }
+  }
   async function handleSoloNext() {
     setSoloAdvancing(true);
     try {
@@ -729,27 +744,21 @@ export default function OnlineQuizParticipant({ quizCode }) {
   }
 
   if (phase === 'solo-done' && soloSummary) {
-    // Leaderboard keeps one row per name (their best attempt), so a retake
-    // that wasn't the best is matched by name instead of participantId.
-    const mine = (soloLeaderboard || []).find(r => r.participantId === participantId) ||
-      (soloLeaderboard || []).find(r => String(r.name || '').trim().toLowerCase() === String(soloSummary.name || '').trim().toLowerCase());
     return (
       <div className="qx-root qx-wrap">
         <QuizFonts /><QuizThemeStyles /><ParticipantStyles />
         <MuteToggle />
-        <div className="qx-card qx-center">
-          <h1 className="qx-title">🏁 Quiz Complete!</h1>
-          <p className="qx-muted">Nice work, {soloSummary.name} — here's how you did.</p>
-          <div className="qx-my-result">
-            {mine && <div className="qx-my-rank">Rank #{mine.rank} <span className="qx-muted" style={{ fontWeight: 400 }}>self-paced</span></div>}
-            <div className="qx-my-score" style={{ fontSize: 28 }}>{soloSummary.totalScore} points</div>
-            <div className="qx-muted">{soloSummary.correctAnswers} correct · {soloSummary.incorrectAnswers} incorrect</div>
-          </div>
-
-          {/* This is recomputed fresh every time someone finishes — it's
-              never a stale snapshot. Anyone who takes the quiz later, even
-              much later, bumps this list and can see exactly where they
-              landed among everyone who's completed it so far. */}
+        <SoloCompletion
+          summary={soloSummary}
+          name={name}
+          quizCode={quizCode}
+          quizTitle={quizTitle}
+          onRetry={handleRetry}
+          retrying={retrying}
+          retryError={retryError}
+        >
+          {/* Existing behaviour, unchanged: recomputed fresh every time someone
+              finishes, one row per person (their best attempt). */}
           <h3 className="qx-leaderboard-title">Self-Paced Leaderboard</h3>
           <ParticipantResultsTable
             rows={soloLeaderboard || []}
@@ -761,7 +770,7 @@ export default function OnlineQuizParticipant({ quizCode }) {
           }}>
             <i className="fa-solid fa-rotate" /> Refresh Rankings
           </button>
-        </div>
+        </SoloCompletion>
       </div>
     );
   }
@@ -944,6 +953,8 @@ function formatCorrectAnswer(correct, options) {
 
 function ParticipantStyles() {
   return (
+    <>
+    <BrandStyles />
     <style jsx global>{`
       .qx-brand { text-align: center; margin-bottom: 22px; }
       .qx-brandmark { display: block; margin: 0 auto 10px; filter: drop-shadow(0 6px 18px rgba(34,211,176,0.25)); }
@@ -1082,5 +1093,6 @@ function ParticipantStyles() {
       .qx-confetti-piece { position: absolute; top: -20px; width: 8px; height: 14px; animation-name: qx-confetti-fall; animation-timing-function: ease-in; animation-fill-mode: forwards; }
       @keyframes qx-confetti-fall { 0% { top: -20px; opacity: 1; } 100% { top: 110vh; opacity: 0.7; } }
     `}</style>
+    </>
   );
 }

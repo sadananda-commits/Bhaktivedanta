@@ -80,6 +80,10 @@ const ACTIONS = {
   getSoloState: getSoloState,
   submitSoloAnswer: submitSoloAnswer,
   soloNextQuestion: soloNextQuestion,
+  // One permanent link for the daily self-paced quiz, plus the previous-days list
+  // shown on the completion screen. See dailyQuiz / listQuizDays below.
+  dailyQuiz: dailyQuiz,
+  listQuizDays: listQuizDays,
 };
 
 export default async function handler(req, res) {
@@ -105,6 +109,61 @@ export default async function handler(req, res) {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+// ── Daily quiz (one permanent link) ───────────────────────────────────────
+// "Today" is always worked out in ONE configured timezone, on the server, so
+// every visitor gets the same day no matter where their device thinks it is.
+// Set QUIZ_TIMEZONE in Vercel (e.g. Europe/Copenhagen) to change it.
+const QUIZ_TIMEZONE = process.env.QUIZ_TIMEZONE || 'Europe/Copenhagen';
+
+function todayInQuizTz() {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: QUIZ_TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const get = (t) => Number(parts.find(p => p.type === t).value);
+  return { year: get('year'), month: get('month'), day: get('day') };
+}
+
+// Quiz codes follow the DAY01 .. DAY31 pattern (day of the month).
+const dayCode = (n) => 'DAY' + String(n).padStart(2, '0');
+
+// Existing quizzes for DAY01 .. today (never future days), newest first.
+// One batched read of at most 31 small docs, remembered for 5 minutes so a
+// busy completion screen doesn't re-read them for every visitor.
+let daysCache = { key: '', at: 0, list: null };
+async function availableDays() {
+  const { year, month, day } = todayInQuizTz();
+  const key = `${year}-${month}-${day}`;
+  if (daysCache.list && daysCache.key === key && Date.now() - daysCache.at < 5 * 60 * 1000) return daysCache.list;
+  const refs = [];
+  for (let d = day; d >= 1; d--) refs.push(db.collection('quizzes').doc(dayCode(d)));
+  const snaps = await db.getAll(...refs);
+  const list = snaps
+    .filter(s => s.exists && (Number(s.data().totalQuestions) || 0) > 0)
+    .map(s => ({ code: s.id, day: Number(s.id.slice(3)), title: s.data().title || s.id }));
+  daysCache = { key, at: Date.now(), list };
+  return list;
+}
+
+async function dailyQuiz() {
+  const { day } = todayInQuizTz();
+  const code = dayCode(day);
+  const days = await availableDays();
+  const available = days.some(d => d.code === code);
+  return {
+    ok: true,
+    code,
+    available,
+    timezone: QUIZ_TIMEZONE,
+    // Handy for the friendly "not published yet" screen.
+    latestAvailable: available ? code : (days[0] ? days[0].code : null),
+  };
+}
+
+async function listQuizDays() {
+  const { day } = todayInQuizTz();
+  return { ok: true, today: dayCode(day), days: await availableDays() };
 }
 
 // Turns "a, c" / "C,A" / "a" into a canonical, order-independent form
@@ -1245,25 +1304,53 @@ async function soloCompletionPayload(quizRef, quizData, participantId, participa
   // so its running totals are already final. Falls back to a scoped
   // per-participant answers read only for a pre-migration doc missing
   // those fields (see participantAggregate's own comment for why).
+  // Answers are always read now (at most one small query per finished
+  // attempt): they drive the "questions to revisit" review. The running
+  // totals on the participant doc are still the source of truth for scores.
+  const [answersSnap, questionsSnap] = await Promise.all([
+    quizRef.collection('answers').where('participantId', '==', participantId).get(),
+    quizRef.collection('questions').get(),
+  ]);
+  const answers = answersSnap.docs.map(d => d.data());
   let totalScore, correct, answeredCount;
   if (typeof participant.runningAnsweredCount === 'number') {
     totalScore = Number(participant.runningScore) || 0;
     correct = Number(participant.runningCorrectCount) || 0;
     answeredCount = participant.runningAnsweredCount;
   } else {
-    const answersSnap = await quizRef.collection('answers').where('participantId', '==', participantId).get();
-    const answers = answersSnap.docs.map(d => d.data());
     correct = answers.filter(a => a.isCorrect === true).length;
     totalScore = answers.reduce((sum, a) => sum + (Number(a.pointsEarned) || 0), 0);
     answeredCount = answers.length;
   }
+
+  // Every question this attempt got wrong, in quiz order, with what the
+  // person picked and the right answer — safe to send now that the attempt is over.
+  const questionByNum = {};
+  questionsSnap.forEach(d => { const qd = d.data(); questionByNum[Number(qd.qNum) || Number(d.id)] = qd; });
+  const review = answers
+    .filter(a => a.isCorrect !== true)
+    .sort((a, b) => Number(a.qNum) - Number(b.qNum))
+    .map(a => {
+      const qd = questionByNum[Number(a.qNum)] || {};
+      return {
+        qNum: Number(a.qNum),
+        questionText: qd.questionText || '',
+        options: { A: qd.optionA || '', B: qd.optionB || '', C: qd.optionC || '', D: qd.optionD || '' },
+        yourAnswer: String(a.selectedAnswer || ''),
+        correctAnswer: normalizeAnswer(qd.correctAnswer),
+        explanation: qd.explanation || '',
+      };
+    });
+
   const summary = {
     name: participant.name,
     totalScore,
     correctAnswers: correct,
-    incorrectAnswers: Math.max(0, answeredCount - correct),
+    incorrectAnswers: Math.max(0, (totalQuestions || answeredCount) - correct),
     questionsAnswered: answeredCount,
     totalQuestions,
+    percentage: totalQuestions ? Math.round((correct / totalQuestions) * 100) : 0,
+    review,
   };
   const leaderboard = await computeSoloLeaderboard(quizRef, totalQuestions);
   return { summary, leaderboard };
