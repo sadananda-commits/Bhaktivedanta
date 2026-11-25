@@ -12,6 +12,7 @@ import { useState } from 'react';
 import { BhaktivedantaLogo } from './QuizBrand';
 import ExplanationTable from './ExplanationTable';
 import PreviousDays from './PreviousDays';
+import UntriedDays from './UntriedDays';
 
 function dayLabel(code, title) {
   const m = /^DAY0*(\d+)$/i.exec(String(code || ''));
@@ -107,6 +108,8 @@ export default function SoloCompletion({ summary, name, quizCode, quizTitle, onR
   const who = String(name || summary.name || 'friend').trim() || 'friend';
   const msg = pickMessage(who, pct, wrong);
   const review = Array.isArray(summary.review) ? summary.review : [];
+  // Phrase quizzes list other phrase quizzes; everything else lists the DAY quizzes.
+  const series = /^phrase/i.test(String(quizTitle || quizCode || '')) ? 'phrase' : 'day';
 
   return (
     <div className="qx-card qx-center bq-done">
@@ -141,6 +144,9 @@ export default function SoloCompletion({ summary, name, quizCode, quizTitle, onR
       </button>
       {retryError && <div className="qx-error" style={{ marginTop: 8 }}>{retryError}</div>}
 
+      {/* Days this person has never joined — drops off as soon as one is tried. */}
+      <UntriedDays name={who} series={series} />
+
       {review.length > 0 && (
         <details className="bq-drop">
           <summary><span><i className="fa-solid fa-magnifying-glass" /> Review your {review.length} incorrect {plural(review.length, 'answer', 'answers')}</span></summary>
@@ -165,8 +171,8 @@ export default function SoloCompletion({ summary, name, quizCode, quizTitle, onR
       )}
 
       <details className="bq-drop" onToggle={e => { if (e.currentTarget.open) setDaysOpened(true); }}>
-        <summary><span><i className="fa-solid fa-calendar-days" /> Explore Previous Days' Quizzes</span></summary>
-        <div className="bq-drop-body">{daysOpened && <PreviousDays currentCode={quizCode} />}</div>
+        <summary><span><i className="fa-solid fa-calendar-days" /> {series === 'phrase' ? 'Explore Previous Phrase Quizzes' : "Explore Previous Days' Quizzes"}</span></summary>
+        <div className="bq-drop-body">{daysOpened && <PreviousDays currentCode={quizCode} series={series} />}</div>
       </details>
 
       {children}

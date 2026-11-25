@@ -84,6 +84,8 @@ const ACTIONS = {
   // shown on the completion screen. See dailyQuiz / listQuizDays below.
   dailyQuiz: dailyQuiz,
   listQuizDays: listQuizDays,
+  getUnattemptedDays: getUnattemptedDays,
+  dailyPhrase: dailyPhrase,
 };
 
 export default async function handler(req, res) {
@@ -141,9 +143,60 @@ async function availableDays() {
   const snaps = await db.getAll(...refs);
   const list = snaps
     .filter(s => s.exists && (Number(s.data().totalQuestions) || 0) > 0)
-    .map(s => ({ code: s.id, day: Number(s.id.slice(3)), title: s.data().title || s.id }));
+    .map(s => ({ code: s.id, day: Number(s.id.slice(3)), num: Number(s.id.slice(3)), label: `Day ${Number(s.id.slice(3))}`, title: s.data().title || s.id }));
   daysCache = { key, at: Date.now(), list };
   return list;
+}
+
+// ── Phrase quizzes ("Phrase 1", "Phrase 2", …) ─────────────────────────────
+// Same idea as the DAY quizzes, a second series: the day of the month picks the
+// quiz (the 25th opens "Phrase 25"). A phrase quiz is found by its TITLE
+// ("Phrase 7", any capitalisation / spacing) or by a quiz code that starts with
+// PHRASE (PHRASE7, PHRASE-07 …) — whichever you used when creating it — so no
+// particular code format is required. Cost: only the matching quizzes are read.
+const PHRASE_RE = /^phrase[\s_-]*0*(\d+)$/i;
+let phraseCache = { key: '', at: 0, list: null };
+async function availablePhrases() {
+  const { year, month, day } = todayInQuizTz();
+  const key = `${year}-${month}-${day}`;
+  if (phraseCache.list && phraseCache.key === key && Date.now() - phraseCache.at < 5 * 60 * 1000) return phraseCache.list;
+
+  const col = db.collection('quizzes');
+  const queries = [
+    ...['Phrase', 'PHRASE', 'phrase'].map(p => col.where('title', '>=', p).where('title', '<', p + '\uf8ff').limit(200).get()),
+    col.orderBy('__name__').startAt('PHRASE').endAt('PHRASE\uf8ff').limit(200).get(),
+  ];
+  const snaps = await Promise.all(queries);
+  const byCode = {};
+  snaps.forEach(snap => snap.forEach(d => {
+    const data = d.data();
+    if ((Number(data.totalQuestions) || 0) <= 0) return;
+    const m = PHRASE_RE.exec(String(data.title || '').trim()) || PHRASE_RE.exec(d.id);
+    if (!m) return;
+    const num = Number(m[1]);
+    byCode[d.id] = { code: d.id, num, day: num, label: `Phrase ${num}`, title: data.title || d.id };
+  }));
+  // Never today's-future: only phrases up to today's day number, newest first.
+  const list = Object.values(byCode).filter(x => x.num <= day).sort((a, b) => b.num - a.num);
+  phraseCache = { key, at: Date.now(), list };
+  return list;
+}
+
+const seriesList = (series) => (series === 'phrase' ? availablePhrases() : availableDays());
+
+async function dailyPhrase() {
+  const { day } = todayInQuizTz();
+  const list = await availablePhrases();
+  const hit = list.find(x => x.num === day);
+  return {
+    ok: true,
+    available: !!hit,
+    code: hit ? hit.code : null,
+    label: `Phrase ${day}`,
+    timezone: QUIZ_TIMEZONE,
+    latestAvailable: list[0] ? list[0].code : null,
+    latestLabel: list[0] ? list[0].label : null,
+  };
 }
 
 async function dailyQuiz() {
@@ -161,9 +214,43 @@ async function dailyQuiz() {
   };
 }
 
-async function listQuizDays() {
+// Which available days has this person (identified by name — there is no
+// login) never joined? One tiny query pair per day, each capped at a single
+// document, so the cost is bounded (≤ 2 reads per day, ≤ 62 total).
+// Matches ignore case for everyone who has joined since nameLower was
+// introduced; older records are matched on the common spellings of the name
+// (as typed, lower-case, UPPER-CASE, Title Case). "Attempted" means any join —
+// live or self-paced — so a day drops off the list as soon as it is started.
+async function getUnattemptedDays(p) {
+  const name = String(p.name || '').trim();
+  if (!name) throw new Error('name required');
+  const days = await seriesList(p.series === 'phrase' ? 'phrase' : 'day');
+  const lower = name.toLowerCase();
+  const title = lower.replace(/\b\w/g, (c) => c.toUpperCase());
+  const variants = [...new Set([name, lower, name.toUpperCase(), title])];
+
+  const checked = await Promise.all(days.map(async (d) => {
+    const col = db.collection('quizzes').doc(d.code).collection('participants');
+    const [byLower, byName] = await Promise.all([
+      col.where('nameLower', '==', lower).limit(1).get(),
+      col.where('name', 'in', variants).limit(1).get(),
+    ]);
+    return { day: d, attempted: !byLower.empty || !byName.empty };
+  }));
+
+  return {
+    ok: true,
+    totalDays: days.length,
+    days: checked.filter(c => !c.attempted).map(c => c.day),
+  };
+}
+
+async function listQuizDays(p) {
   const { day } = todayInQuizTz();
-  return { ok: true, today: dayCode(day), days: await availableDays() };
+  const series = p && p.series === 'phrase' ? 'phrase' : 'day';
+  const days = await seriesList(series);
+  const todayItem = days.find(d => d.num === day);
+  return { ok: true, series, today: todayItem ? todayItem.code : '', days };
 }
 
 // Turns "a, c" / "C,A" / "a" into a canonical, order-independent form
@@ -624,6 +711,7 @@ async function joinQuiz(p) {
   const participantRef = quizRef.collection('participants').doc();
   await participantRef.set({
     name: String(p.name).trim(),
+    nameLower: String(p.name).trim().toLowerCase(),
     age: p.age || '',
     joinTime: nowIso(),
     status: 'active',
@@ -1113,6 +1201,7 @@ async function joinSoloQuiz(p) {
   const participantRef = quizRef.collection('participants').doc();
   await participantRef.set({
     name: String(p.name).trim(),
+    nameLower: String(p.name).trim().toLowerCase(),
     age: p.age || '',
     joinTime: startedAt,
     status: 'active',

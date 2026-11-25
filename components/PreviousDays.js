@@ -6,7 +6,7 @@
 
 import { useEffect, useState } from 'react';
 
-export default function PreviousDays({ currentCode }) {
+export default function PreviousDays({ currentCode, series = 'day' }) {
   const [state, setState] = useState({ status: 'loading', days: [], today: '' });
 
   useEffect(() => {
@@ -14,7 +14,7 @@ export default function PreviousDays({ currentCode }) {
     fetch('/api/quiz', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'listQuizDays' }),
+      body: JSON.stringify({ action: 'listQuizDays', series }),
     })
       .then(r => r.json().then(j => ({ ok: r.ok, j })))
       .then(({ ok, j }) => {
@@ -24,7 +24,7 @@ export default function PreviousDays({ currentCode }) {
       })
       .catch(() => { if (!cancelled) setState({ status: 'error', days: [], today: '' }); });
     return () => { cancelled = true; };
-  }, []);
+  }, [series]);
 
   return (
     <div className="bq-days">
@@ -47,7 +47,7 @@ export default function PreviousDays({ currentCode }) {
                 className={'bq-day' + (isCurrent ? ' bq-day-current' : '')}
                 aria-current={isCurrent ? 'true' : undefined}
               >
-                <span className="bq-day-name">Day {d.day}</span>
+                <span className="bq-day-name">{d.label || `Day ${d.day}`}</span>
                 {d.code === state.today && <span className="bq-day-tag">Today</span>}
                 {isCurrent && d.code !== state.today && <span className="bq-day-tag">Just played</span>}
               </a>
