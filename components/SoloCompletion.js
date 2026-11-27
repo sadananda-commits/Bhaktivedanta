@@ -13,6 +13,7 @@ import { BhaktivedantaLogo } from './QuizBrand';
 import ExplanationTable from './ExplanationTable';
 import PreviousDays from './PreviousDays';
 import UntriedDays from './UntriedDays';
+import TodayNext from './TodayNext';
 
 function dayLabel(code, title) {
   const m = /^DAY0*(\d+)$/i.exec(String(code || ''));
@@ -143,6 +144,9 @@ export default function SoloCompletion({ summary, name, quizCode, quizTitle, onR
           : <><i className="fa-solid fa-rotate-right" /> Retry Quiz</>}
       </button>
       {retryError && <div className="qx-error" style={{ marginTop: 8 }}>{retryError}</div>}
+
+      {/* Today's other quiz (Word <-> Phrase), or both leaderboards once both are done. */}
+      <TodayNext name={who} quizCode={quizCode} />
 
       {/* Days this person has never joined — drops off as soon as one is tried. */}
       <UntriedDays name={who} series={series} />

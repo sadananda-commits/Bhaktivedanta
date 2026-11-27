@@ -86,6 +86,8 @@ const ACTIONS = {
   listQuizDays: listQuizDays,
   getUnattemptedDays: getUnattemptedDays,
   dailyPhrase: dailyPhrase,
+  // One "Today's Quiz" hub: Word + Phrase of the day, per-person progress, side-by-side boards.
+  todayHub: todayHub,
 };
 
 export default async function handler(req, res) {
@@ -251,6 +253,92 @@ async function listQuizDays(p) {
   const days = await seriesList(series);
   const todayItem = days.find(d => d.num === day);
   return { ok: true, series, today: todayItem ? todayItem.code : '', days };
+}
+
+// ── Today's Quiz hub (Word Quiz + Phrase Quiz of the day) ───────────────────
+// One call answers everything the "Today's Quiz" screens need:
+//   • which of today's two quizzes exist (Word = DAYnn, Phrase = Phrase nn)
+//   • (when `name` is given) whether that person has FINISHED each of them
+//   • (when `quizCode` is given) whether that code is one of today's two
+//   • (only when BOTH are finished) both leaderboards, top 10 + the person's own row
+// Cost: 2 quiz-doc reads + ≤4 tiny capped queries; the leaderboards are only
+// computed when the person really has completed both.
+async function finishedToday(code, name) {
+  const { ref, data } = await getQuizDoc(code);
+  const total = Number(data.totalQuestions) || 0;
+  const lower = name.toLowerCase();
+  const title = lower.replace(/\b\w/g, (c) => c.toUpperCase());
+  const variants = [...new Set([name, lower, name.toUpperCase(), title])];
+  const col = ref.collection('participants');
+  const [a, b] = await Promise.all([
+    col.where('nameLower', '==', lower).limit(20).get(),
+    col.where('name', 'in', variants).limit(20).get(),
+  ]);
+  const seen = {};
+  a.docs.concat(b.docs).forEach(d => { seen[d.id] = d.data(); });
+  const solo = Object.values(seen).some(x =>
+    x.status !== 'left' && isSolo(x) && Number(x.soloQuestionIndex) >= total);
+  const live = (data.leaderboard || []).some(r => String(r.name || '').trim().toLowerCase() === lower);
+  return { done: solo || live, ref, data, total };
+}
+
+async function todayBoard(ctx, lower) {
+  const solo = await computeSoloLeaderboard(ctx.ref, ctx.total);
+  const rows = dedupeBestPerName((ctx.data.leaderboard || []).concat(solo));
+  rows.sort((a, b) =>
+    (b.totalScore || 0) - (a.totalScore || 0) ||
+    (a.avgResponseMs ?? 1e12) - (b.avgResponseMs ?? 1e12));
+  const ranked = rows.map((r, i) => ({
+    rank: i + 1,
+    name: r.name,
+    totalScore: r.totalScore || 0,
+    correctAnswers: r.correctAnswers || 0,
+    isMe: String(r.name || '').trim().toLowerCase() === lower,
+  }));
+  const top = ranked.slice(0, 10);
+  const me = ranked.find(r => r.isMe);
+  if (me && me.rank > 10) top.push(me);
+  return { total: ranked.length, rows: top };
+}
+
+async function todayHub(p) {
+  const { day } = todayInQuizTz();
+  const name = String((p && p.name) || '').trim();
+  const lower = name.toLowerCase();
+  const [days, phrases] = await Promise.all([availableDays(), availablePhrases()]);
+  const wHit = days.find(d => d.num === day);
+  const pHit = phrases.find(x => x.num === day);
+
+  const make = (key, title, hit, fallbackLabel) => ({
+    key, title,
+    label: hit ? hit.label : fallbackLabel,
+    code: hit ? hit.code : null,
+    available: !!hit,
+    done: false,
+  });
+  const word = make('word', 'Word Quiz', wHit, `Day ${day}`);
+  const phrase = make('phrase', 'Phrase Quiz', pHit, `Phrase ${day}`);
+
+  const ctx = {};
+  if (name) {
+    await Promise.all([[word, 'word'], [phrase, 'phrase']].map(async ([item, key]) => {
+      if (!item.available) return;
+      const r = await finishedToday(item.code, name);
+      item.done = r.done;
+      ctx[key] = r;
+    }));
+  }
+
+  const code = String((p && p.quizCode) || '').toUpperCase();
+  const isTodays = !!code && ((word.code && word.code.toUpperCase() === code) || (phrase.code && phrase.code.toUpperCase() === code));
+  const bothDone = word.done && phrase.done;
+
+  let boards = null;
+  if (bothDone) {
+    const [w, ph] = await Promise.all([todayBoard(ctx.word, lower), todayBoard(ctx.phrase, lower)]);
+    boards = { word: w, phrase: ph };
+  }
+  return { ok: true, day, timezone: QUIZ_TIMEZONE, word, phrase, isTodays, bothDone, boards };
 }
 
 // Turns "a, c" / "C,A" / "a" into a canonical, order-independent form

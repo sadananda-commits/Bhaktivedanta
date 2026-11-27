@@ -15,6 +15,7 @@ import { subscribeToQuiz, onConnectionStateChange } from '../lib/quizFirestore';
 import { quizSounds, isMuted, setMuted } from '../lib/quizSounds';
 import ExplanationTable from './ExplanationTable';
 import SoloCompletion from './SoloCompletion';
+import { TodayBothBoards } from './TodayNext';
 import { BhaktivedantaLogo, LogoMark, BrandStyles } from './QuizBrand';
 import { QuizFonts, QuizThemeStyles, ShapeIcon, OPTION_LABELS, OPTION_COLORS } from '../lib/quizTheme';
 
@@ -771,6 +772,8 @@ export default function OnlineQuizParticipant({ quizCode }) {
             <i className="fa-solid fa-rotate" /> Refresh Rankings
           </button>
         </SoloCompletion>
+        {/* Both of today's quizzes done -> both leaderboards, wide, below the card. */}
+        <TodayBothBoards name={name} quizCode={quizCode} />
       </div>
     );
   }
